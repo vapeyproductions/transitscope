@@ -228,12 +228,13 @@ class DuckDBStore:
             connection.execute(
                 """
                 UPDATE candidates
-                SET rank_overall = ?, rank_stage = ?, rank_delta = ?, movement_kind = ?,
+                SET current_stage = COALESCE(?, current_stage), rank_overall = ?, rank_stage = ?, rank_delta = ?, movement_kind = ?,
                     active = ?, activity = ?, status = ?, overall_score = ?, stage_score = ?,
                     last_evaluated_at = ?, known_match_id = ?
                 WHERE candidate_id = ?
                 """,
                 [
+                    update.get("current_stage"),
                     update.get("rank_overall"),
                     update.get("rank_stage"),
                     update.get("rank_delta", 0),

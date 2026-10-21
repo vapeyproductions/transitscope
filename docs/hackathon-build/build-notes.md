@@ -145,3 +145,13 @@ Nearby-star information is relevant as a contamination and systematics signal, n
 - Configured Docker defaults for a 126,000-target universe, batch size 4, one worker on the laptop, stage capacity 100, and top-N display 100. The process pool remains available through `--max-workers` for measured CPU-heavy batches.
 - Worker tests pass with 13 tests. A real local batch consumed the seeded MAST target plus two unavailable queue slots and published version 2; API status reported 2 processed targets out of 126,000 while preserving the real candidate ranking.
 - Restart verification returned “manifest exhausted” without creating another publish version or duplicate events. On eight metadata-only queue slots, the measured serial run took about 0.83s and the two-worker run about 1.00s, so the default remains serial for tiny batches because process startup outweighed trivial work.
+
+### Item 8: Stage 2 historical repeatability validation — complete
+
+- Added `Stage2Processor`, which reuses the Stage 1 period and transit timing, combines available cleaned products chronologically, and measures coverage, event count, timing consistency, depth consistency, shape consistency, and an explainable repeatability evidence score.
+- Added explicit `Needs More Data` behavior for missing history or insufficient coverage, plus `Promising`/`Inconclusive` classification only after the configured historical evidence is sufficient. Stage 2 does not promote a candidate from rank alone.
+- Added bounded `MastHistoryAdapter` support for querying selected sectors and caching the available official MAST/TESS light curves with existing provenance behavior.
+- Added Stage 2 persistence that moves an explicitly eligible candidate into `stage2`, records the model/ranking versions and input products, writes the Stage 2 and Overall snapshots, and preserves the prior normalized light curve when a backfill is still missing.
+- Added `run_stage2.py` with cached-product, history-manifest, bounded-sector-fetch, dry-run, and explicit diagnostic override paths. The normal path accepts only `Promising` Stage 1 candidates.
+- Worker tests pass with 16 tests, including insufficient 30-day history, a 365-day repeatable fixture, Stage 2/Overall snapshot persistence, and the no-rank-only promotion rule.
+- The real cached MAST/TESS target was evaluated non-mutatingly: one sector yielded 27.88 days, 3 observed events, and 702.12 missing days in the requested 730-day lookback, so the honest Stage 2 result is `Needs More Data` with evidence score 52.0226.

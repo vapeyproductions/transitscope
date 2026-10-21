@@ -44,6 +44,18 @@ docker compose run --rm worker python run_stage1_batch.py \
 
 The baseline `random-stratified-v1` selector records its policy, processes only the next queue slice, persists ranking snapshots, and leaves adaptive sampling disabled until outcome statistics are available. Use `--retire-candidate <candidate-id>` when a later stage releases a slot so the next unprocessed targets fill it.
 
+## Stage 2 historical validation
+
+Stage 2 reuses the Stage 1 period and timing instead of starting a new search. It can evaluate cached products, a history manifest, or a bounded list of MAST sectors:
+
+```bash
+docker compose run --rm worker python run_stage2.py \
+  --candidate-id <candidate-id> \
+  --fetch-sectors 1,2,3
+```
+
+Only `Promising` Stage 1 candidates are eligible by default. Use `--dry-run --allow-nonpromising` only for a diagnostic; results with insufficient historical coverage remain `Needs More Data`.
+
 ## Project status
 
 The application assesses potential planets and does not claim scientific confirmation. See `docs/hackathon-build/` for the scope, product requirements, technical specification, and build checklist.

@@ -58,7 +58,7 @@ The target universe remains approximately 126,000 stars. The implementation will
   Acceptance: The pipeline does not load the universe into browser memory; batch failures do not erase completed results; processed/total counts are visible; ranking changes create persisted snapshots; a candidate leaving the active pool makes room for an unprocessed target.
   Verify: Run a measured small batch, compare serial and parallel throughput, restart the worker, and confirm it resumes from the checkpoint without duplicating events. Commit the batch implementation and record measured defaults.
 
-- [ ] **8. Add Stage 2 historical repeatability validation**
+- [x] **8. Add Stage 2 historical repeatability validation**
   Spec ref: `spec.md > 6.4 Stage 2: longer-baseline repeatability` and `spec.md > 7.1 Status rules`
   What to build: For eligible top-X Stage 1 candidates, fetch the available longer history, target a two-year lookback where possible, calculate repeatability/timing/depth/shape features, and update the Stage 2 ranking. Implement `Needs More Data` backfill behavior without automatic promotion from rank alone.
   Acceptance: Stage 2 candidates can be `Promising`, `Needs More Data`, or `Inconclusive`; missing history remains `Needs More Data`; completed evaluations retain their window and metrics; Stage 2 capacity is configurable.
