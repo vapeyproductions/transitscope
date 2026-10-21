@@ -13,12 +13,12 @@
     "display_name": "Marie Rosario"
   },
   "project": {
-    "name": "",
+    "name": "TransitScope: Exoplanet Evidence Observatory",
     "summary": "A live assessment of potential planets, updated for likelihood regularly using incoming data and increasingly rigorous testing.",
-    "ai_usage": "",
-    "codex_usage": ""
+    "ai_usage": "Stage 1 Box Least Squares screening, Stage 2 repeatability analysis, and a CPU-capable Stage 3 holdout model; AI-assisted development through the Devpost Learn Skill Pack.",
+    "codex_usage": "Codex guided the interview, scope, PRD, spec, checklist, implementation, verification, and item-by-item commits."
   },
-  "current_stage": "resources",
+  "current_stage": "prepare-submission",
   "completed_stages": ["start-hackathon", "review", "resources"],
   "rules_acknowledged": true,
   "learning": {
@@ -30,7 +30,7 @@
   },
   "submission": {
     "draft_file": "devpost-submission.md",
-    "status": "not-started"
+    "status": "drafting"
   },
-  "next_command": "build-project"
+  "next_command": "prepare-submission"
 }

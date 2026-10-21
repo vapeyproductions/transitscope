@@ -12,7 +12,7 @@ docker compose up --build
 - API health: http://localhost:8000/api/health
 - API status: http://localhost:8000/api/status
 
-The `data/` directory is a durable local volume for provider cache, normalized data, DuckDB state, and replay history. The current stack includes the official MAST/TESS probe, one-target Stage 1 processing, and a bounded/checkpointed Stage 1 batch runner.
+The `data/` directory is a durable local volume for provider cache, normalized data, DuckDB state, and replay history. The current stack includes the official MAST/TESS probe, bounded/checkpointed Stage 1 processing, Stage 2 historical repeatability, Stage 3 chronological holdout prediction, NASA Exoplanet Archive matching, Overall/stage ranking snapshots, replay APIs, and the candidate investigation modal. The checked-in pipeline is broader than the small local runtime dataset used for development; the current sample feed contains one real TESS candidate and honest empty states for stages without published candidates.
 
 ## MAST/TESS probe
 
@@ -83,5 +83,35 @@ Remove `--dry-run` to publish a confirmed catalog mapping. The candidate becomes
 
 ## Project status
 
-The application assesses potential planets and does not claim scientific confirmation. See `docs/hackathon-build/` for the scope, product requirements, technical specification, and build checklist.
+The application assesses potential planets and does not claim scientific confirmation. The production path currently uses an explainable Stage 1 Box Least Squares evidence score and a CPU-capable Stage 3 logistic model adapter with a transparent baseline; a neural-network experiment remains optional and is not claimed as part of this draft. See `docs/hackathon-build/` for the scope, product requirements, technical specification, build checklist, and item-by-item verification notes.
+
+## Replay and candidate investigation
+
+Replay is a read-only view over persisted ranking snapshots and pipeline events:
+
+```text
+GET /api/replay/{view}/meta
+GET /api/replay/{view}/snapshot?sequence={n}
+GET /api/replay/{view}/events?start_sequence={n}&end_sequence={n}
+```
+
+The dashboard keeps an independent replay playhead for Overall, Stage 1, Stage 2, and Stage 3. It supports empty-start state, play/pause, approximate dragging, and playback speed. Opening a ranking row loads its normalized light curve, stage-specific metrics, current activity, next action, and lifecycle history in a modal. Replay reads saved state only; it does not call MAST, the NASA Exoplanet Archive, or a model.
+
+## Verification
+
+Build the containers and run the API replay test:
+
+```bash
+docker compose build api web worker
+docker compose run --rm api python -m unittest discover -s tests -v
+docker compose up -d api web worker
+```
+
+The worker tests can be run in the worker image with:
+
+```bash
+docker compose run --rm worker python -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+For a real-data demonstration, run the MAST probe, prepare or resume a bounded target batch, open `http://localhost:3000`, and use the Overall/Stage tabs, Replay control, and candidate row. Runtime data and provider caches are intentionally ignored by Git.
 
