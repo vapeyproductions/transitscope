@@ -1,0 +1,8 @@
+{
+  "data_dir": "data",
+  "sector": 1,
+  "target_name": "277691220",
+  "product_family": "TESS SPOC light curve",
+  "max_observations": 5,
+  "request_timeout_seconds": 60
+}

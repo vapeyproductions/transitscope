@@ -106,3 +106,13 @@ Nearby-star information is relevant as a contamination and systematics signal, n
 - Kept the initial state honest: the ranking contains no fabricated astronomy results and explicitly says it is waiting for the MAST/TESS ingestion probe.
 - Rebuilt the web image successfully with Next.js 16.4.2, confirmed the API remained healthy, and verified the rendered HTML includes the observatory title, empty-state message, and MAST/TESS provenance.
 - TypeScript verification passed with `npm run typecheck`.
+
+### Item 4: Real MAST/TESS ingestion probe — complete
+
+- Added a bounded `MastProductAdapter` using MAST's documented metadata request and direct file-download endpoints.
+- Added `config/mast_probe.json` for a reproducible Sector 1 TESS/SPOC light-curve probe, with CLI overrides for sector, target, and data directory.
+- The probe selected observation `60835920` / target `TIC 277691220`, selected the public SPOC LC product, and cached the 2,039,040-byte FITS artifact under `data/raw/mast/tess/sector-0001/`.
+- Wrote a JSON manifest under `data/manifests/` containing the query, MAST observation/product identifiers, source URI, retrieval headers, target-manifest fields, cache path, and SHA-256 `bf71e43b097651cb93f61cd871097582bcc1fad047910760489780d8db678889`.
+- Downloads use a temporary `.part` file and atomic rename; a rerun reused the cache with the same checksum. Raw data and runtime manifests remain ignored by Git.
+- Added adapter tests and verified six tests pass. The explicit no-match path returned the clear provider error `MAST returned no TESS timeseries observations` with exit code 2.
+- MAST references used for the implementation: [MAST API documentation](https://mast.stsci.edu/api/v0/index.html), [MAST services](https://mast.stsci.edu/api/v0/_services.html), and [TESS archive query guidance](https://outerspace.stsci.edu/spaces/TESS/pages/30278757/7.0%2B-%2BTips%2Band%2BTricks%2Bto%2BGetting%2BTESS%2BData%2BAt%2BMAST).

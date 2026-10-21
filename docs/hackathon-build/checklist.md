@@ -34,7 +34,7 @@ The target universe remains approximately 126,000 stars. The implementation will
   Acceptance: The app loads without an account, presents a readable scientific dashboard, shows an empty Stage 1 state, and gives status/activity fields a stable visual location. Color is not the only status signal.
   Verify: Run the web lint/typecheck command and manually inspect loading, empty, and error states in the browser. Commit the shell.
 
-- [ ] **4. Implement the real MAST/TESS ingestion probe**
+- [x] **4. Implement the real MAST/TESS ingestion probe**
   Spec ref: `spec.md > 3. External data roles and provenance > 3.1 MAST/TESS observation adapter` and `spec.md > 6. Processing pipeline > 6.1 Bootstrap and batching`
   What to build: Implement the MAST adapter and probe configuration for one manageable sector/product family. Query metadata, select one real product, download it into the cache, record provenance/checksum, and expose a clear provider error when the archive request fails. Keep the target-manifest interface ready for the full universe.
   Acceptance: The probe can retrieve an official MAST/TESS artifact or reports a reproducible provider failure; the cached artifact has source identifiers and retrieval metadata; no raw file is committed to the repository.

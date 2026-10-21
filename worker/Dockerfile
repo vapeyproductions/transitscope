@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py ./main.py
 COPY storage ./storage
+COPY ingestion ./ingestion
 COPY tests ./tests
 
 CMD ["python", "main.py"]
