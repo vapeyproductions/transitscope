@@ -164,3 +164,13 @@ Nearby-star information is relevant as a contamination and systematics signal, n
 - Added Stage 3 persistence that moves an explicitly eligible Stage 2 candidate into `stage3`, updates Stage 3 and Overall rankings, records a `stage3_evaluated` event, and writes replay snapshots. Reading those snapshots does not invoke the model again.
 - Added `run_stage3.py` for cached FITS, history manifests, bounded MAST sector fetches, normalized Stage 2 fallback data, dry runs, and explicit diagnostic overrides. Normal execution accepts only `Promising` Stage 2 candidates.
 - Pinned `scikit-learn==1.6.1` in the worker image. Docker worker tests pass with 19 tests, including a deterministic 90-day holdout fixture, baseline comparison, persistence, and replay read-without-rerun verification.
+
+### Item 10: Catalog matching, candidate lifecycle, and Overall ranking — complete
+
+- Added `ExoplanetArchiveAdapter` with narrow `pscomppars`/`toi` TAP projections, bounded row counts, cache TTL, atomic cache writes, recorded queries, partial-provider errors, and configurable coordinate/period tolerances.
+- Added conservative matching rules: target ID plus compatible period, or coordinate plus compatible period. A target-ID match with an incompatible period is not treated as a known match, preventing a known planet on the same star from automatically hiding a different-period candidate.
+- Added `publish_known_matches`, which records a catalog evaluation and `known_match` event, changes the candidate to inactive `Known Match`, preserves its history, removes it from Overall and all stage snapshots, and re-ranks surviving candidates.
+- Added `promotable_candidates` so capacity-driven promotion remains explicitly status-gated: only `Promising` candidates within top-X are selectable; `Needs More Data` never advances from rank alone.
+- Extended Stage 1 publication to maintain Overall snapshots and rank existing candidates across stages. Movement tokens now include `rapid_rise`, `rapid_fall`, and `sustained_top` in the form expected by the dashboard.
+- Added `run_catalog_match.py` with cached projection, optional refresh, candidate filtering, dry-run, and publish paths. Docker worker tests pass with 22 tests, including archive parsing/cache behavior, conservative matching, known-match tombstoning/re-ranking across four views, and top-X promotion gating.
+- Verified the live official TAP path with the current candidate: both configured projections cached successfully, the candidate produced no match, and the dry run published no state change. The `pscomppars` projection intentionally uses only columns confirmed by the current archive schema.

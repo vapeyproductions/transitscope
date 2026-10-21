@@ -68,6 +68,19 @@ docker compose run --rm worker python run_stage3.py \
 
 Only `Promising` Stage 2 candidates are eligible by default. Use `--dry-run --allow-nonpromising` for a diagnostic; Stage 3 results are assessments of candidate evidence and never scientific confirmation. Published evaluations and ranking snapshots are stored in DuckDB so replay can read them without rerunning the model.
 
+## Known-object matching and Overall ranking
+
+The catalog step queries a narrow, cached projection from the NASA Exoplanet Archive TAP service. Matching requires a compatible target identifier or a coordinate match with compatible period evidence; tolerances are recorded with each mapping. A match is a catalog mapping event, not TransitScope scientific confirmation:
+
+```bash
+docker compose run --rm worker python run_catalog_match.py \
+  --candidate-id <candidate-id> \
+  --force-refresh \
+  --dry-run
+```
+
+Remove `--dry-run` to publish a confirmed catalog mapping. The candidate becomes an inactive `Known Match`, remains available in history, and is removed from Overall and all stage ranking snapshots. The remaining active candidates are re-ranked. Promotion selection is capacity-driven but status-gated: only `Promising` candidates inside the configured top-X can be selected; `Needs More Data` does not advance from rank alone.
+
 ## Project status
 
 The application assesses potential planets and does not claim scientific confirmation. See `docs/hackathon-build/` for the scope, product requirements, technical specification, and build checklist.

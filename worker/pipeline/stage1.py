@@ -12,6 +12,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.timeseries import BoxLeastSquares
 
+from pipeline.lifecycle import active_candidates, movement_for_ranks
 from storage.duckdb_store import DuckDBStore
 
 
@@ -407,6 +408,49 @@ def publish_stage1_result(
     event_id = f"stage1-evaluated-{candidate_id}-{stable_suffix}"
     evaluation_id = f"stage1-evaluation-{candidate_id}-{stable_suffix}"
     ingest_run_id = f"stage1-ingest-{stable_suffix}"
+    previous = [
+        candidate
+        for candidate in active_candidates(store)
+        if candidate["candidate_id"] != candidate_id
+    ]
+    new_candidate = {
+        "candidate_id": candidate_id,
+        "target_id": target_id,
+        "current_stage": "stage1",
+        "status": result["status"],
+        "overall_score": result["evidence_score"],
+        "stage_score": result["evidence_score"],
+        "activity": result["activity"],
+        "last_evaluated_at": evaluated_at,
+    }
+    stage1_pool = [candidate for candidate in previous if candidate["current_stage"] == "stage1"] + [new_candidate]
+    stage1_pool.sort(key=lambda candidate: (-float(candidate["stage_score"] or 0.0), candidate["candidate_id"]))
+    stage1_ranks = {candidate["candidate_id"]: index for index, candidate in enumerate(stage1_pool, 1)}
+    overall_pool = previous + [new_candidate]
+    overall_pool.sort(key=lambda candidate: (-float(candidate["overall_score"] or 0.0), candidate["candidate_id"]))
+    overall_ranks = {candidate["candidate_id"]: index for index, candidate in enumerate(overall_pool, 1)}
+    candidate_updates = []
+    for candidate in previous:
+        rank_delta, movement = movement_for_ranks(
+            candidate["rank_overall"], overall_ranks[candidate["candidate_id"]]
+        )
+        candidate_updates.append(
+            {
+                "candidate_id": candidate["candidate_id"],
+                "current_stage": candidate["current_stage"],
+                "rank_overall": overall_ranks[candidate["candidate_id"]],
+                "rank_stage": stage1_ranks.get(candidate["candidate_id"], candidate["rank_stage"]),
+                "rank_delta": rank_delta,
+                "movement_kind": movement,
+                "active": True,
+                "activity": candidate["activity"],
+                "status": candidate["status"],
+                "overall_score": candidate["overall_score"],
+                "stage_score": candidate["stage_score"],
+                "last_evaluated_at": candidate["last_evaluated_at"],
+                "known_match_id": candidate["known_match_id"],
+            }
+        )
 
     store.publish_batch(
         version=version,
@@ -446,8 +490,8 @@ def publish_stage1_result(
                 "status": result["status"],
                 "overall_score": result["evidence_score"],
                 "stage_score": result["evidence_score"],
-                "rank_overall": 1,
-                "rank_stage": 1,
+                "rank_overall": overall_ranks[candidate_id],
+                "rank_stage": stage1_ranks[candidate_id],
                 "activity": result["activity"],
                 "rank_delta": 0,
                 "movement_kind": "new",
@@ -504,11 +548,21 @@ def publish_stage1_result(
                 "view": "stage1",
                 "sequence_number": version,
                 "occurred_at": evaluated_at,
-                "candidate_order_json": [candidate_id],
-                "active_candidate_count": 1,
-                "processed_target_count": 1,
+                "candidate_order_json": [candidate["candidate_id"] for candidate in stage1_pool],
+                "active_candidate_count": len(stage1_pool),
+                "processed_target_count": len(overall_pool),
+            },
+            {
+                "snapshot_id": f"overall-snapshot-{version}",
+                "view": "overall",
+                "sequence_number": version,
+                "occurred_at": evaluated_at,
+                "candidate_order_json": [candidate["candidate_id"] for candidate in overall_pool],
+                "active_candidate_count": len(overall_pool),
+                "processed_target_count": len(overall_pool),
             }
         ],
+        candidate_updates=candidate_updates,
     )
     return version
 

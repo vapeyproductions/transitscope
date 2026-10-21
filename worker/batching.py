@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from pipeline.stage1 import Stage1ProcessingError, Stage1Processor, resolve_artifact_path
+from pipeline.lifecycle import movement_for_ranks
 from storage.duckdb_store import DuckDBStore
 from storage.paths import DataPaths
 
@@ -262,44 +263,30 @@ def process_targets(
     return results, failures
 
 
-def _movement(old_rank: int | None, new_rank: int) -> tuple[int, str]:
-    if old_rank is None:
-        return 0, "new"
-    delta = old_rank - new_rank
-    if delta >= 3:
-        return delta, "rapid-rise"
-    if delta > 0:
-        return delta, "rising"
-    if delta <= -3:
-        return delta, "rapid-fall"
-    if delta < 0:
-        return delta, "falling"
-    return 0, "unchanged"
-
-
-def _existing_stage1(store: DuckDBStore) -> list[dict[str, Any]]:
+def _existing_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
     store.initialize()
     with store.connect() as connection:
         rows = connection.execute(
             """
-            SELECT candidate_id, target_id, status, overall_score, stage_score,
-                   rank_overall, rank_stage, activity, last_evaluated_at, active
+            SELECT candidate_id, target_id, current_stage, status, overall_score, stage_score,
+                   rank_overall, rank_stage, activity, last_evaluated_at, known_match_id, active
             FROM candidates
-            WHERE current_stage = 'stage1'
             """
         ).fetchall()
     return [
         {
             "candidate_id": row[0],
             "target_id": row[1],
-            "status": row[2],
-            "overall_score": row[3],
-            "stage_score": row[4],
-            "rank_overall": row[5],
-            "rank_stage": row[6],
-            "activity": row[7],
-            "last_evaluated_at": row[8],
-            "active": bool(row[9]),
+            "current_stage": row[2],
+            "status": row[3],
+            "overall_score": row[4],
+            "stage_score": row[5],
+            "rank_overall": row[6],
+            "rank_stage": row[7],
+            "activity": row[8],
+            "last_evaluated_at": row[9],
+            "known_match_id": row[10],
+            "active": bool(row[11]),
         }
         for row in rows
     ]
@@ -325,13 +312,14 @@ def publish_stage1_batch(
 ) -> int:
     """Publish one batch, its ranking, the checkpoint, and failure bookkeeping atomically."""
 
-    previous = _existing_stage1(store)
+    previous = _existing_candidates(store)
     retiring = set(retire_candidate_ids)
     active_existing = [
         candidate
         for candidate in previous
         if candidate["active"] and candidate["candidate_id"] not in retiring
     ]
+    active_stage1 = [candidate for candidate in active_existing if candidate["current_stage"] == STAGE]
     new_candidates = [
         {
             "candidate_id": result["result"]["candidate_id"],
@@ -345,26 +333,35 @@ def publish_stage1_batch(
         }
         for result in results
     ]
-    ranking_pool = active_existing + new_candidates
-    ranking_pool.sort(
+    stage1_pool = active_stage1 + new_candidates
+    stage1_pool.sort(
         key=lambda candidate: (
             -float(candidate["stage_score"] or 0.0),
             str(candidate["candidate_id"]),
         )
     )
-    rank_by_id = {candidate["candidate_id"]: index for index, candidate in enumerate(ranking_pool, 1)}
+    stage1_ranks = {candidate["candidate_id"]: index for index, candidate in enumerate(stage1_pool, 1)}
+    overall_pool = active_existing + new_candidates
+    overall_pool.sort(
+        key=lambda candidate: (
+            -float(candidate["overall_score"] or 0.0),
+            str(candidate["candidate_id"]),
+        )
+    )
+    overall_ranks = {candidate["candidate_id"]: index for index, candidate in enumerate(overall_pool, 1)}
     prior_by_id = {candidate["candidate_id"]: candidate for candidate in previous}
 
     version = (store.latest_published_version() or 0) + 1
     evaluated_at = utc_now()
     candidate_rows: list[dict[str, Any]] = []
     candidate_updates: list[dict[str, Any]] = []
-    for candidate in ranking_pool:
+    for candidate in overall_pool:
         candidate_id = candidate["candidate_id"]
-        rank = rank_by_id[candidate_id]
+        overall_rank = overall_ranks[candidate_id]
+        stage_rank = stage1_ranks.get(candidate_id, prior_by_id.get(candidate_id, {}).get("rank_stage"))
         old = prior_by_id.get(candidate_id)
-        old_rank = old.get("rank_stage") if old else None
-        rank_delta, movement = _movement(old_rank, rank)
+        old_rank = old.get("rank_overall") if old else None
+        rank_delta, movement = movement_for_ranks(old_rank, overall_rank)
         if old is None:
             candidate_rows.append(
                 {
@@ -374,8 +371,8 @@ def publish_stage1_batch(
                     "status": candidate["status"],
                     "overall_score": candidate["overall_score"],
                     "stage_score": candidate["stage_score"],
-                    "rank_overall": rank,
-                    "rank_stage": rank,
+                    "rank_overall": overall_rank,
+                    "rank_stage": stage_rank,
                     "activity": candidate["activity"],
                     "rank_delta": rank_delta,
                     "movement_kind": movement,
@@ -388,8 +385,9 @@ def publish_stage1_batch(
             candidate_updates.append(
                 {
                     "candidate_id": candidate_id,
-                    "rank_overall": rank,
-                    "rank_stage": rank,
+                    "current_stage": candidate["current_stage"],
+                    "rank_overall": overall_rank,
+                    "rank_stage": stage_rank,
                     "rank_delta": rank_delta,
                     "movement_kind": movement,
                     "active": True,
@@ -398,7 +396,7 @@ def publish_stage1_batch(
                     "overall_score": candidate["overall_score"],
                     "stage_score": candidate["stage_score"],
                     "last_evaluated_at": candidate["last_evaluated_at"],
-                    "known_match_id": None,
+                    "known_match_id": candidate["known_match_id"],
                 }
             )
 
@@ -417,7 +415,7 @@ def publish_stage1_batch(
                     "overall_score": candidate["overall_score"],
                     "stage_score": candidate["stage_score"],
                     "last_evaluated_at": candidate["last_evaluated_at"],
-                    "known_match_id": None,
+                    "known_match_id": candidate["known_match_id"],
                 }
             )
 
@@ -514,7 +512,8 @@ def publish_stage1_batch(
             }
         )
 
-    order = [candidate["candidate_id"] for candidate in ranking_pool[: config.top_n]]
+    stage1_order = [candidate["candidate_id"] for candidate in stage1_pool[: config.top_n]]
+    overall_order = [candidate["candidate_id"] for candidate in overall_pool[: config.top_n]]
     ingest_id = f"stage1-ingest-{batch_id}"
     batch_errors = [
         {"target_id": item.get("target", {}).get("target_id"), "error": item.get("error")}
@@ -553,8 +552,17 @@ def publish_stage1_batch(
                 "view": STAGE,
                 "sequence_number": version,
                 "occurred_at": evaluated_at,
-                "candidate_order_json": order,
-                "active_candidate_count": len(ranking_pool),
+                "candidate_order_json": stage1_order,
+                "active_candidate_count": len(stage1_pool),
+                "processed_target_count": processed_count,
+            },
+            {
+                "snapshot_id": f"overall-snapshot-{version}",
+                "view": "overall",
+                "sequence_number": version,
+                "occurred_at": evaluated_at,
+                "candidate_order_json": overall_order,
+                "active_candidate_count": len(overall_pool),
                 "processed_target_count": processed_count,
             }
         ],

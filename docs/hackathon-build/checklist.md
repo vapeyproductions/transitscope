@@ -70,7 +70,7 @@ The target universe remains approximately 126,000 stars. The implementation will
   Acceptance: Stage 3 reports supported metrics such as precision, recall, F1, event accuracy, timing error, or depth error; model version and windows are persisted; the UI never labels the result as confirmation.
   Verify: Run Stage 3 with a recorded time-series fixture, compare against the transparent baseline, and confirm replay data contains the evaluation without rerunning it. Commit Stage 3.
 
-- [ ] **10. Implement catalog matching, candidate lifecycle, and Overall ranking**
+- [x] **10. Implement catalog matching, candidate lifecycle, and Overall ranking**
   Spec ref: `spec.md > 3.2 Known-object catalog adapter`, `spec.md > 6.6 Known-object cross-reference`, and `spec.md > 7. Candidate lifecycle and ranking policy`
   What to build: Add the NASA Exoplanet Archive TAP adapter/cache, configurable coordinate/period matching, Known Match tombstoning, finalized Inconclusive behavior, top-X promotion rules, rank movement indicators, and the Overall ranking combination across stages.
   Acceptance: A catalog match emits a mapping event and removes the candidate from every active ranking while preserving history; lower-ranked candidates can move up; `Needs More Data` does not auto-promote; Overall and stage-specific scores are versioned and inspectable.

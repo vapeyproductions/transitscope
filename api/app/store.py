@@ -349,10 +349,18 @@ class ReadOnlyStore:
 
     @staticmethod
     def _next_action(stage: str, status: str) -> str:
+        if status == "Known Match":
+            return "Mapped to a known catalog object; removed from active rankings while history is preserved."
         if status == "Promising":
-            return "Eligible for Stage 2 repeatability testing when capacity allows."
+            if stage == "stage1":
+                return "Eligible for Stage 2 repeatability testing when capacity allows."
+            if stage == "stage2":
+                return "Eligible for Stage 3 holdout prediction when capacity allows."
+            return "Continue reviewing the latest Stage 3 holdout evidence."
         if status == "Needs More Data":
             return "Wait for additional coverage before changing this assessment."
+        if status == "Inconclusive":
+            return "Remain in the historical assessment record; no expensive next-stage run is scheduled."
         if stage == "stage1":
             return "No higher-stage assessment is scheduled from this result yet."
         return "Continue collecting evidence at the current stage."

@@ -14,6 +14,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
 from pipeline.stage1 import Stage1Processor
+from pipeline.lifecycle import movement_for_ranks
 from pipeline.stage2 import _candidate_rows
 from storage.duckdb_store import DuckDBStore
 
@@ -576,9 +577,7 @@ def publish_stage3_result(
         new_overall_rank = overall_ranks[item["candidate_id"]]
         old_overall_rank = old["rank_overall"]
         delta = (old_overall_rank - new_overall_rank) if old_overall_rank is not None else 0
-        movement = "new" if old_overall_rank is None else (
-            "rising" if delta > 0 else "falling" if delta < 0 else "unchanged"
-        )
+        _, movement = movement_for_ranks(old_overall_rank, new_overall_rank)
         updates.append(
             {
                 "candidate_id": item["candidate_id"],

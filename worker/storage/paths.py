@@ -21,10 +21,14 @@ class DataPaths:
         return self.root / "manifests"
 
     @property
+    def catalog(self) -> Path:
+        return self.root / "catalog"
+
+    @property
     def database(self) -> Path:
         return self.root / "transitscope.duckdb"
 
     def ensure(self) -> None:
-        for path in (self.root, self.raw, self.normalized, self.manifests):
+        for path in (self.root, self.raw, self.normalized, self.manifests, self.catalog):
             path.mkdir(parents=True, exist_ok=True)
 
