@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 type RankingView = "overall" | "stage1" | "stage2" | "stage3";
+type AssessmentStage = "stage1" | "stage2" | "stage3";
 type CandidateStatus = "Promising" | "Needs More Data" | "Inconclusive" | "Known Match";
 
 type DashboardStatus = {
@@ -121,6 +122,47 @@ type HistoryResponse = {
   }>;
 };
 
+type IdentifiedPerformance = {
+  status: CandidateStatus | null;
+  evidence_score: number | null;
+  model_version: string | null;
+  data_sufficiency: string | null;
+  evaluated_at: string | null;
+  coverage_days: number | null;
+  observed_event_count: number | null;
+  holdout_f1: number | null;
+  model_lift: number | null;
+  metrics: Record<string, unknown>;
+};
+
+type IdentifiedRow = {
+  candidate_id: string;
+  target_id: string;
+  identified_stage: string;
+  identified_at: string | null;
+  known_match_id: string | null;
+  overall_score: number | null;
+  activity: string;
+  identified_as: {
+    object_name: string | null;
+    catalog_id: string | null;
+    table: string | null;
+    disposition: string | null;
+    match_kind: string | null;
+    match_score: number | null;
+    period_days: number | null;
+    coordinate_separation_deg: number | null;
+    period_delta_fraction: number | null;
+  };
+  performance: Partial<Record<AssessmentStage, IdentifiedPerformance>>;
+};
+
+type IdentifiedResponse = {
+  data_version: number | null;
+  count: number;
+  rows: IdentifiedRow[];
+};
+
 const tabs: Array<{ id: RankingView; label: string }> = [
   { id: "overall", label: "Overall" },
   { id: "stage1", label: "Stage 1" },
@@ -199,6 +241,19 @@ function stageCopy(view: RankingView): { number: string; kicker: string; title: 
 
 function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function numberLabel(value: number | null | undefined, digits = 1): string {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "—";
+}
+
+function identifiedPerformanceStats(performance: IdentifiedPerformance): string {
+  const stats: string[] = [];
+  if (typeof performance.coverage_days === "number") stats.push(`${numberLabel(performance.coverage_days)} d coverage`);
+  if (typeof performance.observed_event_count === "number") stats.push(`${numberLabel(performance.observed_event_count, 0)} events`);
+  if (typeof performance.holdout_f1 === "number") stats.push(`F1 ${numberLabel(performance.holdout_f1, 2)}`);
+  if (typeof performance.model_lift === "number") stats.push(`lift ${performance.model_lift >= 0 ? "+" : ""}${numberLabel(performance.model_lift, 2)}`);
+  return stats.join(" · ") || "No secondary stats";
 }
 
 function LightCurveChart({ points }: { points: LightCurveResponse["points"] }) {
@@ -295,8 +350,42 @@ function CandidateModal({ candidate, curve, history, replaySequence, onClose }: 
   </div>;
 }
 
+const assessmentStages: AssessmentStage[] = ["stage1", "stage2", "stage3"];
+
+function IdentifiedPanel({ onOpenCandidate, refreshKey }: { onOpenCandidate: (candidateId: string) => void; refreshKey: number }) {
+  const [response, setResponse] = useState<IdentifiedResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    void fetchJson<IdentifiedResponse>("/api/identified?limit=100")
+      .then((nextResponse) => {
+        if (!cancelled) setResponse(nextResponse);
+      })
+      .catch((cause) => {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : "Known-object records are unavailable.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [refreshKey]);
+
+  const rows = response?.rows ?? [];
+  return <section className="identified-panel ranking-panel" aria-labelledby="identified-title">
+    <header className="identified-header"><div><p className="eyebrow accent">Catalog cross-reference · retained history</p><h3 id="identified-title">Identified objects</h3><p>Known catalog matches are removed from active rankings, but remain here with the evidence that led to the mapping.</p></div><div className="identified-count"><strong>{loading ? "—" : response?.count ?? 0}</strong><span>known matches</span></div></header>
+    {error ? <div className="error-state" role="alert"><span className="status-dot muted" /><h4>Identified records unavailable</h4><p>{error}</p></div> : loading ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Reading catalog matches.</h4><p>Loading persisted match events and stage performance. No model is run for this view.</p></div> : rows.length ? <div className="identified-table-wrap"><div className="identified-table identified-table-header" aria-hidden="true"><span>Star</span><span>Identified as</span><span>Step found</span><span>Performance by step</span><span>Match evidence</span><span>Identified</span></div><div className="identified-rows">{rows.map((row) => { const identified = row.identified_as; return <button className="identified-table identified-row" key={row.candidate_id} type="button" onClick={() => onOpenCandidate(row.candidate_id)} aria-label={`Open identified object details for ${row.target_id}`}><span className="identified-target"><strong>{row.target_id}</strong><small>{row.candidate_id}</small></span><span className="identified-as"><strong>{identified.object_name ?? row.known_match_id ?? "Catalog object"}</strong><small>{identified.table ?? "Catalog"}{identified.disposition ? ` · ${identified.disposition}` : ""} · {identified.match_kind ?? "catalog cross-reference"}</small></span><span className="identified-stage"><span className="stage-badge">{stageName(row.identified_stage)}</span><small>{row.activity}</small></span><span className="performance-stack">{assessmentStages.map((stage) => { const performance = row.performance[stage]; return <span className={`performance-chip ${performance ? statusClass(performance.status ?? "") : "performance-chip-empty"}`} key={stage}><strong>{stageName(stage)}</strong><span>{performance ? `Evidence ${numberLabel(performance.evidence_score)}` : "Not run"}</span>{performance && <small>{performance.status ?? "—"} · {identifiedPerformanceStats(performance)}</small>}</span>; })}</span><span className="match-proof"><strong>{numberLabel(identified.match_score, 0)} / 100 · Overall {numberLabel(row.overall_score)}</strong><small>{typeof identified.period_delta_fraction === "number" ? `ΔP ${(identified.period_delta_fraction * 100).toFixed(2)}%` : "Period comparison —"} · {typeof identified.coordinate_separation_deg === "number" ? `${identified.coordinate_separation_deg.toFixed(4)}° sep` : "Coordinate comparison —"}</small></span><span className="identified-date">{formatDate(row.identified_at)}</span></button>; })}</div></div> : <div className="empty-state" role="status"><div className="empty-orbit" aria-hidden="true"><span /></div><h4>No known catalog matches yet.</h4><p>When the catalog cross-reference identifies an active candidate, it will leave the rankings and appear here with its persisted performance trail.</p></div>}
+    <footer className="identified-footer"><span className="status-dot muted" /> Click a row to inspect its full light curve and pipeline history. Catalog identification is a cross-reference, not scientific confirmation.</footer>
+  </section>;
+}
+
 export default function HomePage() {
   const [activeTab, setActiveTab] = useState<RankingView>("overall");
+  const [identifiedOpen, setIdentifiedOpen] = useState(false);
+  const [identifiedRefreshKey, setIdentifiedRefreshKey] = useState(0);
   const [status, setStatus] = useState<DashboardStatus | null>(null);
   const [ranking, setRanking] = useState<RankingResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -386,14 +475,15 @@ export default function HomePage() {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     closeCandidate();
-    exitReplay(activeTab);
+    if (!identifiedOpen) exitReplay(activeTab);
     try {
       await fetchJson("/api/refresh", { method: "POST" });
-      await loadDashboard();
+      if (identifiedOpen) setIdentifiedRefreshKey((current) => current + 1);
+      else await loadDashboard();
     } finally {
       setRefreshing(false);
     }
-  }, [activeTab, closeCandidate, exitReplay, loadDashboard]);
+  }, [activeTab, closeCandidate, exitReplay, identifiedOpen, loadDashboard]);
 
   const activeReplay = replayStates[activeTab];
   useEffect(() => {
@@ -429,12 +519,14 @@ export default function HomePage() {
   return <main className="observatory-shell">
     <div className="ambient-glow ambient-glow-one" aria-hidden="true" /><div className="ambient-glow ambient-glow-two" aria-hidden="true" />
     <header className="topbar"><div className="brand-lockup"><div className="brand-mark" aria-hidden="true">✦</div><div><p className="eyebrow">TransitScope // live assessment lab</p><h1>Potential planet observatory</h1></div></div><div className="topbar-actions"><span className="data-state"><span className={`status-dot ${status?.data_version ? "" : "muted"}`} /> {dataState}</span><button className="button button-quiet" type="button" onClick={() => void handleRefresh()} disabled={refreshing || loading}>↻ <span>{refreshing ? "Checking" : "Refresh"}</span></button></div></header>
-    <section className="intro-row" aria-labelledby="observatory-title"><div><p className="eyebrow accent">A ranked search through stellar brightness</p><h2 id="observatory-title">Watch evidence accumulate.</h2><p className="intro-copy">TransitScope assesses transit-like dimming in public observations. A high rank is a reason to investigate—not a scientific confirmation.</p></div><div className="mode-toggle" aria-label="Dashboard mode"><button className={`mode-button ${!activeReplay.active ? "active" : ""}`} type="button" onClick={() => exitReplay(activeTab)}>Live feed</button><button className={`mode-button ${activeReplay.active ? "active" : ""}`} type="button" onClick={() => void startReplay(activeTab)}>Replay</button></div></section>
-    <nav className="tab-row" aria-label="Assessment rankings">{tabs.map((tab) => <button className={`tab-button ${activeTab === tab.id ? "active" : ""}`} key={tab.id} onClick={() => setActiveTab(tab.id)} type="button">{tab.label}</button>)}</nav>
+    <section className="intro-row" aria-labelledby="observatory-title"><div><p className="eyebrow accent">A ranked search through stellar brightness</p><h2 id="observatory-title">Watch evidence accumulate.</h2><p className="intro-copy">TransitScope assesses transit-like dimming in public observations. A high rank is a reason to investigate—not a scientific confirmation.</p></div>{!identifiedOpen ? <div className="mode-toggle" aria-label="Dashboard mode"><button className={`mode-button ${!activeReplay.active ? "active" : ""}`} type="button" onClick={() => exitReplay(activeTab)}>Live feed</button><button className={`mode-button ${activeReplay.active ? "active" : ""}`} type="button" onClick={() => void startReplay(activeTab)}>Replay</button></div> : <div className="identified-context"><span className="status-dot muted" /> Catalog matches are retained for review</div>}</section>
+    <nav className="tab-row" aria-label="Assessment rankings">{tabs.map((tab) => <button className={`tab-button ${!identifiedOpen && activeTab === tab.id ? "active" : ""}`} key={tab.id} onClick={() => { setIdentifiedOpen(false); setActiveTab(tab.id); }} type="button">{tab.label}</button>)}<button className={`tab-button ${identifiedOpen ? "active" : ""}`} type="button" onClick={() => { closeCandidate(); exitReplay(activeTab); setIdentifiedOpen(true); }}>Identified<span className="tab-note">known matches</span></button></nav>
+    {!identifiedOpen ? <>
     <section className="stage-heading"><div><div className="stage-kicker"><span className="stage-number">{copy.number}</span> {copy.kicker}</div><h3>{copy.title}</h3><p>{copy.description}</p></div><button className={`button ${activeReplay.active ? "button-replay-active" : "button-outline"}`} type="button" onClick={() => activeReplay.active ? exitReplay(activeTab) : void startReplay(activeTab)}>{activeReplay.active ? "Exit replay" : "Replay"}</button></section>
     {activeReplay.active && <section className="replay-controls" aria-label={`${copy.title} replay controls`}><div className="replay-control-header"><span><strong>Saved replay</strong> · {activeReplay.snapshot?.occurred_at ? formatDate(activeReplay.snapshot.occurred_at) : "Beginning of assessment"}</span><span>{activeReplay.loading ? "Loading snapshot…" : `Snapshot v${activeReplay.snapshot?.sequence_number ?? 0} of ${activeReplay.maxSequence}`}</span></div><input aria-label="Replay position" className="replay-range" type="range" min={0} max={activeReplay.maxSequence} value={activeReplay.cursor} onChange={(event) => void loadReplaySnapshot(activeTab, Number(event.target.value))} /><div className="replay-control-footer"><button className="button button-quiet replay-play" type="button" onClick={() => updateReplay(activeTab, { playing: !activeReplay.playing })} disabled={activeReplay.maxSequence === 0}>{activeReplay.playing ? "Pause" : "Play"}</button><label>Speed <select value={activeReplay.speed} onChange={(event) => updateReplay(activeTab, { speed: Number(event.target.value) })}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select></label><span className="replay-note">Replay reads saved ranking snapshots; it does not call MAST or rerun models.</span></div>{activeReplay.error && <p className="replay-error">{activeReplay.error}</p>}</section>}
     <section className="metrics-grid" aria-label="Processing summary"><article className="metric-card"><span className="metric-label">Target universe</span><strong>{targetCount.toLocaleString()}</strong><span className="metric-detail">stars queued for staged assessment</span></article><article className="metric-card"><span className="metric-label">Processed</span><strong>{processedCount.toLocaleString()}</strong><span className="metric-detail">targets with published evaluations</span></article><article className="metric-card"><span className="metric-label">Active candidates</span><strong>{activeCandidateCount.toLocaleString()}</strong><span className="metric-detail">currently visible in this assessment</span></article><article className="metric-card metric-card-status"><span className="metric-label">Pipeline status</span><strong><span className={`status-dot ${status?.data_version ? "" : "muted"}`} /> {activeReplay.active ? "Replay" : pipelineState}</strong><span className="metric-detail">{activeReplay.active ? "Viewing saved progression" : footerState}</span></article></section>
     <section className="ranking-panel" aria-labelledby="ranking-title"><div className="panel-header"><div><p className="eyebrow">Top candidates · {activeReplay.active ? "saved replay" : "live ranking"}</p><h3 id="ranking-title">{panelTitle}</h3></div><span className="panel-meta">{rows.length} / 100 displayed · {activeReplay.active ? `snapshot v${displayRanking?.sequence_number ?? 0}` : `v${ranking?.data_version ?? "—"}`}</span></div>{error ? <div className="error-state" role="alert"><span className="status-dot muted" /><h4>Published state unavailable</h4><p>{error}</p><button className="button button-outline" type="button" onClick={() => void loadDashboard()}>Try again</button></div> : activeReplay.loading && !activeReplay.snapshot ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Reading saved replay state.</h4><p>The replay is reconstructing this view from persisted ranking snapshots. No model is run during replay.</p></div> : loading && !ranking && !activeReplay.active ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Reading the latest published state.</h4><p>The API is checking the worker’s durable publication boundary. No model is run during a dashboard load.</p></div> : rows.length || removals.length ? <div className="table-wrap"><div className="ranking-table ranking-table-header" aria-hidden="true"><span>Rank</span><span>Candidate</span><span>Status</span><span>Current activity</span><span>Movement</span><span>Last update</span></div><div className="ranking-rows">{removals.map((removal) => <div className="ranking-table ranking-table-row replay-removal-row" key={`removed-${displayRanking?.sequence_number ?? 0}-${removal.candidate_id}`} role="status" aria-label={`${removal.target_id} removed as already known`}><span className="rank-value">{removal.rank ?? "—"}</span><span className="candidate-cell"><strong>{removal.target_id}</strong><small>{removal.candidate_id}</small></span><span><span className="status-pill status-known-match">Already Known</span><small className="score-label">{removal.known_match_id ?? "Catalog match"}</small></span><span className="activity-cell"><span className="activity-pulse removal-pulse" />{removal.activity}</span><span className="movement movement-removed">→ Removed</span><span className="last-update">{formatDate(removal.occurred_at)}</span></div>)}{rows.map((row) => <button className="ranking-table ranking-table-row" key={row.candidate_id} type="button" onClick={() => void openCandidate(row.candidate_id)} aria-label={`Open details for ${row.target_id}`}><span className="rank-value">{row.rank}</span><span className="candidate-cell"><strong>{row.target_id}</strong><small>{row.candidate_id}</small></span><span title={row.ranking_rationale}><span className={`status-pill status-${statusClass(row.status)}`}>{row.status}</span><small className="score-label">Evidence {row.evidence_score?.toFixed(3) ?? "—"}</small></span><span className="activity-cell"><span className="activity-pulse" />{row.activity}</span><span className={`movement movement-${row.movement}`}>{movementLabel(row)}</span><span className="last-update">{formatDate(row.last_evaluated_at)}</span></button>)}</div></div> : <div className="empty-state" role="status"><div className="empty-orbit" aria-hidden="true"><span /></div><h4>{activeReplay.active && activeReplay.cursor === 0 ? "The replay begins before the first candidate." : "The observatory is waiting for its first observation."}</h4><p>{activeReplay.active ? "Move the replay forward to watch candidates enter, change rank, advance, or leave the active pool." : "The ranking will populate when a MAST/TESS evaluation is published. Empty is a real state here—not a hidden placeholder result."}</p><div className="empty-state-meta"><span className="status-dot muted" /> No current activity</div></div>}</section>
+    </> : <IdentifiedPanel onOpenCandidate={(candidateId) => void openCandidate(candidateId)} refreshKey={identifiedRefreshKey} />}
     <footer className="footer-note"><span className="footer-pulse" aria-hidden="true" /><span>Data source: MAST / TESS · {footerState} · Evidence is provisional</span></footer>
     {modal}
   </main>;

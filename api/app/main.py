@@ -72,6 +72,11 @@ def rankings(
         ) from exc
 
 
+@app.get("/api/identified")
+def identified(limit: int = Query(100, ge=1, le=500)) -> dict:
+    return ReadOnlyStore().identified(limit)
+
+
 @app.get("/api/replay/{view}/meta")
 def replay_meta(view: str) -> dict:
     try:

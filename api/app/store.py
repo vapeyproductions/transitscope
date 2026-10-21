@@ -208,6 +208,134 @@ class ReadOnlyStore:
         finally:
             connection.close()
 
+    def identified(self, limit: int) -> dict[str, Any]:
+        """Return known catalog matches with their persisted pipeline performance."""
+
+        empty = {"data_version": None, "count": 0, "rows": []}
+        connection = self.connect()
+        if connection is None:
+            return empty
+        try:
+            candidates = connection.execute(
+                """
+                SELECT candidate_id, target_id, current_stage, overall_score,
+                       activity, last_evaluated_at, known_match_id
+                FROM candidates
+                WHERE status = 'Known Match'
+                ORDER BY last_evaluated_at DESC NULLS LAST, candidate_id ASC
+                LIMIT ?
+                """,
+                [limit],
+            ).fetchall()
+
+            rows: list[dict[str, Any]] = []
+            for candidate in candidates:
+                evaluations = connection.execute(
+                    """
+                    SELECT stage, model_version, feature_json, metric_json,
+                           classification, data_sufficiency, created_at
+                    FROM evaluations
+                    WHERE candidate_id = ?
+                    ORDER BY created_at ASC
+                    """,
+                    [candidate[0]],
+                ).fetchall()
+
+                performance: dict[str, dict[str, Any]] = {}
+                catalog_evaluation: dict[str, Any] | None = None
+                for evaluation in evaluations:
+                    try:
+                        features = json.loads(evaluation[2]) if evaluation[2] else {}
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        features = {}
+                    try:
+                        metrics = json.loads(evaluation[3]) if evaluation[3] else {}
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        metrics = {}
+                    if not isinstance(features, dict):
+                        features = {}
+                    if not isinstance(metrics, dict):
+                        metrics = {}
+
+                    if evaluation[0] == "catalog":
+                        catalog_evaluation = {
+                            "features": features,
+                            "metrics": metrics,
+                            "created_at": evaluation[6],
+                        }
+                        continue
+
+                    holdout = features.get("holdout_metrics") or metrics.get("holdout_metrics")
+                    if not isinstance(holdout, dict):
+                        holdout = {}
+                    evidence_score = metrics.get("evidence_score")
+                    if evidence_score is None:
+                        evidence_score = metrics.get("stage_score")
+                    performance[evaluation[0]] = {
+                        "status": evaluation[4],
+                        "evidence_score": evidence_score,
+                        "model_version": evaluation[1],
+                        "data_sufficiency": evaluation[5],
+                        "evaluated_at": isoformat(evaluation[6]),
+                        "coverage_days": features.get("coverage_days"),
+                        "observed_event_count": features.get(
+                            "observed_event_count", features.get("observed_transit_count")
+                        ),
+                        "holdout_f1": holdout.get("f1"),
+                        "model_lift": features.get("model_vs_baseline_f1_delta"),
+                        "metrics": metrics,
+                    }
+
+                catalog_features = (catalog_evaluation or {}).get("features", {})
+                catalog_metrics = (catalog_evaluation or {}).get("metrics", {})
+                catalog_record = catalog_features.get("catalog_record")
+                if not isinstance(catalog_record, dict):
+                    catalog_record = {}
+                catalog_id = (
+                    catalog_metrics.get("catalog_id")
+                    or catalog_record.get("record_id")
+                    or candidate[6]
+                )
+                identified_stage = catalog_features.get("current_stage") or candidate[2]
+                rows.append(
+                    {
+                        "candidate_id": candidate[0],
+                        "target_id": candidate[1],
+                        "identified_stage": identified_stage,
+                        "identified_at": isoformat(
+                            (catalog_evaluation or {}).get("created_at")
+                            or candidate[5]
+                        ),
+                        "known_match_id": catalog_id,
+                        "overall_score": candidate[3],
+                        "activity": candidate[4],
+                        "identified_as": {
+                            "object_name": catalog_record.get("object_name") or catalog_id,
+                            "catalog_id": catalog_id,
+                            "table": catalog_record.get("table"),
+                            "disposition": catalog_record.get("disposition"),
+                            "match_kind": catalog_features.get("match_kind"),
+                            "match_score": catalog_metrics.get("match_score"),
+                            "period_days": catalog_record.get("period_days"),
+                            "coordinate_separation_deg": catalog_features.get(
+                                "coordinate_separation_deg"
+                            ),
+                            "period_delta_fraction": catalog_features.get(
+                                "period_delta_fraction"
+                            ),
+                        },
+                        "performance": performance,
+                    }
+                )
+
+            return {
+                "data_version": self.latest_version(connection),
+                "count": len(rows),
+                "rows": rows,
+            }
+        finally:
+            connection.close()
+
     def replay_meta(self, view: str) -> dict[str, Any]:
         """Return the saved timeline bounds without touching providers or models."""
 
