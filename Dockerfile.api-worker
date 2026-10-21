@@ -1,0 +1,38 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/api:/app/worker \
+    DATA_DIR=/app/data \
+    APP_ENV=production \
+    WORKER_MODE=live \
+    RUN_LIVE_PIPELINE=false \
+    WORKER_HEARTBEAT_SECONDS=15 \
+    LIVE_POLL_SECONDS=300 \
+    TARGET_UNIVERSE_SIZE=126000 \
+    STAGE1_BATCH_SIZE=2000 \
+    STAGE1_MAX_WORKERS=1 \
+    STAGE1_POOL_SIZE=2000 \
+    STAGE2_CAPACITY=100 \
+    STAGE3_CAPACITY=25 \
+    TOP_N_DISPLAY=500 \
+    MAX_HISTORY_SECTORS=8
+
+WORKDIR /app
+
+COPY api/requirements.txt /tmp/api-requirements.txt
+COPY worker/requirements.txt /tmp/worker-requirements.txt
+RUN pip install --no-cache-dir \
+    -r /tmp/api-requirements.txt \
+    -r /tmp/worker-requirements.txt
+
+COPY api/app /app/api/app
+COPY worker /app/worker
+COPY cloud/run_api_worker.py /app/cloud/run_api_worker.py
+
+RUN mkdir -p /app/data
+
+EXPOSE 8000
+
+CMD ["python", "/app/cloud/run_api_worker.py"]
+

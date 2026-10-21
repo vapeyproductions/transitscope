@@ -1,0 +1,17 @@
+.git
+.gitignore
+.env
+.env.*
+data/*
+!data/.gitkeep
+web/node_modules
+web/.next
+web/tsconfig.tsbuildinfo
+__pycache__
+*.py[cod]
+.venv
+outputs
+work
+node_modules
+npm-debug.log*
+

@@ -30,6 +30,8 @@ For a public always-updating launch, keep the responsibilities separate even if 
 
 Vercel can host the Next.js dashboard, but the current DuckDB-plus-worker arrangement is a better fit for an always-on container host. The Next.js app supports an `API_BACKEND_URL` rewrite so the same web build can point at a separately deployed API; the compose setup uses `http://api:8000`. This keeps the deployment choice reversible while the pipeline remains paused.
 
+The first cloud deployment shape is documented in [`docs/cloud-deployment.md`](docs/cloud-deployment.md). It uses Railway with a combined API/worker service and a persistent `/app/data` volume, plus a separate Next.js web service. This keeps the current single-writer DuckDB design safe while the worker is migrated to managed Postgres/object storage for later scale.
+
 ## MAST/TESS probe
 
 Run the bounded official-data probe from the repository root:
