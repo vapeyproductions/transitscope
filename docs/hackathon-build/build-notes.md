@@ -155,3 +155,12 @@ Nearby-star information is relevant as a contamination and systematics signal, n
 - Added `run_stage2.py` with cached-product, history-manifest, bounded-sector-fetch, dry-run, and explicit diagnostic override paths. The normal path accepts only `Promising` Stage 1 candidates.
 - Worker tests pass with 16 tests, including insufficient 30-day history, a 365-day repeatable fixture, Stage 2/Overall snapshot persistence, and the no-rank-only promotion rule.
 - The real cached MAST/TESS target was evaluated non-mutatingly: one sector yielded 27.88 days, 3 observed events, and 702.12 missing days in the requested 730-day lookback, so the honest Stage 2 result is `Needs More Data` with evidence score 52.0226.
+
+### Item 9: Stage 3 chronological holdout prediction — complete
+
+- Added `Stage3Processor` with a replaceable model adapter boundary. The first implementation uses a CPU-capable scikit-learn logistic model over transit-phase features; a transparent phase-window baseline is evaluated against the same holdout.
+- Stage 3 sorts observations chronologically, trains on the first two windows, predicts dimming in the third, and persists the window boundaries, model versions, precision, recall, F1, accuracy, false-positive rate, event recovery/accuracy, timing error, and depth error.
+- Added explicit `Needs More Data` behavior for missing/short histories and positive-event support, with `Promising`/`Inconclusive` classification only after a usable holdout. The UI-facing result remains an assessment and never uses scientific-confirmation language.
+- Added Stage 3 persistence that moves an explicitly eligible Stage 2 candidate into `stage3`, updates Stage 3 and Overall rankings, records a `stage3_evaluated` event, and writes replay snapshots. Reading those snapshots does not invoke the model again.
+- Added `run_stage3.py` for cached FITS, history manifests, bounded MAST sector fetches, normalized Stage 2 fallback data, dry runs, and explicit diagnostic overrides. Normal execution accepts only `Promising` Stage 2 candidates.
+- Pinned `scikit-learn==1.6.1` in the worker image. Docker worker tests pass with 19 tests, including a deterministic 90-day holdout fixture, baseline comparison, persistence, and replay read-without-rerun verification.

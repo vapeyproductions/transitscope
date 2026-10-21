@@ -56,6 +56,18 @@ docker compose run --rm worker python run_stage2.py \
 
 Only `Promising` Stage 1 candidates are eligible by default. Use `--dry-run --allow-nonpromising` only for a diagnostic; results with insufficient historical coverage remain `Needs More Data`.
 
+## Stage 3 chronological holdout prediction
+
+Stage 3 sorts the available observations, trains a CPU-capable phase-feature logistic model on the first two chronological windows, and evaluates dimming predictions on the third. It records precision, recall, F1, event recovery/accuracy, timing error, depth error, model versions, and the window boundaries. A transparent phase-window baseline is evaluated on the same holdout for comparison:
+
+```bash
+docker compose run --rm worker python run_stage3.py \
+  --candidate-id <candidate-id> \
+  --history-manifest /app/data/manifests/<history-manifest>.json
+```
+
+Only `Promising` Stage 2 candidates are eligible by default. Use `--dry-run --allow-nonpromising` for a diagnostic; Stage 3 results are assessments of candidate evidence and never scientific confirmation. Published evaluations and ranking snapshots are stored in DuckDB so replay can read them without rerunning the model.
+
 ## Project status
 
 The application assesses potential planets and does not claim scientific confirmation. See `docs/hackathon-build/` for the scope, product requirements, technical specification, and build checklist.

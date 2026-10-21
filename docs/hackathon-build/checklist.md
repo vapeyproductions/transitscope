@@ -64,7 +64,7 @@ The target universe remains approximately 126,000 stars. The implementation will
   Acceptance: Stage 2 candidates can be `Promising`, `Needs More Data`, or `Inconclusive`; missing history remains `Needs More Data`; completed evaluations retain their window and metrics; Stage 2 capacity is configurable.
   Verify: Run Stage 2 against a small shortlist with both sufficient and insufficient-history fixtures, inspect status transitions, and verify the Stage 2 ranking snapshot. Commit Stage 2.
 
-- [ ] **9. Add Stage 3 chronological holdout prediction**
+- [x] **9. Add Stage 3 chronological holdout prediction**
   Spec ref: `spec.md > 6.5 Stage 3: chronological holdout prediction` and `spec.md > 13. Verification plan > Model evaluation requirements`
   What to build: Split eligible candidate observations chronologically, train the CPU-capable shortlist model on two windows, predict dimming in the third, persist holdout metrics, and update Stage 3 evidence/ranking. Keep the model adapter replaceable so a neural-network experiment can be measured later without changing the replay contract.
   Acceptance: Stage 3 reports supported metrics such as precision, recall, F1, event accuracy, timing error, or depth error; model version and windows are persisted; the UI never labels the result as confirmation.
