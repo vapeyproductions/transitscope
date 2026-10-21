@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS candidates (
     movement_kind VARCHAR,
     last_evaluated_at TIMESTAMP WITH TIME ZONE,
     known_match_id VARCHAR,
-    active BOOLEAN NOT NULL DEFAULT true
+    active BOOLEAN NOT NULL DEFAULT true,
+    processing_slot_occupied BOOLEAN NOT NULL DEFAULT true
 );
 
 CREATE TABLE IF NOT EXISTS evaluations (
@@ -111,5 +112,17 @@ CREATE TABLE IF NOT EXISTS processing_checkpoints (
     selection_policy VARCHAR NOT NULL,
     adaptive_sampling_enabled BOOLEAN NOT NULL DEFAULT false,
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS coverage_watermarks (
+    candidate_id VARCHAR NOT NULL,
+    stage VARCHAR NOT NULL,
+    coverage_signature VARCHAR NOT NULL,
+    coverage_start DOUBLE,
+    coverage_end DOUBLE,
+    product_count INTEGER NOT NULL DEFAULT 0,
+    window_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    PRIMARY KEY (candidate_id, stage)
 );
 

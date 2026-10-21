@@ -32,6 +32,7 @@ class BatchConfig:
     max_workers: int = 1
     top_n: int = 100
     stage_capacity: int = 100
+    target_pool_size: int = 2000
     selection_policy: str = SELECTION_POLICY
     adaptive_sampling: bool = False
 
@@ -44,6 +45,8 @@ class BatchConfig:
             raise ValueError("top_n must be at least 1")
         if self.stage_capacity < 1:
             raise ValueError("stage_capacity must be at least 1")
+        if self.target_pool_size < 1:
+            raise ValueError("target_pool_size must be at least 1")
         if self.adaptive_sampling:
             raise ValueError("adaptive sampling is intentionally disabled until outcome statistics exist")
 
@@ -274,7 +277,8 @@ def _existing_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
         rows = connection.execute(
             """
             SELECT candidate_id, target_id, current_stage, status, overall_score, stage_score,
-                   rank_overall, rank_stage, activity, last_evaluated_at, known_match_id, active
+                   rank_overall, rank_stage, activity, last_evaluated_at, known_match_id, active,
+                   processing_slot_occupied
             FROM candidates
             """
         ).fetchall()
@@ -292,6 +296,7 @@ def _existing_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
             "last_evaluated_at": row[9],
             "known_match_id": row[10],
             "active": bool(row[11]),
+            "processing_slot_occupied": bool(row[12]),
         }
         for row in rows
     ]
@@ -335,6 +340,7 @@ def publish_stage1_batch(
             "active": True,
             "activity": result["result"]["activity"],
             "last_evaluated_at": result["result"]["evaluated_at"],
+            "processing_slot_occupied": result["result"]["status"] != "Inconclusive",
         }
         for result in results
     ]
@@ -386,6 +392,25 @@ def publish_stage1_batch(
                     "last_evaluated_at": candidate["last_evaluated_at"],
                     "known_match_id": None,
                     "active": True,
+                    "processing_slot_occupied": candidate["processing_slot_occupied"],
+                }
+            )
+            candidate_updates.append(
+                {
+                    "candidate_id": candidate_id,
+                    "current_stage": STAGE,
+                    "rank_overall": overall_rank,
+                    "rank_stage": stage_rank,
+                    "rank_delta": rank_delta,
+                    "movement_kind": movement,
+                    "active": True,
+                    "activity": candidate["activity"],
+                    "status": candidate["status"],
+                    "overall_score": candidate["overall_score"],
+                    "stage_score": candidate["stage_score"],
+                    "last_evaluated_at": candidate["last_evaluated_at"],
+                    "known_match_id": None,
+                    "processing_slot_occupied": candidate["processing_slot_occupied"],
                 }
             )
         else:
@@ -404,6 +429,7 @@ def publish_stage1_batch(
                     "stage_score": candidate["stage_score"],
                     "last_evaluated_at": candidate["last_evaluated_at"],
                     "known_match_id": candidate["known_match_id"],
+                    "processing_slot_occupied": candidate["processing_slot_occupied"],
                 }
             )
 
@@ -553,6 +579,21 @@ def publish_stage1_batch(
         candidates=candidate_rows,
         evaluations=evaluations,
         events=events,
+        coverage_watermarks=[
+            {
+                "candidate_id": item["result"]["candidate_id"],
+                "stage": STAGE,
+                "coverage_signature": _stable_suffix(
+                    json.dumps([item["result"]["product_id"]], sort_keys=True)
+                ),
+                "coverage_start": item["result"].get("window_start"),
+                "coverage_end": item["result"].get("window_end"),
+                "product_count": 1,
+                "window_count": 1,
+                "updated_at": item["result"]["evaluated_at"],
+            }
+            for item in results
+        ],
         snapshots=[
             {
                 "snapshot_id": f"stage1-snapshot-{version}",

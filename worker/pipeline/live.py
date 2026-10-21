@@ -106,6 +106,18 @@ def _history_for_candidate(
     return _history_paths(history, data_dir), history
 
 
+def _history_limit(max_history_sectors: int, previous_product_count: int) -> int:
+    """Expand archive coverage only when the prior window has been consumed."""
+
+    if max_history_sectors <= 0:
+        return max_history_sectors
+    initial = max(1, int(os.getenv("INITIAL_HISTORY_SECTORS", "2")))
+    expansion = max(1, int(os.getenv("HISTORY_EXPANSION_SECTORS", "2")))
+    if previous_product_count:
+        return min(max_history_sectors, previous_product_count + expansion)
+    return min(max_history_sectors, initial)
+
+
 def _evaluate_stage2(
     store: DuckDBStore,
     candidate: dict[str, Any],
@@ -117,13 +129,15 @@ def _evaluate_stage2(
     stage1_input = load_stage1_input(store, candidate_id)
     if stage1_input is None:
         return {"candidate_id": candidate_id, "status": "missing_stage1_input"}
+    previous_signature = _latest_evaluation_signature(store, candidate_id, "stage2")
+    previous_product_count = len(previous_signature[1]) if previous_signature else 0
     paths, history = _history_for_candidate(
         target_id=stage1_input["target_id"],
         data_dir=data_dir,
-        max_sectors=max_history_sectors,
+        max_sectors=_history_limit(max_history_sectors, previous_product_count),
     )
     product_ids = tuple(str(path) for path in paths)
-    if _latest_evaluation_signature(store, candidate_id, "stage2") == (
+    if previous_signature == (
         STAGE2_MODEL_VERSION,
         product_ids,
     ):
@@ -180,13 +194,15 @@ def _evaluate_stage3(
     stage2_input = load_stage2_input(store, candidate_id)
     if stage2_input is None:
         return {"candidate_id": candidate_id, "status": "missing_stage2_input"}
+    previous_signature = _latest_evaluation_signature(store, candidate_id, "stage3")
+    previous_product_count = len(previous_signature[1]) if previous_signature else 0
     paths, history = _history_for_candidate(
         target_id=stage2_input["target_id"],
         data_dir=data_dir,
-        max_sectors=max_history_sectors,
+        max_sectors=_history_limit(max_history_sectors, previous_product_count),
     )
     product_ids = tuple(str(path) for path in paths)
-    if _latest_evaluation_signature(store, candidate_id, "stage3") == (
+    if previous_signature == (
         STAGE3_MODEL_VERSION,
         product_ids,
     ):
@@ -280,8 +296,11 @@ def run_live_cycle(
     batch_size: int,
     max_workers: int,
     top_n: int,
-    stage_capacity: int,
+    stage_capacity: int | None = None,
     max_history_sectors: int,
+    stage1_pool_size: int = 2000,
+    stage2_capacity: int | None = None,
+    stage3_capacity: int = 25,
     status_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run one bounded archive poll and publish only changed pipeline state."""
@@ -291,28 +310,48 @@ def run_live_cycle(
     paths = DataPaths(data_dir)
     store = DuckDBStore(paths.database)
     store.initialize()
-    if status_callback:
-        status_callback("processing_stage1", {})
-    batch = run_batch(
-        data_dir=data_dir,
-        manifest_path=manifest_path,
-        config=BatchConfig(
-            batch_size=batch_size,
-            max_workers=max_workers,
-            top_n=top_n,
-            stage_capacity=stage_capacity,
-        ),
-    )
+    promotion_capacity = stage2_capacity or stage_capacity or 100
+
+    def fill_stage1() -> dict[str, Any]:
+        stage1 = [
+            candidate
+            for candidate in active_candidates(store)
+            if candidate["current_stage"] == "stage1"
+            and candidate["processing_slot_occupied"]
+        ]
+        replacement_needed = max(0, stage1_pool_size - len(stage1))
+        if not replacement_needed:
+            return {
+                "status": "idle",
+                "message": "Stage 1 processing pool is full; waiting for a slot to open",
+                "replacement_slots": 0,
+                "publish_version": store.latest_published_version(),
+            }
+        if status_callback:
+            status_callback("processing_stage1", {"replacement_slots": replacement_needed})
+        return run_batch(
+            data_dir=data_dir,
+            manifest_path=manifest_path,
+            config=BatchConfig(
+                batch_size=min(batch_size, replacement_needed),
+                max_workers=max_workers,
+                top_n=top_n,
+                stage_capacity=promotion_capacity,
+                target_pool_size=stage1_pool_size,
+            ),
+        )
+
+    batch = fill_stage1()
 
     stage2_results: list[dict[str, Any]] = []
-    stage1_candidates = promotable_candidates(store, stage="stage1", capacity=stage_capacity)
+    stage1_candidates = promotable_candidates(store, stage="stage1", capacity=promotion_capacity)
     stage2_retry_candidates = [
         candidate
         for candidate in active_candidates(store)
         if candidate["current_stage"] == "stage2"
         and candidate["status"] == "Needs More Data"
         and candidate["rank_stage"] is not None
-        and int(candidate["rank_stage"]) <= stage_capacity
+        and int(candidate["rank_stage"]) <= promotion_capacity
     ]
     for candidate in stage1_candidates + stage2_retry_candidates:
         if status_callback:
@@ -326,17 +365,36 @@ def run_live_cycle(
             )
         )
 
+    # Promotion and an inconclusive result both release a Stage 1 slot. Fill
+    # those openings in the same live cycle so the next poll starts with a
+    # fresh exploration frontier rather than waiting for another heartbeat.
+    replacement_batch = fill_stage1()
+
     stage3_results: list[dict[str, Any]] = []
-    stage2_candidates = promotable_candidates(store, stage="stage2", capacity=stage_capacity)
+    stage2_candidates = promotable_candidates(store, stage="stage2", capacity=stage3_capacity)
     stage3_retry_candidates = [
         candidate
         for candidate in active_candidates(store)
         if candidate["current_stage"] == "stage3"
         and candidate["status"] == "Needs More Data"
         and candidate["rank_stage"] is not None
-        and int(candidate["rank_stage"]) <= stage_capacity
+        and int(candidate["rank_stage"]) <= stage3_capacity
     ]
-    for candidate in stage2_candidates + stage3_retry_candidates:
+    stage3_prime_candidates = [
+        candidate
+        for candidate in active_candidates(store)
+        if candidate["current_stage"] == "stage3"
+        and candidate["status"] == "Promising"
+        and candidate["rank_stage"] is not None
+        and int(candidate["rank_stage"]) <= stage3_capacity
+    ]
+    stage3_work: list[dict[str, Any]] = []
+    seen_stage3: set[str] = set()
+    for candidate in stage2_candidates + stage3_retry_candidates + stage3_prime_candidates:
+        if candidate["candidate_id"] not in seen_stage3:
+            stage3_work.append(candidate)
+            seen_stage3.add(candidate["candidate_id"])
+    for candidate in stage3_work:
         if status_callback:
             status_callback("processing_stage3", {"candidate_id": candidate["candidate_id"]})
         stage3_results.append(
@@ -353,6 +411,7 @@ def run_live_cycle(
     catalog = _match_known_candidates(store, data_dir)
     return {
         "batch": batch,
+        "replacement_batch": replacement_batch,
         "stage2": stage2_results,
         "stage3": stage3_results,
         "catalog": catalog,

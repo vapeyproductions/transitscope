@@ -38,6 +38,11 @@ type RankingResponse = {
   occurred_at: string | null;
   processed_target_count: number;
   total_target_count: number;
+  page?: number;
+  page_size?: number;
+  display_cap?: number;
+  total_ranked_count?: number;
+  page_count?: number;
   rows: RankingRow[];
   removed?: ReplayRemoval[];
 };
@@ -226,6 +231,10 @@ function stageName(stage: string): string {
   return stage;
 }
 
+function displayStatus(status: string, stage?: string): string {
+  return status === "Promising" && stage === "stage3" ? "Prime Candidate" : status;
+}
+
 function stageCopy(view: RankingView): { number: string; kicker: string; title: string; description: string } {
   if (view === "overall") {
     return { number: "00", kicker: "Observatory overview", title: "Overall ranking", description: "The active candidates with the strongest combined evidence across the assessment pipeline." };
@@ -334,7 +343,7 @@ function CandidateModal({ candidate, curve, history, replaySequence, onClose }: 
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="candidate-modal" role="dialog" aria-modal="true" aria-labelledby="candidate-modal-title">
       <header className="modal-header"><div><p className="eyebrow accent">Candidate investigation · {stageName(candidate.stage)}</p><h3 id="candidate-modal-title">{candidate.target_id}</h3><p className="modal-subtitle">{candidate.target?.source_product_family ?? "MAST / TESS observation"} · model {candidate.evaluation?.model_version ?? "—"}</p></div><button ref={closeRef} className="modal-close" type="button" onClick={onClose} aria-label="Close candidate details">×</button></header>
-      <div className="modal-summary"><span className={`status-pill status-${statusClass(candidate.status)}`}>{candidate.status}</span><span className="evidence-chip">Evidence score <strong>{candidate.evidence_score?.toFixed(3) ?? "—"}</strong></span><span className="modal-summary-note">{candidate.ranking_rationale ?? candidate.activity}</span>{replaySequence !== null && <span className="replay-chip">Replay through v{replaySequence}</span>}</div>
+      <div className="modal-summary"><span className={`status-pill status-${statusClass(displayStatus(candidate.status, candidate.stage))}`}>{displayStatus(candidate.status, candidate.stage)}</span><span className="evidence-chip">Evidence score <strong>{candidate.evidence_score?.toFixed(3) ?? "—"}</strong></span><span className="modal-summary-note">{candidate.ranking_rationale ?? candidate.activity}</span>{replaySequence !== null && <span className="replay-chip">Replay through v{replaySequence}</span>}</div>
       <div className="modal-content-grid">
         <div className="modal-main-column">
           <div className="modal-section"><div className="section-heading"><div><p className="eyebrow">Normalized observation</p><h4>Light curve</h4></div><span className="section-note">{curve?.points.length ?? 0} plotted points</span></div><LightCurveChart points={curve?.points ?? []} /></div>
@@ -397,6 +406,7 @@ export default function HomePage() {
   const [history, setHistory] = useState<HistoryResponse | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
   const [replayStates, setReplayStates] = useState<Record<RankingView, ReplayState>>(createReplayStates);
+  const [rankingPage, setRankingPage] = useState(1);
 
   const closeCandidate = useCallback(() => {
     setSelectedId(null);
@@ -413,7 +423,7 @@ export default function HomePage() {
     setLoading(true);
     setError(null);
     try {
-      const [nextStatus, nextRanking] = await Promise.all([fetchJson<DashboardStatus>("/api/status"), fetchJson<RankingResponse>(`/api/rankings?view=${activeTab}&limit=100`)]);
+      const [nextStatus, nextRanking] = await Promise.all([fetchJson<DashboardStatus>("/api/status"), fetchJson<RankingResponse>(`/api/rankings?view=${activeTab}&limit=100&page=${rankingPage}`)]);
       setStatus(nextStatus);
       setRanking(nextRanking);
     } catch (cause) {
@@ -421,19 +431,19 @@ export default function HomePage() {
     } finally {
       setLoading(false);
     }
-  }, [activeTab]);
+  }, [activeTab, rankingPage]);
 
   useEffect(() => { void loadDashboard(); }, [loadDashboard]);
 
-  const loadReplaySnapshot = useCallback(async (view: RankingView, cursor: number) => {
+  const loadReplaySnapshot = useCallback(async (view: RankingView, cursor: number, page = rankingPage) => {
     updateReplay(view, { cursor, loading: true, error: null });
     try {
-      const snapshot = await fetchJson<RankingResponse>(`/api/replay/${view}/snapshot?sequence=${cursor}&limit=100`);
+      const snapshot = await fetchJson<RankingResponse>(`/api/replay/${view}/snapshot?sequence=${cursor}&limit=100&page=${page}`);
       updateReplay(view, { snapshot, loading: false });
     } catch (cause) {
       updateReplay(view, { loading: false, error: cause instanceof Error ? cause.message : "Replay snapshot unavailable." });
     }
-  }, [updateReplay]);
+  }, [rankingPage, updateReplay]);
 
   const startReplay = useCallback(async (view: RankingView) => {
     closeCandidate();
@@ -493,10 +503,10 @@ export default function HomePage() {
       return;
     }
     const timer = window.setTimeout(() => {
-      void loadReplaySnapshot(activeTab, activeReplay.cursor + 1);
+      void loadReplaySnapshot(activeTab, activeReplay.cursor + 1, rankingPage);
     }, Math.max(140, 900 / activeReplay.speed));
     return () => window.clearTimeout(timer);
-  }, [activeReplay.active, activeReplay.cursor, activeReplay.maxSequence, activeReplay.playing, activeReplay.speed, activeTab, loadReplaySnapshot, updateReplay]);
+  }, [activeReplay.active, activeReplay.cursor, activeReplay.maxSequence, activeReplay.playing, activeReplay.speed, activeTab, loadReplaySnapshot, rankingPage, updateReplay]);
 
   const displayRanking = activeReplay.active ? activeReplay.snapshot : ranking;
   const rows = displayRanking?.rows ?? [];
@@ -509,6 +519,12 @@ export default function HomePage() {
   const targetCount = status?.total_target_count ?? ranking?.total_target_count ?? 126000;
   const activeCandidateCount = status?.active_candidate_count ?? rows.length;
   const footerState = status?.last_ingest_at ? `Last published: ${formatDate(status.last_ingest_at)}` : "Awaiting first publication";
+  const pageCount = displayRanking?.page_count ?? 0;
+  const displayCap = displayRanking?.display_cap ?? 500;
+  const selectRankingPage = (page: number) => {
+    setRankingPage(page);
+    if (activeReplay.active) void loadReplaySnapshot(activeTab, activeReplay.cursor, page);
+  };
 
   const modal = useMemo(() => {
     if (!selectedId) return null;
@@ -520,12 +536,12 @@ export default function HomePage() {
     <div className="ambient-glow ambient-glow-one" aria-hidden="true" /><div className="ambient-glow ambient-glow-two" aria-hidden="true" />
     <header className="topbar"><div className="brand-lockup"><div className="brand-mark" aria-hidden="true">✦</div><div><p className="eyebrow">TransitScope // live assessment lab</p><h1>Potential planet observatory</h1></div></div><div className="topbar-actions"><span className="data-state"><span className={`status-dot ${status?.data_version ? "" : "muted"}`} /> {dataState}</span><button className="button button-quiet" type="button" onClick={() => void handleRefresh()} disabled={refreshing || loading}>↻ <span>{refreshing ? "Checking" : "Refresh"}</span></button></div></header>
     <section className="intro-row" aria-labelledby="observatory-title"><div><p className="eyebrow accent">A ranked search through stellar brightness</p><h2 id="observatory-title">Watch evidence accumulate.</h2><p className="intro-copy">TransitScope assesses transit-like dimming in public observations. A high rank is a reason to investigate—not a scientific confirmation.</p></div>{!identifiedOpen ? <div className="mode-toggle" aria-label="Dashboard mode"><button className={`mode-button ${!activeReplay.active ? "active" : ""}`} type="button" onClick={() => exitReplay(activeTab)}>Live feed</button><button className={`mode-button ${activeReplay.active ? "active" : ""}`} type="button" onClick={() => void startReplay(activeTab)}>Replay</button></div> : <div className="identified-context"><span className="status-dot muted" /> Catalog matches are retained for review</div>}</section>
-    <nav className="tab-row" aria-label="Assessment rankings">{tabs.map((tab) => <button className={`tab-button ${!identifiedOpen && activeTab === tab.id ? "active" : ""}`} key={tab.id} onClick={() => { setIdentifiedOpen(false); setActiveTab(tab.id); }} type="button">{tab.label}</button>)}<button className={`tab-button ${identifiedOpen ? "active" : ""}`} type="button" onClick={() => { closeCandidate(); exitReplay(activeTab); setIdentifiedOpen(true); }}>Identified<span className="tab-note">known matches</span></button></nav>
+    <nav className="tab-row" aria-label="Assessment rankings">{tabs.map((tab) => <button className={`tab-button ${!identifiedOpen && activeTab === tab.id ? "active" : ""}`} key={tab.id} onClick={() => { setIdentifiedOpen(false); setRankingPage(1); setActiveTab(tab.id); }} type="button">{tab.label}</button>)}<button className={`tab-button ${identifiedOpen ? "active" : ""}`} type="button" onClick={() => { closeCandidate(); exitReplay(activeTab); setIdentifiedOpen(true); }}>Identified<span className="tab-note">known matches</span></button></nav>
     {!identifiedOpen ? <>
     <section className="stage-heading"><div><div className="stage-kicker"><span className="stage-number">{copy.number}</span> {copy.kicker}</div><h3>{copy.title}</h3><p>{copy.description}</p></div><button className={`button ${activeReplay.active ? "button-replay-active" : "button-outline"}`} type="button" onClick={() => activeReplay.active ? exitReplay(activeTab) : void startReplay(activeTab)}>{activeReplay.active ? "Exit replay" : "Replay"}</button></section>
     {activeReplay.active && <section className="replay-controls" aria-label={`${copy.title} replay controls`}><div className="replay-control-header"><span><strong>Saved replay</strong> · {activeReplay.snapshot?.occurred_at ? formatDate(activeReplay.snapshot.occurred_at) : "Beginning of assessment"}</span><span>{activeReplay.loading ? "Loading snapshot…" : `Snapshot v${activeReplay.snapshot?.sequence_number ?? 0} of ${activeReplay.maxSequence}`}</span></div><input aria-label="Replay position" className="replay-range" type="range" min={0} max={activeReplay.maxSequence} value={activeReplay.cursor} onChange={(event) => void loadReplaySnapshot(activeTab, Number(event.target.value))} /><div className="replay-control-footer"><button className="button button-quiet replay-play" type="button" onClick={() => updateReplay(activeTab, { playing: !activeReplay.playing })} disabled={activeReplay.maxSequence === 0}>{activeReplay.playing ? "Pause" : "Play"}</button><label>Speed <select value={activeReplay.speed} onChange={(event) => updateReplay(activeTab, { speed: Number(event.target.value) })}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select></label><span className="replay-note">Replay reads saved ranking snapshots; it does not call MAST or rerun models.</span></div>{activeReplay.error && <p className="replay-error">{activeReplay.error}</p>}</section>}
     <section className="metrics-grid" aria-label="Processing summary"><article className="metric-card"><span className="metric-label">Target universe</span><strong>{targetCount.toLocaleString()}</strong><span className="metric-detail">stars queued for staged assessment</span></article><article className="metric-card"><span className="metric-label">Processed</span><strong>{processedCount.toLocaleString()}</strong><span className="metric-detail">targets with published evaluations</span></article><article className="metric-card"><span className="metric-label">Active candidates</span><strong>{activeCandidateCount.toLocaleString()}</strong><span className="metric-detail">currently visible in this assessment</span></article><article className="metric-card metric-card-status"><span className="metric-label">Pipeline status</span><strong><span className={`status-dot ${status?.data_version ? "" : "muted"}`} /> {activeReplay.active ? "Replay" : pipelineState}</strong><span className="metric-detail">{activeReplay.active ? "Viewing saved progression" : footerState}</span></article></section>
-    <section className="ranking-panel" aria-labelledby="ranking-title"><div className="panel-header"><div><p className="eyebrow">Top candidates · {activeReplay.active ? "saved replay" : "live ranking"}</p><h3 id="ranking-title">{panelTitle}</h3></div><span className="panel-meta">{rows.length} / 100 displayed · {activeReplay.active ? `snapshot v${displayRanking?.sequence_number ?? 0}` : `v${ranking?.data_version ?? "—"}`}</span></div>{error ? <div className="error-state" role="alert"><span className="status-dot muted" /><h4>Published state unavailable</h4><p>{error}</p><button className="button button-outline" type="button" onClick={() => void loadDashboard()}>Try again</button></div> : activeReplay.loading && !activeReplay.snapshot ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Reading saved replay state.</h4><p>The replay is reconstructing this view from persisted ranking snapshots. No model is run during replay.</p></div> : loading && !ranking && !activeReplay.active ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Reading the latest published state.</h4><p>The API is checking the worker’s durable publication boundary. No model is run during a dashboard load.</p></div> : rows.length || removals.length ? <div className="table-wrap"><div className="ranking-table ranking-table-header" aria-hidden="true"><span>Rank</span><span>Candidate</span><span>Status</span><span>Current activity</span><span>Movement</span><span>Last update</span></div><div className="ranking-rows">{removals.map((removal) => <div className="ranking-table ranking-table-row replay-removal-row" key={`removed-${displayRanking?.sequence_number ?? 0}-${removal.candidate_id}`} role="status" aria-label={`${removal.target_id} removed as already known`}><span className="rank-value">{removal.rank ?? "—"}</span><span className="candidate-cell"><strong>{removal.target_id}</strong><small>{removal.candidate_id}</small></span><span><span className="status-pill status-known-match">Already Known</span><small className="score-label">{removal.known_match_id ?? "Catalog match"}</small></span><span className="activity-cell"><span className="activity-pulse removal-pulse" />{removal.activity}</span><span className="movement movement-removed">→ Removed</span><span className="last-update">{formatDate(removal.occurred_at)}</span></div>)}{rows.map((row) => <button className="ranking-table ranking-table-row" key={row.candidate_id} type="button" onClick={() => void openCandidate(row.candidate_id)} aria-label={`Open details for ${row.target_id}`}><span className="rank-value">{row.rank}</span><span className="candidate-cell"><strong>{row.target_id}</strong><small>{row.candidate_id}</small></span><span title={row.ranking_rationale}><span className={`status-pill status-${statusClass(row.status)}`}>{row.status}</span><small className="score-label">Evidence {row.evidence_score?.toFixed(3) ?? "—"}</small></span><span className="activity-cell"><span className="activity-pulse" />{row.activity}</span><span className={`movement movement-${row.movement}`}>{movementLabel(row)}</span><span className="last-update">{formatDate(row.last_evaluated_at)}</span></button>)}</div></div> : <div className="empty-state" role="status"><div className="empty-orbit" aria-hidden="true"><span /></div><h4>{activeReplay.active && activeReplay.cursor === 0 ? "The replay begins before the first candidate." : "The observatory is waiting for its first observation."}</h4><p>{activeReplay.active ? "Move the replay forward to watch candidates enter, change rank, advance, or leave the active pool." : "The ranking will populate when a MAST/TESS evaluation is published. Empty is a real state here—not a hidden placeholder result."}</p><div className="empty-state-meta"><span className="status-dot muted" /> No current activity</div></div>}</section>
+    <section className="ranking-panel" aria-labelledby="ranking-title"><div className="panel-header"><div><p className="eyebrow">Top candidates · {activeReplay.active ? "saved replay" : "live ranking"}</p><h3 id="ranking-title">{panelTitle}</h3></div><span className="panel-meta">{rows.length} / {displayCap} displayed · {activeReplay.active ? `snapshot v${displayRanking?.sequence_number ?? 0}` : `v${ranking?.data_version ?? "—"}`}</span></div>{error ? <div className="error-state" role="alert"><span className="status-dot muted" /><h4>Published state unavailable</h4><p>{error}</p><button className="button button-outline" type="button" onClick={() => void loadDashboard()}>Try again</button></div> : activeReplay.loading && !activeReplay.snapshot ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Reading saved replay state.</h4><p>The replay is reconstructing this view from persisted ranking snapshots. No model is run during replay.</p></div> : loading && !ranking && !activeReplay.active ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Reading the latest published state.</h4><p>The API is checking the worker’s durable publication boundary. No model is run during a dashboard load.</p></div> : rows.length || removals.length ? <div className="table-wrap"><div className="ranking-table ranking-table-header" aria-hidden="true"><span>Rank</span><span>Candidate</span><span>Status</span><span>Current activity</span><span>Movement</span><span>Last update</span></div><div className="ranking-rows">{removals.map((removal) => <div className="ranking-table ranking-table-row replay-removal-row" key={`removed-${displayRanking?.sequence_number ?? 0}-${removal.candidate_id}`} role="status" aria-label={`${removal.target_id} removed as already known`}><span className="rank-value">{removal.rank ?? "—"}</span><span className="candidate-cell"><strong>{removal.target_id}</strong><small>{removal.candidate_id}</small></span><span><span className="status-pill status-known-match">Already Known</span><small className="score-label">{removal.known_match_id ?? "Catalog match"}</small></span><span className="activity-cell"><span className="activity-pulse removal-pulse" />{removal.activity}</span><span className="movement movement-removed">→ Removed</span><span className="last-update">{formatDate(removal.occurred_at)}</span></div>)}{rows.map((row) => <button className="ranking-table ranking-table-row" key={row.candidate_id} type="button" onClick={() => void openCandidate(row.candidate_id)} aria-label={`Open details for ${row.target_id}`}><span className="rank-value">{row.rank}</span><span className="candidate-cell"><strong>{row.target_id}</strong><small>{row.candidate_id}</small></span><span title={row.ranking_rationale}><span className={`status-pill status-${statusClass(displayStatus(row.status, row.stage))}`}>{displayStatus(row.status, row.stage)}</span><small className="score-label">Evidence {row.evidence_score?.toFixed(3) ?? "—"}</small></span><span className="activity-cell"><span className="activity-pulse" />{row.activity}</span><span className={`movement movement-${row.movement}`}>{movementLabel(row)}</span><span className="last-update">{formatDate(row.last_evaluated_at)}</span></button>)}</div>{pageCount > 1 && <nav className="ranking-pages" aria-label="Ranking pages"><span>Showing page {displayRanking?.page ?? rankingPage} of {pageCount}</span><div>{Array.from({ length: pageCount }, (_, index) => index + 1).map((page) => <button className={`page-button ${(displayRanking?.page ?? rankingPage) === page ? "active" : ""}`} key={page} type="button" onClick={() => selectRankingPage(page)}>{page}</button>)}</div></nav>}</div> : <div className="empty-state" role="status"><div className="empty-orbit" aria-hidden="true"><span /></div><h4>{activeReplay.active && activeReplay.cursor === 0 ? "The replay begins before the first candidate." : "The observatory is waiting for its first observation."}</h4><p>{activeReplay.active ? "Move the replay forward to watch candidates enter, change rank, advance, or leave the active pool." : "The ranking will populate when a MAST/TESS evaluation is published. Empty is a real state here—not a hidden placeholder result."}</p><div className="empty-state-meta"><span className="status-dot muted" /> No current activity</div></div>}</section>
     </> : <IdentifiedPanel onOpenCandidate={(candidateId) => void openCandidate(candidateId)} refreshKey={identifiedRefreshKey} />}
     <footer className="footer-note"><span className="footer-pulse" aria-hidden="true" /><span>Data source: MAST / TESS · {footerState} · Evidence is provisional</span></footer>
     {modal}

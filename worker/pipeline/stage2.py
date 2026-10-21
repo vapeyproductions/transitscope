@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
 from dataclasses import dataclass
@@ -347,7 +348,7 @@ def _candidate_rows(store: DuckDBStore) -> list[dict[str, Any]]:
             """
             SELECT candidate_id, target_id, current_stage, status,
                    overall_score, stage_score, rank_overall, rank_stage,
-                   activity, last_evaluated_at, active
+                   activity, last_evaluated_at, active, processing_slot_occupied
             FROM candidates
             WHERE active = true
             """
@@ -365,6 +366,7 @@ def _candidate_rows(store: DuckDBStore) -> list[dict[str, Any]]:
             "activity": row[8],
             "last_evaluated_at": row[9],
             "active": bool(row[10]),
+            "processing_slot_occupied": bool(row[11]),
         }
         for row in rows
     ]
@@ -398,6 +400,7 @@ def publish_stage2_result(
             "status": result["status"],
             "activity": result["activity"],
             "last_evaluated_at": result["evaluated_at"],
+            "processing_slot_occupied": result["status"] != "Inconclusive",
         }
     )
     stage2_pool.sort(
@@ -474,6 +477,7 @@ def publish_stage2_result(
                 "stage_score": item["stage_score"],
                 "last_evaluated_at": item["last_evaluated_at"],
                 "known_match_id": None,
+                "processing_slot_occupied": item["processing_slot_occupied"],
             }
         )
 
@@ -525,6 +529,20 @@ def publish_stage2_result(
                 },
                 "classification": result["status"],
                 "data_sufficiency": result["data_sufficiency"],
+            }
+        ],
+        coverage_watermarks=[
+            {
+                "candidate_id": candidate_id,
+                "stage": "stage2",
+                "coverage_signature": hashlib.sha256(
+                    json.dumps(sorted(str(value) for value in input_product_ids)).encode("utf-8")
+                ).hexdigest(),
+                "coverage_start": result["features"].get("window_start"),
+                "coverage_end": result["features"].get("window_end"),
+                "product_count": len(input_product_ids),
+                "window_count": 1,
+                "updated_at": evaluated_at,
             }
         ],
         events=[

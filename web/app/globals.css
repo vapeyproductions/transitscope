@@ -116,6 +116,10 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .footer-note { color: var(--faint); font-size: 10px; gap: 8px; justify-content: flex-start; padding: 18px 4px 0; }
 .footer-pulse { border: 1px solid var(--faint); border-radius: 99px; height: 8px; width: 8px; }
 .ranking-rows { border-top: 1px solid rgba(146, 169, 205, 0.08); }
+.ranking-pages { align-items: center; border-top: 1px solid rgba(146, 169, 205, 0.09); color: var(--faint); display: flex; font-size: 11px; justify-content: space-between; padding: 14px 22px; }
+.ranking-pages > div { display: flex; gap: 6px; }
+.page-button { background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); cursor: pointer; font-size: 11px; min-width: 28px; padding: 6px 8px; }
+.page-button:hover, .page-button.active { background: rgba(118, 228, 237, 0.09); border-color: rgba(118, 228, 237, 0.45); color: var(--cyan); }
 .ranking-table-row { background: transparent; border: 0; border-bottom: 1px solid rgba(146, 169, 205, 0.09); color: var(--text); cursor: pointer; padding: 18px 22px; text-align: left; transition: background 160ms ease, border-color 160ms ease; width: 100%; }
 .ranking-table-row:hover { background: rgba(118, 228, 237, 0.055); border-color: rgba(118, 228, 237, 0.22); }
 .replay-removal-row { animation: replay-remove 1.8s cubic-bezier(0.22, 0.8, 0.36, 1) both; background: rgba(244, 197, 107, 0.09); border-bottom-color: rgba(244, 197, 107, 0.42); box-shadow: inset 4px 0 0 #f4c56b, 0 0 28px rgba(244, 197, 107, 0.26); color: #f7e3ae; overflow: hidden; pointer-events: none; }
@@ -130,6 +134,7 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .activity-pulse { background: var(--cyan); border-radius: 99px; box-shadow: 0 0 8px rgba(118, 228, 237, 0.6); flex: 0 0 auto; height: 6px; width: 6px; }
 .status-pill { border: 1px solid var(--border-bright); border-radius: 999px; display: inline-flex; font-size: 10px; font-weight: 700; padding: 5px 8px; white-space: nowrap; }
 .status-promising { background: rgba(116, 214, 172, 0.11); border-color: rgba(116, 214, 172, 0.35); color: var(--green); }
+.status-prime-candidate { background: rgba(244, 197, 107, 0.12); border-color: rgba(244, 197, 107, 0.42); color: #f4c56b; }
 .status-needs-more-data { background: rgba(118, 168, 255, 0.1); border-color: rgba(118, 168, 255, 0.3); color: var(--blue); }
 .status-inconclusive { background: rgba(168, 148, 255, 0.11); border-color: rgba(168, 148, 255, 0.32); color: var(--purple); }
 .status-known-match { background: rgba(139, 155, 181, 0.1); color: var(--muted); }

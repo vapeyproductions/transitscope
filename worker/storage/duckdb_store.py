@@ -33,6 +33,21 @@ class DuckDBStore:
         schema = SCHEMA_PATH.read_text()
         with self.connect() as connection:
             connection.execute(schema)
+            # The worker database is a durable artifact and may predate the
+            # queue-capacity policy. Keep the migration idempotent so a live
+            # deployment can adopt the new state without losing replay data.
+            connection.execute(
+                "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS processing_slot_occupied BOOLEAN DEFAULT true"
+            )
+            connection.execute(
+                """
+                UPDATE candidates
+                SET processing_slot_occupied = CASE
+                    WHEN active = false OR status IN ('Inconclusive', 'Known Match') THEN false
+                    ELSE true
+                END
+                """
+            )
 
     def publish_batch(
         self,
@@ -45,6 +60,7 @@ class DuckDBStore:
         events: Sequence[Mapping[str, object]] = (),
         snapshots: Sequence[Mapping[str, object]] = (),
         candidate_updates: Sequence[Mapping[str, object]] = (),
+        coverage_watermarks: Sequence[Mapping[str, object]] = (),
         batch_run: Mapping[str, object] | None = None,
         checkpoint: Mapping[str, object] | None = None,
         note: str | None = None,
@@ -170,6 +186,8 @@ class DuckDBStore:
                     json_columns={"candidate_order_json"},
                 )
 
+                self._upsert_coverage_watermarks(connection, coverage_watermarks)
+
                 self._insert_batch_run(connection, batch_run)
                 self._update_candidates(connection, candidate_updates)
                 self._upsert_checkpoint(connection, checkpoint)
@@ -230,7 +248,8 @@ class DuckDBStore:
                 UPDATE candidates
                 SET current_stage = COALESCE(?, current_stage), rank_overall = ?, rank_stage = ?, rank_delta = ?, movement_kind = ?,
                     active = ?, activity = ?, status = ?, overall_score = ?, stage_score = ?,
-                    last_evaluated_at = ?, known_match_id = ?
+                    last_evaluated_at = ?, known_match_id = ?,
+                    processing_slot_occupied = COALESCE(?, processing_slot_occupied)
                 WHERE candidate_id = ?
                 """,
                 [
@@ -246,7 +265,40 @@ class DuckDBStore:
                     update.get("stage_score"),
                     update.get("last_evaluated_at"),
                     update.get("known_match_id"),
+                    update.get("processing_slot_occupied"),
                     candidate_id,
+                ],
+            )
+
+    @staticmethod
+    def _upsert_coverage_watermarks(
+        connection: duckdb.DuckDBPyConnection,
+        watermarks: Sequence[Mapping[str, object]],
+    ) -> None:
+        for watermark in watermarks:
+            connection.execute(
+                """
+                INSERT INTO coverage_watermarks (
+                    candidate_id, stage, coverage_signature, coverage_start,
+                    coverage_end, product_count, window_count, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (candidate_id, stage) DO UPDATE SET
+                    coverage_signature = excluded.coverage_signature,
+                    coverage_start = excluded.coverage_start,
+                    coverage_end = excluded.coverage_end,
+                    product_count = excluded.product_count,
+                    window_count = excluded.window_count,
+                    updated_at = excluded.updated_at
+                """,
+                [
+                    watermark.get("candidate_id"),
+                    watermark.get("stage"),
+                    watermark.get("coverage_signature"),
+                    watermark.get("coverage_start"),
+                    watermark.get("coverage_end"),
+                    watermark.get("product_count", 0),
+                    watermark.get("window_count", 0),
+                    watermark.get("updated_at", _now()),
                 ],
             )
 

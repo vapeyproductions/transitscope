@@ -108,9 +108,15 @@ class ReadOnlyStore:
         finally:
             connection.close()
 
-    def rankings(self, view: str, limit: int) -> dict[str, Any]:
+    def rankings(self, view: str, limit: int, page: int = 1) -> dict[str, Any]:
         if view not in RANKING_VIEWS:
             raise ValueError(f"unsupported ranking view: {view}")
+        display_cap = 500
+        page = max(1, int(page))
+        offset = (page - 1) * limit
+        if offset >= display_cap:
+            offset = display_cap
+        effective_limit = max(0, min(limit, display_cap - offset))
         connection = self.connect()
         empty = {
             "view": view,
@@ -119,6 +125,11 @@ class ReadOnlyStore:
             "occurred_at": None,
             "processed_target_count": 0,
             "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", "126000")),
+            "page": page,
+            "page_size": limit,
+            "display_cap": display_cap,
+            "total_ranked_count": 0,
+            "page_count": 0,
             "rows": [],
             "removed": [],
         }
@@ -141,6 +152,19 @@ class ReadOnlyStore:
                 ).fetchone()
             stage_filter = VIEW_STAGE.get(view)
             if stage_filter:
+                total_ranked_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM candidates WHERE active = true AND current_stage = ?",
+                        [stage_filter],
+                    ).fetchone()[0]
+                )
+            else:
+                total_ranked_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM candidates WHERE active = true"
+                    ).fetchone()[0]
+                )
+            if stage_filter:
                 rows = connection.execute(
                     """
                     SELECT candidate_id, target_id, current_stage, status,
@@ -149,9 +173,9 @@ class ReadOnlyStore:
                     FROM candidates
                     WHERE active = true AND current_stage = ?
                     ORDER BY rank_stage NULLS LAST, stage_score DESC NULLS LAST
-                    LIMIT ?
+                    LIMIT ? OFFSET ?
                     """,
-                    [stage_filter, limit],
+                    [stage_filter, effective_limit, offset],
                 ).fetchall()
             else:
                 rows = connection.execute(
@@ -162,9 +186,9 @@ class ReadOnlyStore:
                     FROM candidates
                     WHERE active = true
                     ORDER BY rank_overall NULLS LAST, overall_score DESC NULLS LAST
-                    LIMIT ?
+                    LIMIT ? OFFSET ?
                     """,
-                    [limit],
+                    [effective_limit, offset],
                 ).fetchall()
 
             projected_rows = []
@@ -201,6 +225,11 @@ class ReadOnlyStore:
                 "occurred_at": isoformat(snapshot[1]) if snapshot else None,
                 "processed_target_count": processed_count,
                 "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", "126000")),
+                "page": page,
+                "page_size": limit,
+                "display_cap": display_cap,
+                "total_ranked_count": total_ranked_count,
+                "page_count": (min(total_ranked_count, display_cap) + limit - 1) // limit,
                 "rows": projected_rows,
                 "removed": [],
             }
@@ -381,7 +410,7 @@ class ReadOnlyStore:
         finally:
             connection.close()
 
-    def replay_snapshot(self, view: str, sequence: int, limit: int) -> dict[str, Any]:
+    def replay_snapshot(self, view: str, sequence: int, limit: int, page: int = 1) -> dict[str, Any]:
         """Project a previously persisted ranking snapshot at or before a playhead."""
 
         if view not in RANKING_VIEWS:
@@ -394,6 +423,11 @@ class ReadOnlyStore:
             "occurred_at": None,
             "processed_target_count": 0,
             "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", "126000")),
+            "page": page,
+            "page_size": limit,
+            "display_cap": 500,
+            "total_ranked_count": 0,
+            "page_count": 0,
             "rows": [],
             "removed": [],
         }
@@ -419,7 +453,16 @@ class ReadOnlyStore:
             candidate_ids = json.loads(snapshot[4])
             if not isinstance(candidate_ids, list):
                 candidate_ids = []
-            rows = self._replay_rows(connection, view, int(snapshot[0]), candidate_ids, limit)
+            display_cap = 500
+            offset = max(0, (page - 1) * limit)
+            rows = self._replay_rows(
+                connection,
+                view,
+                int(snapshot[0]),
+                candidate_ids,
+                min(limit, max(0, display_cap - offset)),
+                offset,
+            )
             removed = self._replay_removals(connection, view, int(snapshot[0]))
             historical_processed = int(
                 connection.execute(
@@ -438,6 +481,11 @@ class ReadOnlyStore:
                 "occurred_at": isoformat(snapshot[1]),
                 "processed_target_count": historical_processed,
                 "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", "126000")),
+                "page": page,
+                "page_size": limit,
+                "display_cap": display_cap,
+                "total_ranked_count": int(snapshot[2]),
+                "page_count": (min(int(snapshot[2]), display_cap) + limit - 1) // limit,
                 "rows": rows,
                 "removed": removed,
             }
@@ -505,9 +553,10 @@ class ReadOnlyStore:
         sequence: int,
         candidate_ids: list[object],
         limit: int,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         projected_rows: list[dict[str, Any]] = []
-        for index, raw_candidate_id in enumerate(candidate_ids[:limit], start=1):
+        for index, raw_candidate_id in enumerate(candidate_ids[offset : offset + limit], start=offset + 1):
             candidate_id = str(raw_candidate_id)
             candidate = connection.execute(
                 """

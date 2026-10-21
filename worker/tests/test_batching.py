@@ -4,7 +4,13 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from batching import BatchConfig, generate_target_universe, run_batch, select_next_targets
+from batching import (
+    BatchConfig,
+    generate_target_universe,
+    publish_stage1_batch,
+    run_batch,
+    select_next_targets,
+)
 from storage.duckdb_store import DuckDBStore
 from storage.paths import DataPaths
 
@@ -84,6 +90,60 @@ class BatchingTests(unittest.TestCase):
     def test_adaptive_sampling_is_explicitly_gated(self) -> None:
         with self.assertRaisesRegex(ValueError, "adaptive sampling"):
             BatchConfig(adaptive_sampling=True)
+
+    def test_inconclusive_candidate_stays_rankable_but_releases_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            paths = DataPaths(root)
+            paths.ensure()
+            manifest = paths.manifests / "targets.jsonl"
+            target = {
+                "target_id": "target-inconclusive",
+                "provider_target_id": "target-inconclusive",
+                "selection_bucket": "stratum-00",
+                "manifest_status": "queued",
+            }
+            manifest.write_text(json.dumps(target) + "\n")
+            evaluated_at = datetime.now(timezone.utc)
+            store = DuckDBStore(paths.database)
+            publish_stage1_batch(
+                store,
+                config=BatchConfig(batch_size=1, top_n=500, target_pool_size=2000),
+                batch_id="stage1-test-inconclusive",
+                manifest_path=manifest,
+                universe_count=1,
+                cursor=1,
+                processed_count=1,
+                selected=[target],
+                results=[
+                    {
+                        "target": target,
+                        "result": {
+                            "candidate_id": "candidate-inconclusive",
+                            "target_id": target["target_id"],
+                            "status": "Inconclusive",
+                            "evidence_score": 41.0,
+                            "activity": "No current activity",
+                            "evaluated_at": evaluated_at,
+                            "model_version": "test-stage1",
+                            "product_id": "product-1",
+                            "features": {"period_days": 3.0},
+                            "normalized_path": None,
+                            "window_start": 0.0,
+                            "window_end": 27.0,
+                            "header_metadata": {},
+                            "data_sufficiency": "sufficient",
+                        }
+                    }
+                ],
+                failures=[],
+            )
+            with store.connect() as connection:
+                row = connection.execute(
+                    "SELECT active, processing_slot_occupied FROM candidates WHERE candidate_id = ?",
+                    ["candidate-inconclusive"],
+                ).fetchone()
+            self.assertEqual(row, (True, False))
 
     def test_retiring_a_candidate_opens_a_replacement_slot(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

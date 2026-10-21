@@ -29,7 +29,7 @@ def active_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
             SELECT candidate_id, target_id, current_stage, status,
                    overall_score, stage_score, rank_overall, rank_stage,
                    activity, rank_delta, movement_kind, last_evaluated_at,
-                   known_match_id, active
+                   known_match_id, active, processing_slot_occupied
             FROM candidates
             WHERE active = true
             """
@@ -103,8 +103,9 @@ def promotable_candidates(
 ) -> list[dict[str, Any]]:
     """Select the operational top-X for the next stage.
 
-    Advancement is capacity/rank driven. Status affects ordering, but a
-    Promising label alone never bypasses the top-X gate.
+    Advancement is capacity/rank driven and status-gated. Only Promising
+    candidates can leave a stage; Needs More Data and Inconclusive candidates
+    remain visible in that stage's ranking.
     """
 
     if stage not in {"stage1", "stage2"}:
@@ -115,6 +116,8 @@ def promotable_candidates(
         candidate
         for candidate in active_candidates(store)
         if candidate["current_stage"] == stage
+        and candidate["status"] == "Promising"
+        and candidate["processing_slot_occupied"]
         and candidate["rank_stage"] is not None
         and int(candidate["rank_stage"]) <= capacity
     ]
@@ -198,6 +201,7 @@ def publish_known_matches(
                 "stage_score": candidate["stage_score"],
                 "last_evaluated_at": candidate["last_evaluated_at"],
                 "known_match_id": candidate["known_match_id"],
+                "processing_slot_occupied": candidate["processing_slot_occupied"],
             }
         )
     for candidate_id, match in matched_by_id.items():
@@ -217,6 +221,7 @@ def publish_known_matches(
                 "stage_score": candidate["stage_score"],
                 "last_evaluated_at": datetime.now(timezone.utc),
                 "known_match_id": str(match["catalog_id"]),
+                "processing_slot_occupied": False,
             }
         )
 
@@ -334,6 +339,7 @@ def _candidate_row(row: Sequence[Any]) -> dict[str, Any]:
         "last_evaluated_at": row[11],
         "known_match_id": row[12],
         "active": bool(row[13]),
+        "processing_slot_occupied": bool(row[14]),
     }
 
 

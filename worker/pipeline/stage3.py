@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -560,6 +561,7 @@ def publish_stage3_result(
             "status": result["status"],
             "activity": result["activity"],
             "last_evaluated_at": result["evaluated_at"],
+            "processing_slot_occupied": result["status"] != "Inconclusive",
         }
     )
     stage3_pool.sort(
@@ -635,6 +637,7 @@ def publish_stage3_result(
                 "stage_score": item["stage_score"],
                 "last_evaluated_at": item["last_evaluated_at"],
                 "known_match_id": None,
+                "processing_slot_occupied": item["processing_slot_occupied"],
             }
         )
 
@@ -691,6 +694,20 @@ def publish_stage3_result(
                 },
                 "classification": result["status"],
                 "data_sufficiency": result["data_sufficiency"],
+            }
+        ],
+        coverage_watermarks=[
+            {
+                "candidate_id": candidate_id,
+                "stage": "stage3",
+                "coverage_signature": hashlib.sha256(
+                    json.dumps(sorted(str(value) for value in input_product_ids)).encode("utf-8")
+                ).hexdigest(),
+                "coverage_start": result["features"].get("series_start"),
+                "coverage_end": result["features"].get("series_end"),
+                "product_count": len(input_product_ids),
+                "window_count": len(result["features"].get("windows", [])),
+                "updated_at": evaluated_at,
             }
         ],
         events=[

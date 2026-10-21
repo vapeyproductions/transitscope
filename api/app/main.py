@@ -62,9 +62,10 @@ def not_found(code: str, message: str) -> HTTPException:
 def rankings(
     view: str = Query("overall"),
     limit: int = Query(100, ge=1, le=100),
+    page: int = Query(1, ge=1, le=5),
 ) -> dict:
     try:
-        return ReadOnlyStore().rankings(view, limit)
+        return ReadOnlyStore().rankings(view, limit, page)
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
@@ -93,9 +94,10 @@ def replay_snapshot(
     view: str,
     sequence: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=100),
+    page: int = Query(1, ge=1, le=5),
 ) -> dict:
     try:
-        return ReadOnlyStore().replay_snapshot(view, sequence, limit)
+        return ReadOnlyStore().replay_snapshot(view, sequence, limit, page)
     except ValueError as exc:
         raise HTTPException(
             status_code=400,

@@ -256,15 +256,9 @@ class CatalogTests(unittest.TestCase):
             selected = promotable_candidates(store, stage="stage1", capacity=1)
             self.assertEqual([candidate["candidate_id"] for candidate in selected], ["promising"])
             selected = promotable_candidates(store, stage="stage1", capacity=2)
-            self.assertEqual(
-                [candidate["candidate_id"] for candidate in selected],
-                ["promising", "needs-data"],
-            )
+            self.assertEqual([candidate["candidate_id"] for candidate in selected], ["promising"])
             selected = promotable_candidates(store, stage="stage1", capacity=3)
-            self.assertEqual(
-                [candidate["candidate_id"] for candidate in selected],
-                ["promising", "needs-data", "inconclusive"],
-            )
+            self.assertEqual([candidate["candidate_id"] for candidate in selected], ["promising"])
 
 
 if __name__ == "__main__":
