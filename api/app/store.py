@@ -834,6 +834,457 @@ class ReadOnlyStore:
         finally:
             connection.close()
 
+    def monitoring(self, worker: dict[str, Any]) -> dict[str, Any]:
+        """Build a read-only operations view for the ML/pipeline dashboard.
+
+        The worker owns execution. This projection only reads the published
+        DuckDB state, so opening or refreshing the ML Ops tab cannot enqueue a
+        provider request or rerun an evaluation.
+        """
+
+        autostart = os.getenv("RUN_LIVE_PIPELINE", "false").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        configured_universe = int(os.getenv("TARGET_UNIVERSE_SIZE", "126000"))
+        stage_capacities = {
+            "stage1": int(os.getenv("STAGE1_POOL_SIZE", "2000")),
+            "stage2": int(os.getenv("STAGE2_CAPACITY", "100")),
+            "stage3": int(os.getenv("STAGE3_CAPACITY", "25")),
+        }
+        empty = {
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "data_version": None,
+            "control": {
+                "pipeline_paused": not autostart,
+                "autostart_enabled": autostart,
+                "reason": (
+                    "RUN_LIVE_PIPELINE is false; no MAST downloads or model jobs will start."
+                    if not autostart
+                    else "The live worker is allowed to run when a scheduler dispatches it."
+                ),
+            },
+            "worker": worker,
+            "universe": {
+                "configured_count": configured_universe,
+                "manifest_count": 0,
+                "processed_count": 0,
+                "remaining_count": configured_universe,
+                "progress_percent": 0.0,
+                "initial_stage1_pool": stage_capacities["stage1"],
+            },
+            "stages": self._empty_monitoring_stages(stage_capacities),
+            "models": [],
+            "sampling": self._empty_sampling(configured_universe),
+            "data_health": {
+                "providers": [],
+                "coverage": {"candidate_count": 0, "product_count": 0, "last_updated_at": None},
+                "recent_batches": [],
+                "recent_events": [],
+            },
+        }
+        connection = self.connect()
+        if connection is None:
+            return empty
+
+        try:
+            version = self.latest_version(connection)
+            manifest_count, processed_count, queued_count, unavailable_count = connection.execute(
+                """
+                SELECT COUNT(*),
+                       COUNT(*) FILTER (WHERE manifest_status = 'processed'),
+                       COUNT(*) FILTER (WHERE manifest_status = 'queued'),
+                       COUNT(*) FILTER (WHERE manifest_status IN ('failed', 'unavailable'))
+                FROM target_manifest
+                """
+            ).fetchone()
+            processed_count = int(processed_count or 0)
+            remaining_count = max(0, configured_universe - processed_count)
+
+            stage_rows = connection.execute(
+                """
+                SELECT current_stage, status, COUNT(*) AS count
+                FROM candidates
+                GROUP BY current_stage, status
+                ORDER BY current_stage, status
+                """
+            ).fetchall()
+            stage_data = self._empty_monitoring_stages(stage_capacities)
+            for stage, status, count in stage_rows:
+                if stage not in stage_data:
+                    continue
+                stage_data[stage]["counts"][status] = int(count)
+                stage_data[stage]["total_candidates"] += int(count)
+
+            for stage in stage_data:
+                try:
+                    occupied = connection.execute(
+                        """
+                        SELECT COUNT(*) FROM candidates
+                        WHERE current_stage = ? AND active = true
+                          AND processing_slot_occupied = true
+                        """,
+                        [stage],
+                    ).fetchone()[0]
+                except Exception:
+                    occupied = connection.execute(
+                        """
+                        SELECT COUNT(*) FROM candidates
+                        WHERE current_stage = ? AND active = true
+                        """,
+                        [stage],
+                    ).fetchone()[0]
+                latest = connection.execute(
+                    """
+                    SELECT MAX(last_evaluated_at), COUNT(*)
+                    FROM candidates
+                    WHERE current_stage = ? AND last_evaluated_at IS NOT NULL
+                    """,
+                    [stage],
+                ).fetchone()
+                stage_data[stage]["occupied_slots"] = int(occupied or 0)
+                stage_data[stage]["capacity"] = stage_capacities[stage]
+                stage_data[stage]["last_evaluated_at"] = isoformat(latest[0])
+                stage_data[stage]["evaluated_candidate_count"] = int(latest[1] or 0)
+
+            model_rows = connection.execute(
+                """
+                SELECT stage, model_version, data_sufficiency, classification,
+                       feature_json, metric_json, created_at
+                FROM evaluations
+                WHERE stage IN ('stage1', 'stage2', 'stage3')
+                ORDER BY created_at ASC
+                """
+            ).fetchall()
+            model_data: dict[tuple[str, str], dict[str, Any]] = {}
+            for stage, model_version, sufficiency, evaluation_classification, feature_json, metric_json, created_at in model_rows:
+                key = (str(stage), str(model_version))
+                aggregate = model_data.setdefault(
+                    key,
+                    {
+                        "stage": stage,
+                        "model_version": model_version,
+                        "evaluation_count": 0,
+                        "status_counts": {},
+                        "data_sufficiency_counts": {},
+                        "evidence_scores": [],
+                        "holdout_f1": [],
+                        "model_lift": [],
+                        "last_evaluated_at": None,
+                    },
+                )
+                aggregate["evaluation_count"] += 1
+                if sufficiency:
+                    aggregate["data_sufficiency_counts"][str(sufficiency)] = aggregate[
+                        "data_sufficiency_counts"
+                    ].get(str(sufficiency), 0) + 1
+                try:
+                    features = json.loads(feature_json) if feature_json else {}
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    features = {}
+                try:
+                    metrics = json.loads(metric_json) if metric_json else {}
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    metrics = {}
+                if not isinstance(features, dict):
+                    features = {}
+                if not isinstance(metrics, dict):
+                    metrics = {}
+                classification = evaluation_classification or metrics.get("classification") or features.get("classification")
+                if classification:
+                    aggregate["status_counts"][str(classification)] = aggregate["status_counts"].get(
+                        str(classification), 0
+                    ) + 1
+                evidence = metrics.get("evidence_score", metrics.get("stage_score"))
+                if isinstance(evidence, (int, float)):
+                    aggregate["evidence_scores"].append(float(evidence))
+                holdout = features.get("holdout_metrics") or metrics.get("holdout_metrics") or {}
+                if isinstance(holdout, dict) and isinstance(holdout.get("f1"), (int, float)):
+                    aggregate["holdout_f1"].append(float(holdout["f1"]))
+                lift = features.get("model_vs_baseline_f1_delta")
+                if isinstance(lift, (int, float)):
+                    aggregate["model_lift"].append(float(lift))
+                aggregate["last_evaluated_at"] = isoformat(created_at)
+
+            models = []
+            for aggregate in model_data.values():
+                evidence_scores = aggregate.pop("evidence_scores")
+                holdout_f1 = aggregate.pop("holdout_f1")
+                model_lift = aggregate.pop("model_lift")
+                models.append(
+                    {
+                        **aggregate,
+                        "mean_evidence_score": self._mean(evidence_scores),
+                        "mean_holdout_f1": self._mean(holdout_f1),
+                        "mean_model_lift": self._mean(model_lift),
+                    }
+                )
+            models.sort(key=lambda item: (item["stage"], item["model_version"]))
+
+            sampling = self._monitoring_sampling(connection, configured_universe)
+            data_health = self._monitoring_data_health(connection)
+            return {
+                "generated_at": datetime.utcnow().isoformat() + "Z",
+                "data_version": version,
+                "control": empty["control"],
+                "worker": worker,
+                "universe": {
+                    "configured_count": configured_universe,
+                    "manifest_count": int(manifest_count or 0),
+                    "processed_count": processed_count,
+                    "queued_count": int(queued_count or 0),
+                    "unavailable_count": int(unavailable_count or 0),
+                    "remaining_count": remaining_count,
+                    "progress_percent": round(
+                        min(100.0, processed_count / configured_universe * 100)
+                        if configured_universe
+                        else 0.0,
+                        2,
+                    ),
+                    "initial_stage1_pool": stage_capacities["stage1"],
+                },
+                "stages": stage_data,
+                "models": models,
+                "sampling": sampling,
+                "data_health": data_health,
+            }
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _mean(values: list[float]) -> float | None:
+        return round(sum(values) / len(values), 4) if values else None
+
+    @staticmethod
+    def _empty_monitoring_stages(capacities: dict[str, int]) -> dict[str, dict[str, Any]]:
+        return {
+            stage: {
+                "stage": stage,
+                "capacity": capacity,
+                "occupied_slots": 0,
+                "total_candidates": 0,
+                "evaluated_candidate_count": 0,
+                "counts": {
+                    "Promising": 0,
+                    "Needs More Data": 0,
+                    "Inconclusive": 0,
+                    "Known Match": 0,
+                },
+                "last_evaluated_at": None,
+            }
+            for stage, capacity in capacities.items()
+        }
+
+    @staticmethod
+    def _empty_sampling(universe_count: int) -> dict[str, Any]:
+        return {
+            "policy": "stratified-adaptive replacement sampling",
+            "adaptive_enabled": False,
+            "cursor": 0,
+            "universe_count": universe_count,
+            "processed_count": 0,
+            "remaining_count": universe_count,
+            "buckets": [],
+            "spatial_clusters": [],
+            "explanation": "No manifest observations are available yet.",
+        }
+
+    def _monitoring_sampling(self, connection: duckdb.DuckDBPyConnection, universe_count: int) -> dict[str, Any]:
+        checkpoint = connection.execute(
+            """
+            SELECT cursor, universe_count, processed_count, selection_policy,
+                   adaptive_sampling_enabled, updated_at
+            FROM processing_checkpoints
+            WHERE stage = 'stage1'
+            """
+        ).fetchone()
+        processed = int(checkpoint[2]) if checkpoint else 0
+        configured_count = int(checkpoint[1]) if checkpoint else universe_count
+        bucket_rows = connection.execute(
+            """
+            SELECT COALESCE(t.selection_bucket, 'unbucketed') AS bucket,
+                   COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE t.manifest_status = 'processed') AS processed,
+                   COUNT(*) FILTER (WHERE c.status = 'Promising') AS promising,
+                   COUNT(*) FILTER (WHERE c.status = 'Needs More Data') AS needs_more_data,
+                   COUNT(*) FILTER (WHERE c.status = 'Inconclusive') AS inconclusive,
+                   COUNT(*) FILTER (WHERE c.status = 'Known Match') AS known_match,
+                   COUNT(*) FILTER (WHERE c.candidate_id IS NOT NULL) AS observed
+            FROM target_manifest AS t
+            LEFT JOIN candidates AS c ON c.target_id = t.target_id
+            GROUP BY COALESCE(t.selection_bucket, 'unbucketed')
+            ORDER BY total DESC, bucket ASC
+            """
+        ).fetchall()
+        buckets = []
+        for bucket, total, processed_count, promising, needs_more_data, inconclusive, known_match, observed in bucket_rows:
+            observed = int(observed or 0)
+            known_rate = (int(known_match or 0) / observed) if observed else 0.0
+            positive = int(promising or 0) + int(needs_more_data or 0)
+            if observed < 3:
+                recommendation = "Collecting evidence"
+            elif known_rate >= 0.5:
+                recommendation = "Deprioritize: many known matches"
+            elif positive:
+                recommendation = "Prioritize: evidence-bearing"
+            else:
+                recommendation = "Neutral exploration"
+            buckets.append(
+                {
+                    "bucket": bucket,
+                    "total": int(total or 0),
+                    "processed": int(processed_count or 0),
+                    "observed": observed,
+                    "promising": int(promising or 0),
+                    "needs_more_data": int(needs_more_data or 0),
+                    "inconclusive": int(inconclusive or 0),
+                    "known_match": int(known_match or 0),
+                    "known_match_rate": round(known_rate, 3),
+                    "recommendation": recommendation,
+                }
+            )
+
+        cluster_rows = connection.execute(
+            """
+            SELECT FLOOR(t.ra_deg / 10) * 10 AS ra_cell,
+                   FLOOR((t.dec_deg + 90) / 10) * 10 - 90 AS dec_cell,
+                   COUNT(*) AS observed,
+                   COUNT(*) FILTER (WHERE c.status = 'Promising') AS promising,
+                   COUNT(*) FILTER (WHERE c.status = 'Needs More Data') AS needs_more_data,
+                   COUNT(*) FILTER (WHERE c.status = 'Inconclusive') AS inconclusive,
+                   COUNT(*) FILTER (WHERE c.status = 'Known Match') AS known_match
+            FROM target_manifest AS t
+            JOIN candidates AS c ON c.target_id = t.target_id
+            WHERE t.ra_deg IS NOT NULL AND t.dec_deg IS NOT NULL
+            GROUP BY ra_cell, dec_cell
+            ORDER BY observed DESC
+            LIMIT 24
+            """
+        ).fetchall()
+        clusters = []
+        for ra_cell, dec_cell, observed, promising, needs_more_data, inconclusive, known_match in cluster_rows:
+            known_rate = (int(known_match or 0) / int(observed)) if observed else 0.0
+            clusters.append(
+                {
+                    "ra_min_deg": float(ra_cell),
+                    "dec_min_deg": float(dec_cell),
+                    "observed": int(observed),
+                    "promising": int(promising or 0),
+                    "needs_more_data": int(needs_more_data or 0),
+                    "inconclusive": int(inconclusive or 0),
+                    "known_match": int(known_match or 0),
+                    "recommendation": (
+                        "Deprioritize known-dense region"
+                        if known_rate >= 0.5
+                        else "Prioritize evidence-bearing region"
+                        if int(promising or 0) + int(needs_more_data or 0) > 0
+                        else "Neutral exploration"
+                    ),
+                }
+            )
+        return {
+            "policy": checkpoint[3] if checkpoint else "stratified-adaptive replacement sampling",
+            "adaptive_enabled": bool(checkpoint[4]) if checkpoint else False,
+            "cursor": int(checkpoint[0]) if checkpoint else 0,
+            "universe_count": configured_count,
+            "processed_count": processed,
+            "remaining_count": max(0, configured_count - processed),
+            "updated_at": isoformat(checkpoint[5]) if checkpoint else None,
+            "buckets": buckets,
+            "spatial_clusters": clusters,
+            "explanation": "Bucket and sky-cell signals are descriptive until the live replacement sampler is enabled.",
+        }
+
+    def _monitoring_data_health(self, connection: duckdb.DuckDBPyConnection) -> dict[str, Any]:
+        providers = []
+        for provider, runs, succeeded, failed, products, product_failures, last_finished in connection.execute(
+            """
+            SELECT provider, COUNT(*),
+                   COUNT(*) FILTER (WHERE status IN ('success', 'complete')),
+                   COUNT(*) FILTER (WHERE status IN ('failed', 'error')),
+                   COALESCE(SUM(products_downloaded), 0),
+                   COALESCE(SUM(products_failed), 0),
+                   MAX(finished_at)
+            FROM ingest_runs
+            GROUP BY provider
+            ORDER BY provider
+            """
+        ).fetchall():
+            providers.append(
+                {
+                    "provider": provider,
+                    "runs": int(runs),
+                    "successful_runs": int(succeeded or 0),
+                    "failed_runs": int(failed or 0),
+                    "products_downloaded": int(products or 0),
+                    "products_failed": int(product_failures or 0),
+                    "last_finished_at": isoformat(last_finished),
+                }
+            )
+        coverage = connection.execute(
+            """
+            SELECT COUNT(DISTINCT candidate_id),
+                   COALESCE(SUM(product_count), 0),
+                   COALESCE(SUM(window_count), 0),
+                   MAX(updated_at)
+            FROM coverage_watermarks
+            """
+        ).fetchone()
+        batches = connection.execute(
+            """
+            SELECT batch_id, stage, selection_policy, requested_count,
+                   selected_count, evaluated_count, failed_count, status,
+                   started_at, finished_at
+            FROM batch_runs
+            ORDER BY started_at DESC
+            LIMIT 8
+            """
+        ).fetchall()
+        events = connection.execute(
+            """
+            SELECT sequence_number, stage, event_type, occurred_at, model_run_id
+            FROM pipeline_events
+            ORDER BY sequence_number DESC, occurred_at DESC
+            LIMIT 12
+            """
+        ).fetchall()
+        return {
+            "providers": providers,
+            "coverage": {
+                "candidate_count": int(coverage[0] or 0),
+                "product_count": int(coverage[1] or 0),
+                "window_count": int(coverage[2] or 0),
+                "last_updated_at": isoformat(coverage[3]),
+            },
+            "recent_batches": [
+                {
+                    "batch_id": row[0],
+                    "stage": row[1],
+                    "selection_policy": row[2],
+                    "requested_count": int(row[3]),
+                    "selected_count": int(row[4]),
+                    "evaluated_count": int(row[5]),
+                    "failed_count": int(row[6]),
+                    "status": row[7],
+                    "started_at": isoformat(row[8]),
+                    "finished_at": isoformat(row[9]),
+                }
+                for row in batches
+            ],
+            "recent_events": [
+                {
+                    "sequence_number": int(row[0]),
+                    "stage": row[1],
+                    "event_type": row[2],
+                    "occurred_at": isoformat(row[3]),
+                    "model_run_id": row[4],
+                }
+                for row in events
+            ],
+        }
+
     def _version(self) -> int | None:
         connection = self.connect()
         if connection is None:

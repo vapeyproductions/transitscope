@@ -27,6 +27,7 @@ services:
     environment:
       DATA_DIR: /app/data
       WORKER_MODE: live
+      RUN_LIVE_PIPELINE: "false"
       STAGE1_MANIFEST: /app/data/manifests/stage1-real-target-universe.jsonl
       WORKER_HEARTBEAT_SECONDS: 5
       LIVE_POLL_SECONDS: 30
@@ -46,7 +47,8 @@ services:
       context: ./web
       dockerfile: Dockerfile
     environment:
-      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      NEXT_PUBLIC_API_BASE_URL: ""
+      API_BACKEND_URL: http://api:8000
     ports:
       - "3000:3000"
     depends_on:

@@ -17,7 +17,11 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        origin.strip()
+        for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+        if origin.strip()
+    ],
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
@@ -49,6 +53,18 @@ def status() -> dict:
     response = ReadOnlyStore().status(worker_status())
     response["checked_at"] = utc_now()
     return response
+
+
+@app.get("/api/monitoring/overview")
+def monitoring_overview() -> dict:
+    """Return the read-only ML operations/control-plane projection.
+
+    This endpoint never starts a job. It reports the worker's explicit pause
+    gate, durable pipeline counts, model evidence, provider health, and the
+    sampling signals that will guide future replacement-target selection.
+    """
+
+    return ReadOnlyStore().monitoring(worker_status())
 
 
 def not_found(code: str, message: str) -> HTTPException:

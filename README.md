@@ -11,8 +11,24 @@ docker compose up --build
 - Web dashboard: http://localhost:3000
 - API health: http://localhost:8000/api/health
 - API status: http://localhost:8000/api/status
+- ML operations view: open the `ML Ops` tab, or query http://localhost:8000/api/monitoring/overview
 
 The `data/` directory is a durable local volume for provider cache, normalized data, DuckDB state, and replay history. The current stack includes the official MAST/TESS probe, bounded/checkpointed Stage 1 processing, Stage 2 historical repeatability, Stage 3 chronological holdout prediction, NASA Exoplanet Archive matching, Overall/stage ranking snapshots, replay APIs, and the candidate investigation modal. The 126,000-row universe is represented as a durable queue; the local demo downloads a bounded real seed set so it can run official data without pretending that 126,000 FITS files are already local.
+
+The compose worker is intentionally paused by default with `RUN_LIVE_PIPELINE=false`. This is a safety gate: opening the site, refreshing the dashboard, or inspecting ML Ops never starts MAST downloads or model jobs. Enable execution only after the public deployment, durable state, provider limits, and monitoring have been reviewed.
+
+## ML operations and eventual deployment
+
+The `ML Ops` tab is a read-only control-plane view for the system that will run the long-lived search. It reports the configured 2,000-target Stage 1 pool, progress through the 126,000-target manifest, occupied Stage 1/2/3 slots, status counts, model versions and aggregate metrics, MAST/catalog provider health, archive coverage watermarks, recent batches/events, selection buckets, and 10-degree sky-cell outcome signals. Sampling signals are descriptive until adaptive replacement sampling is explicitly enabled.
+
+For a public always-updating launch, keep the responsibilities separate even if they are deployed from one repository:
+
+- The web/API layer serves the dashboard and read-only monitoring endpoints.
+- A durable database stores manifests, candidates, evaluations, ranking snapshots, events, checkpoints, and health metrics.
+- A persistent Python worker performs rate-limited MAST ingestion and CPU model jobs. A queue or scheduler dispatches bounded jobs; it is not a request handler.
+- Raw FITS and normalized artifacts live in durable object storage or a mounted volume, not an ephemeral serverless filesystem.
+
+Vercel can host the Next.js dashboard, but the current DuckDB-plus-worker arrangement is a better fit for an always-on container host. The Next.js app supports an `API_BACKEND_URL` rewrite so the same web build can point at a separately deployed API; the compose setup uses `http://api:8000`. This keeps the deployment choice reversible while the pipeline remains paused.
 
 ## MAST/TESS probe
 

@@ -48,6 +48,26 @@ def main() -> None:
 
     mode = os.getenv("WORKER_MODE", "bootstrap").lower()
     if mode == "live":
+        autostart = os.getenv("RUN_LIVE_PIPELINE", "false").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if not autostart:
+            while running:
+                write_status(
+                    data_dir,
+                    "paused_by_config",
+                    {
+                        "pipeline_paused": True,
+                        "reason": "RUN_LIVE_PIPELINE is false; no MAST downloads or model jobs will start.",
+                    },
+                )
+                time.sleep(heartbeat_seconds)
+            write_status(data_dir, "stopped", {"pipeline_paused": True})
+            return
+
         manifest_path = Path(
             os.getenv(
                 "STAGE1_MANIFEST",
