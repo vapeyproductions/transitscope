@@ -28,7 +28,7 @@ The target universe remains approximately 126,000 stars. The implementation will
   Acceptance: A test transaction can insert a target, evaluation, event, and ranking snapshot; the published version appears only after all referenced rows exist; re-running the same write does not duplicate it.
   Verify: Run storage unit tests and inspect the DuckDB tables with a small command-line query. Commit the storage layer.
 
-- [ ] **3. Build the thin Stage 1 dashboard shell**
+- [x] **3. Build the thin Stage 1 dashboard shell**
   Spec ref: `spec.md > 10. Frontend specification > 10.1 Dashboard shell` and `spec.md > 10. Frontend specification > 10.5 Accessible and honest states`
   What to build: Create the dark scientific dashboard frame with the Stage 1 tab, ranking table layout, loading/empty/error/stale states, refresh control placeholder, and candidate-row visual contract. Use no invented astronomy results; the initial table should clearly communicate that data has not arrived.
   Acceptance: The app loads without an account, presents a readable scientific dashboard, shows an empty Stage 1 state, and gives status/activity fields a stable visual location. Color is not the only status signal.

@@ -97,3 +97,12 @@ Nearby-star information is relevant as a contamination and systematics signal, n
 - Rebuilt the worker with DuckDB 1.4.3; `python -m unittest discover -s tests -p 'test_*.py'` passed with 3 tests.
 - Inspected the running database: all seven expected tables exist and no version is published before a batch runs.
 - The database and heartbeat remain runtime data ignored by Git.
+
+### Item 3: Thin Stage 1 dashboard shell — complete
+
+- Replaced the starter page with a responsive dark scientific dashboard for the Stage 1 ranking view.
+- Added stable UI locations for target counts, processing state, candidate status, current activity, movement, and last update so later API data can fill the same contract.
+- Added disabled placeholders for future Overall, Stage 2, Stage 3, replay, and refresh interactions without implying those features are already live.
+- Kept the initial state honest: the ranking contains no fabricated astronomy results and explicitly says it is waiting for the MAST/TESS ingestion probe.
+- Rebuilt the web image successfully with Next.js 16.4.2, confirmed the API remained healthy, and verified the rendered HTML includes the observatory title, empty-state message, and MAST/TESS provenance.
+- TypeScript verification passed with `npm run typecheck`.
