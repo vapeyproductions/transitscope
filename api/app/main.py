@@ -60,11 +60,52 @@ def not_found(code: str, message: str) -> HTTPException:
 
 @app.get("/api/rankings")
 def rankings(
-    view: str = Query("stage1"),
+    view: str = Query("overall"),
     limit: int = Query(100, ge=1, le=100),
 ) -> dict:
     try:
         return ReadOnlyStore().rankings(view, limit)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_view", "message": str(exc), "retryable": False},
+        ) from exc
+
+
+@app.get("/api/replay/{view}/meta")
+def replay_meta(view: str) -> dict:
+    try:
+        return ReadOnlyStore().replay_meta(view)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_view", "message": str(exc), "retryable": False},
+        ) from exc
+
+
+@app.get("/api/replay/{view}/snapshot")
+def replay_snapshot(
+    view: str,
+    sequence: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=100),
+) -> dict:
+    try:
+        return ReadOnlyStore().replay_snapshot(view, sequence, limit)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_view", "message": str(exc), "retryable": False},
+        ) from exc
+
+
+@app.get("/api/replay/{view}/events")
+def replay_events(
+    view: str,
+    start_sequence: int = Query(0, ge=0),
+    end_sequence: int = Query(0, ge=0),
+) -> dict:
+    try:
+        return ReadOnlyStore().replay_events(view, start_sequence, end_sequence)
     except ValueError as exc:
         raise HTTPException(
             status_code=400,

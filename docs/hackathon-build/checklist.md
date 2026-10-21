@@ -76,7 +76,7 @@ The target universe remains approximately 126,000 stars. The implementation will
   Acceptance: A catalog match emits a mapping event and removes the candidate from every active ranking while preserving history; lower-ranked candidates can move up; `Needs More Data` does not auto-promote; Overall and stage-specific scores are versioned and inspectable.
   Verify: Run catalog parsing/matching tests, simulate a known match and replacement candidate, and inspect Overall plus stage-specific rankings. Commit lifecycle and Overall ranking.
 
-- [ ] **11. Add persisted replay and the candidate investigation modal**
+- [x] **11. Add persisted replay and the candidate investigation modal**
   Spec ref: `spec.md > 8. Replay design` and `spec.md > 10.3 Candidate modal` / `10.4 Replay controls`
   What to build: Implement independent replay streams for Overall and each stage using saved snapshots/events, with empty-start state, pause, drag, and speed controls. Add the blurred-background candidate modal with light curve, evidence metrics, current activity, lifecycle history, and next step.
   Acceptance: Replay reconstructs candidates entering, changing rank, advancing, becoming inconclusive, and becoming known matches; replay makes no provider/model calls; each tab has an independent playhead; refresh closes the modal; one candidate can be fully inspected.

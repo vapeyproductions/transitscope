@@ -11,6 +11,7 @@ import numpy as np
 
 
 VIEW_STAGE = {"stage1": "stage1", "stage2": "stage2", "stage3": "stage3"}
+RANKING_VIEWS = {"overall", "stage1", "stage2", "stage3"}
 
 
 def isoformat(value: object) -> str | None:
@@ -92,7 +93,7 @@ class ReadOnlyStore:
             connection.close()
 
     def rankings(self, view: str, limit: int) -> dict[str, Any]:
-        if view not in {"overall", "stage1", "stage2", "stage3"}:
+        if view not in RANKING_VIEWS:
             raise ValueError(f"unsupported ranking view: {view}")
         connection = self.connect()
         empty = {
@@ -179,6 +180,212 @@ class ReadOnlyStore:
             return response
         finally:
             connection.close()
+
+    def replay_meta(self, view: str) -> dict[str, Any]:
+        """Return the saved timeline bounds without touching providers or models."""
+
+        if view not in RANKING_VIEWS:
+            raise ValueError(f"unsupported ranking view: {view}")
+        connection = self.connect()
+        empty = {
+            "view": view,
+            "data_version": None,
+            "initial_sequence": 0,
+            "first_sequence": None,
+            "last_sequence": 0,
+            "snapshot_count": 0,
+            "available_sequences": [],
+            "first_occurred_at": None,
+            "last_occurred_at": None,
+        }
+        if connection is None:
+            return empty
+        try:
+            rows = connection.execute(
+                """
+                SELECT sequence_number, occurred_at
+                FROM ranking_snapshots
+                WHERE view = ?
+                ORDER BY sequence_number ASC
+                """,
+                [view],
+            ).fetchall()
+            if not rows:
+                return {**empty, "data_version": self.latest_version(connection)}
+            return {
+                "view": view,
+                "data_version": self.latest_version(connection),
+                "initial_sequence": 0,
+                "first_sequence": int(rows[0][0]),
+                "last_sequence": int(rows[-1][0]),
+                "snapshot_count": len(rows),
+                "available_sequences": [int(row[0]) for row in rows],
+                "first_occurred_at": isoformat(rows[0][1]),
+                "last_occurred_at": isoformat(rows[-1][1]),
+            }
+        finally:
+            connection.close()
+
+    def replay_snapshot(self, view: str, sequence: int, limit: int) -> dict[str, Any]:
+        """Project a previously persisted ranking snapshot at or before a playhead."""
+
+        if view not in RANKING_VIEWS:
+            raise ValueError(f"unsupported ranking view: {view}")
+        connection = self.connect()
+        empty = {
+            "view": view,
+            "data_version": None,
+            "sequence_number": 0,
+            "occurred_at": None,
+            "processed_target_count": 0,
+            "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", "126000")),
+            "rows": [],
+        }
+        if connection is None or sequence <= 0:
+            if connection is not None:
+                connection.close()
+            return empty
+        try:
+            snapshot = connection.execute(
+                """
+                SELECT sequence_number, occurred_at, active_candidate_count,
+                       processed_target_count, candidate_order_json
+                FROM ranking_snapshots
+                WHERE view = ? AND sequence_number <= ?
+                ORDER BY sequence_number DESC
+                LIMIT 1
+                """,
+                [view, sequence],
+            ).fetchone()
+            if not snapshot:
+                return {**empty, "data_version": self.latest_version(connection)}
+
+            candidate_ids = json.loads(snapshot[4])
+            if not isinstance(candidate_ids, list):
+                candidate_ids = []
+            rows = self._replay_rows(connection, view, int(snapshot[0]), candidate_ids, limit)
+            return {
+                "view": view,
+                "data_version": self.latest_version(connection),
+                "sequence_number": int(snapshot[0]),
+                "occurred_at": isoformat(snapshot[1]),
+                "processed_target_count": int(snapshot[3]),
+                "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", "126000")),
+                "rows": rows,
+            }
+        finally:
+            connection.close()
+
+    def replay_events(self, view: str, start_sequence: int, end_sequence: int) -> dict[str, Any]:
+        """Return persisted lifecycle events for a view's independent replay stream."""
+
+        if view not in RANKING_VIEWS:
+            raise ValueError(f"unsupported ranking view: {view}")
+        connection = self.connect()
+        if connection is None or end_sequence < start_sequence:
+            if connection is not None:
+                connection.close()
+            return {"view": view, "start_sequence": start_sequence, "end_sequence": end_sequence, "events": []}
+        try:
+            stage_filter = VIEW_STAGE.get(view)
+            if stage_filter:
+                rows = connection.execute(
+                    """
+                    SELECT sequence_number, candidate_id, stage, event_type,
+                           payload_json, occurred_at, model_run_id
+                    FROM pipeline_events
+                    WHERE stage = ? AND sequence_number BETWEEN ? AND ?
+                    ORDER BY sequence_number ASC, occurred_at ASC
+                    """,
+                    [stage_filter, start_sequence, end_sequence],
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT sequence_number, candidate_id, stage, event_type,
+                           payload_json, occurred_at, model_run_id
+                    FROM pipeline_events
+                    WHERE sequence_number BETWEEN ? AND ?
+                    ORDER BY sequence_number ASC, occurred_at ASC
+                    """,
+                    [start_sequence, end_sequence],
+                ).fetchall()
+            return {
+                "view": view,
+                "start_sequence": start_sequence,
+                "end_sequence": end_sequence,
+                "events": [
+                    {
+                        "sequence_number": int(row[0]),
+                        "candidate_id": row[1],
+                        "stage": row[2],
+                        "event_type": row[3],
+                        "payload": json.loads(row[4]),
+                        "occurred_at": isoformat(row[5]),
+                        "model_run_id": row[6],
+                    }
+                    for row in rows
+                ],
+            }
+        finally:
+            connection.close()
+
+    def _replay_rows(
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        view: str,
+        sequence: int,
+        candidate_ids: list[object],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        projected_rows: list[dict[str, Any]] = []
+        for index, raw_candidate_id in enumerate(candidate_ids[:limit], start=1):
+            candidate_id = str(raw_candidate_id)
+            candidate = connection.execute(
+                """
+                SELECT candidate_id, target_id, current_stage, status,
+                       overall_score, stage_score, rank_overall, rank_stage,
+                       activity, rank_delta, movement_kind, last_evaluated_at
+                FROM candidates
+                WHERE candidate_id = ?
+                """,
+                [candidate_id],
+            ).fetchone()
+            if not candidate:
+                continue
+            event = connection.execute(
+                """
+                SELECT stage, event_type, payload_json, occurred_at
+                FROM pipeline_events
+                WHERE candidate_id = ? AND sequence_number <= ?
+                ORDER BY sequence_number DESC, occurred_at DESC
+                LIMIT 1
+                """,
+                [candidate_id, sequence],
+            ).fetchone()
+            payload = json.loads(event[2]) if event else {}
+            if not isinstance(payload, dict):
+                payload = {}
+            status = "Known Match" if event and event[1] == "known_match" else payload.get("classification", candidate[3])
+            stage = VIEW_STAGE.get(view) or (event[0] if event and event[0] else candidate[2])
+            evidence = payload.get("evidence_score")
+            if evidence is None:
+                evidence = candidate[5] if candidate[5] is not None else candidate[4]
+            projected_rows.append(
+                {
+                    "rank": index,
+                    "candidate_id": candidate[0],
+                    "target_id": candidate[1],
+                    "stage": stage,
+                    "status": status,
+                    "evidence_score": evidence,
+                    "activity": payload.get("activity", candidate[8]),
+                    "rank_delta": int(candidate[9] or 0),
+                    "movement": candidate[10] or "unchanged",
+                    "last_evaluated_at": isoformat(event[3] if event else candidate[11]),
+                }
+            )
+        return projected_rows
 
     def candidate(self, candidate_id: str) -> dict[str, Any] | None:
         connection = self.connect()
