@@ -10,6 +10,9 @@ COPY storage ./storage
 COPY ingestion ./ingestion
 COPY pipeline ./pipeline
 COPY run_stage1.py ./run_stage1.py
+COPY batching.py ./batching.py
+COPY prepare_target_universe.py ./prepare_target_universe.py
+COPY run_stage1_batch.py ./run_stage1_batch.py
 COPY tests ./tests
 
 CMD ["python", "main.py"]

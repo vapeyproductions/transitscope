@@ -86,3 +86,30 @@ CREATE TABLE IF NOT EXISTS ranking_snapshots (
     UNIQUE (view, sequence_number)
 );
 
+CREATE TABLE IF NOT EXISTS batch_runs (
+    batch_id VARCHAR PRIMARY KEY,
+    stage VARCHAR NOT NULL,
+    selection_policy VARCHAR NOT NULL,
+    requested_count INTEGER NOT NULL,
+    selected_count INTEGER NOT NULL,
+    evaluated_count INTEGER NOT NULL,
+    failed_count INTEGER NOT NULL,
+    max_workers INTEGER NOT NULL,
+    status VARCHAR NOT NULL,
+    started_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    finished_at TIMESTAMP WITH TIME ZONE,
+    error_json VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS processing_checkpoints (
+    stage VARCHAR PRIMARY KEY,
+    manifest_path VARCHAR NOT NULL,
+    cursor BIGINT NOT NULL,
+    universe_count BIGINT NOT NULL,
+    processed_count BIGINT NOT NULL,
+    last_batch_id VARCHAR,
+    selection_policy VARCHAR NOT NULL,
+    adaptive_sampling_enabled BOOLEAN NOT NULL DEFAULT false,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+

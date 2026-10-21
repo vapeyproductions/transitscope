@@ -1,0 +1,186 @@
+import json
+import tempfile
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+
+from batching import BatchConfig, generate_target_universe, run_batch, select_next_targets
+from storage.duckdb_store import DuckDBStore
+from storage.paths import DataPaths
+
+
+class BatchingTests(unittest.TestCase):
+    def test_universe_generation_is_deterministic_and_stratified(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "targets.jsonl"
+            count = generate_target_universe(
+                path,
+                universe_size=6,
+                seed_rows=[{"target_id": "TIC 1", "provider_target_id": "1"}],
+            )
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+
+            self.assertEqual(count, 6)
+            self.assertEqual(len(rows), 6)
+            self.assertEqual(rows[0]["target_id"], "TIC 1")
+            self.assertEqual(rows[0]["selection_bucket"], "stratum-00")
+            self.assertEqual(rows[1]["selection_bucket"], "stratum-01")
+            self.assertEqual(rows[-1]["manifest_status"], "queued")
+
+    def test_selection_advances_cursor_and_skips_completed_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "targets.jsonl"
+            generate_target_universe(path, universe_size=4)
+            selected, cursor = select_next_targets(
+                path,
+                cursor=0,
+                count=2,
+                processed_ids={"queued-target-000000000"},
+            )
+
+            self.assertEqual(cursor, 3)
+            self.assertEqual(
+                [row["target_id"] for row in selected],
+                ["queued-target-000000001", "queued-target-000000002"],
+            )
+
+    def test_batch_failure_is_checkpointed_without_losing_the_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            paths = DataPaths(root)
+            paths.ensure()
+            manifest = paths.manifests / "targets.jsonl"
+            generate_target_universe(manifest, universe_size=3)
+
+            result = run_batch(
+                data_dir=root,
+                manifest_path=manifest,
+                config=BatchConfig(batch_size=2, max_workers=2),
+            )
+
+            self.assertEqual(result["status"], "published")
+            self.assertEqual(result["failed_count"], 2)
+            self.assertEqual(result["cursor"], 2)
+            with DuckDBStore(paths.database).connect() as connection:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT cursor FROM processing_checkpoints WHERE stage = 'stage1'"
+                    ).fetchone()[0],
+                    2,
+                )
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM batch_runs").fetchone()[0], 1)
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM pipeline_events").fetchone()[0], 2)
+
+            resumed = run_batch(
+                data_dir=root,
+                manifest_path=manifest,
+                config=BatchConfig(batch_size=2, max_workers=1),
+            )
+            self.assertEqual(resumed["cursor"], 3)
+            with DuckDBStore(paths.database).connect() as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM pipeline_events").fetchone()[0], 3)
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM batch_runs").fetchone()[0], 2)
+
+    def test_adaptive_sampling_is_explicitly_gated(self) -> None:
+        with self.assertRaisesRegex(ValueError, "adaptive sampling"):
+            BatchConfig(adaptive_sampling=True)
+
+    def test_retiring_a_candidate_opens_a_replacement_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            paths = DataPaths(root)
+            paths.ensure()
+            manifest = paths.manifests / "targets.jsonl"
+            rows = [
+                {
+                    "target_id": "target-1",
+                    "provider_target_id": "target-1",
+                    "selection_bucket": "stratum-00",
+                    "manifest_status": "queued",
+                },
+                {
+                    "target_id": "queued-target-000000001",
+                    "provider_target_id": "queued-target-000000001",
+                    "selection_bucket": "stratum-01",
+                    "manifest_status": "queued",
+                },
+                {
+                    "target_id": "queued-target-000000002",
+                    "provider_target_id": "queued-target-000000002",
+                    "selection_bucket": "stratum-02",
+                    "manifest_status": "queued",
+                },
+            ]
+            manifest.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            occurred_at = datetime.now(timezone.utc)
+            store = DuckDBStore(paths.database)
+            store.publish_batch(
+                version=1,
+                targets=[
+                    {
+                        "target_id": "target-1",
+                        "provider_target_id": "target-1",
+                        "ra_deg": None,
+                        "dec_deg": None,
+                        "sector": None,
+                        "cadence": None,
+                        "source_product_family": None,
+                        "selection_bucket": "stratum-00",
+                        "manifest_status": "processed",
+                    }
+                ],
+                candidates=[
+                    {
+                        "candidate_id": "stage1-candidate-1",
+                        "target_id": "target-1",
+                        "current_stage": "stage1",
+                        "status": "Promising",
+                        "overall_score": 80.0,
+                        "stage_score": 80.0,
+                        "rank_overall": 1,
+                        "rank_stage": 1,
+                        "activity": "No current activity",
+                        "rank_delta": 0,
+                        "movement_kind": "new",
+                        "last_evaluated_at": occurred_at,
+                        "known_match_id": None,
+                        "active": True,
+                    }
+                ],
+                snapshots=[
+                    {
+                        "snapshot_id": "snapshot-1",
+                        "view": "stage1",
+                        "sequence_number": 1,
+                        "occurred_at": occurred_at,
+                        "candidate_order_json": ["stage1-candidate-1"],
+                        "active_candidate_count": 1,
+                        "processed_target_count": 1,
+                    }
+                ],
+            )
+
+            result = run_batch(
+                data_dir=root,
+                manifest_path=manifest,
+                config=BatchConfig(batch_size=1, max_workers=1),
+                retire_candidate_ids=["stage1-candidate-1"],
+            )
+
+            self.assertEqual(result["replacement_slots"], 1)
+            with store.connect() as connection:
+                self.assertFalse(
+                    connection.execute(
+                        "SELECT active FROM candidates WHERE candidate_id = 'stage1-candidate-1'"
+                    ).fetchone()[0]
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM pipeline_events WHERE event_type = 'stage1_released'"
+                    ).fetchone()[0],
+                    1,
+                )
+
+
+if __name__ == "__main__":
+    unittest.main()

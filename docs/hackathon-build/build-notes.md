@@ -135,3 +135,13 @@ Nearby-star information is relevant as a contamination and systematics signal, n
 - Added local-development CORS for the separate web and API containers and pinned `pytz` so DuckDB timezone-aware timestamps serialize correctly in the API image.
 - Rebuilt the API and web containers. Endpoint checks confirmed version 1, one processed target out of 126,000, one Stage 1 ranking row, candidate detail, 1,200 plotted light-curve points, history, and no-rerun refresh behavior.
 - Browser smoke check confirmed the rendered dashboard shows `TIC 277691220`, `Inconclusive`, evidence score `56.112`, published version 1, and the candidate investigation modal.
+
+### Item 7: Bounded Stage 1 batches and replacement sampling — complete
+
+- Added a durable JSONL target-universe generator. It can preserve a configured 126,000-target queue, seed real provider-backed rows from a successful MAST probe, and keep metadata-only queue slots explicit until product lookup attaches observations.
+- Added `random-stratified-v1` queue selection with a streaming cursor, DuckDB `processing_checkpoints`, and `batch_runs` records. The worker processes only the next batch slice and resumes from the last committed cursor.
+- Added bounded `ProcessPoolExecutor` target processing, per-target failure capture, and transactional publishing of candidates, evaluations, events, ranking snapshots, batch metadata, and checkpoints. A partial batch leaves completed state intact.
+- Added candidate-release support. Passing `--retire-candidate` marks a candidate inactive, persists a release event, and increases the next selection request so unprocessed targets fill the opened slot. Adaptive sampling is explicitly rejected until outcome statistics exist.
+- Configured Docker defaults for a 126,000-target universe, batch size 4, one worker on the laptop, stage capacity 100, and top-N display 100. The process pool remains available through `--max-workers` for measured CPU-heavy batches.
+- Worker tests pass with 13 tests. A real local batch consumed the seeded MAST target plus two unavailable queue slots and published version 2; API status reported 2 processed targets out of 126,000 while preserving the real candidate ranking.
+- Restart verification returned “manifest exhausted” without creating another publish version or duplicate events. On eight metadata-only queue slots, the measured serial run took about 0.83s and the two-worker run about 1.00s, so the default remains serial for tiny batches because process startup outweighed trivial work.

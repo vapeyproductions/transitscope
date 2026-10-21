@@ -52,7 +52,7 @@ The target universe remains approximately 126,000 stars. The implementation will
   Acceptance: The dashboard shows the real candidate identity, evidence score, status, activity, rank movement, and last update; a candidate row opens a detail response; refresh closes any open modal and applies only a newer published state.
   Verify: Run API tests, start the stack, run the probe/pipeline, open the dashboard, and manually verify the real candidate appears. Commit the first end-to-end vertical slice.
 
-- [ ] **7. Expand Stage 1 to bounded parallel batches and replacement sampling**
+- [x] **7. Expand Stage 1 to bounded parallel batches and replacement sampling**
   Spec ref: `spec.md > 6.1 Bootstrap and batching`, `spec.md > 6.3 Stage 1`, and `spec.md > 6.7 Adaptive sampling experiment`
   What to build: Generate/update the approximately 126,000-target manifest, process configurable batches with bounded CPU parallelism, checkpoint after each batch, maintain the top-N display, and select replacements when candidates leave Stage 1. Start with random/stratified coverage and record the selection policy; keep adaptive sampling behind a flag.
   Acceptance: The pipeline does not load the universe into browser memory; batch failures do not erase completed results; processed/total counts are visible; ranking changes create persisted snapshots; a candidate leaving the active pool makes room for an unprocessed target.

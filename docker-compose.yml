@@ -28,6 +28,11 @@ services:
       DATA_DIR: /app/data
       WORKER_MODE: bootstrap
       WORKER_HEARTBEAT_SECONDS: 5
+      TARGET_UNIVERSE_SIZE: 126000
+      STAGE1_BATCH_SIZE: 4
+      STAGE1_MAX_WORKERS: 1
+      STAGE1_CAPACITY: 100
+      TOP_N_DISPLAY: 100
     volumes:
       - ./data:/app/data
 

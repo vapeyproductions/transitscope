@@ -44,6 +44,9 @@ class DuckDBStore:
         evaluations: Sequence[Mapping[str, object]] = (),
         events: Sequence[Mapping[str, object]] = (),
         snapshots: Sequence[Mapping[str, object]] = (),
+        candidate_updates: Sequence[Mapping[str, object]] = (),
+        batch_run: Mapping[str, object] | None = None,
+        checkpoint: Mapping[str, object] | None = None,
         note: str | None = None,
     ) -> None:
         """Write one consistent batch, publishing only after every row succeeds."""
@@ -167,6 +170,10 @@ class DuckDBStore:
                     json_columns={"candidate_order_json"},
                 )
 
+                self._insert_batch_run(connection, batch_run)
+                self._update_candidates(connection, candidate_updates)
+                self._upsert_checkpoint(connection, checkpoint)
+
                 connection.execute(
                     """
                     UPDATE publish_versions
@@ -179,6 +186,104 @@ class DuckDBStore:
             except Exception:
                 connection.execute("ROLLBACK")
                 raise
+
+    @staticmethod
+    def _insert_batch_run(
+        connection: duckdb.DuckDBPyConnection,
+        batch_run: Mapping[str, object] | None,
+    ) -> None:
+        if not batch_run:
+            return
+        columns = (
+            "batch_id",
+            "stage",
+            "selection_policy",
+            "requested_count",
+            "selected_count",
+            "evaluated_count",
+            "failed_count",
+            "max_workers",
+            "status",
+            "started_at",
+            "finished_at",
+            "error_json",
+        )
+        connection.execute(
+            f"INSERT INTO batch_runs ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) ON CONFLICT DO NOTHING",
+            [
+                _json_value(batch_run[column]) if column == "error_json" else batch_run.get(column)
+                for column in columns
+            ],
+        )
+
+    @staticmethod
+    def _update_candidates(
+        connection: duckdb.DuckDBPyConnection,
+        updates: Sequence[Mapping[str, object]],
+    ) -> None:
+        for update in updates:
+            candidate_id = update.get("candidate_id")
+            if not candidate_id:
+                continue
+            connection.execute(
+                """
+                UPDATE candidates
+                SET rank_overall = ?, rank_stage = ?, rank_delta = ?, movement_kind = ?,
+                    active = ?, activity = ?, status = ?, overall_score = ?, stage_score = ?,
+                    last_evaluated_at = ?, known_match_id = ?
+                WHERE candidate_id = ?
+                """,
+                [
+                    update.get("rank_overall"),
+                    update.get("rank_stage"),
+                    update.get("rank_delta", 0),
+                    update.get("movement_kind", "unchanged"),
+                    update.get("active", True),
+                    update.get("activity", "No current activity"),
+                    update.get("status"),
+                    update.get("overall_score"),
+                    update.get("stage_score"),
+                    update.get("last_evaluated_at"),
+                    update.get("known_match_id"),
+                    candidate_id,
+                ],
+            )
+
+    @staticmethod
+    def _upsert_checkpoint(
+        connection: duckdb.DuckDBPyConnection,
+        checkpoint: Mapping[str, object] | None,
+    ) -> None:
+        if not checkpoint:
+            return
+        connection.execute(
+            """
+            INSERT INTO processing_checkpoints (
+                stage, manifest_path, cursor, universe_count, processed_count,
+                last_batch_id, selection_policy, adaptive_sampling_enabled, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(stage) DO UPDATE SET
+                manifest_path = excluded.manifest_path,
+                cursor = excluded.cursor,
+                universe_count = excluded.universe_count,
+                processed_count = excluded.processed_count,
+                last_batch_id = excluded.last_batch_id,
+                selection_policy = excluded.selection_policy,
+                adaptive_sampling_enabled = excluded.adaptive_sampling_enabled,
+                updated_at = excluded.updated_at
+            """,
+            [
+                checkpoint.get("stage"),
+                checkpoint.get("manifest_path"),
+                checkpoint.get("cursor"),
+                checkpoint.get("universe_count"),
+                checkpoint.get("processed_count"),
+                checkpoint.get("last_batch_id"),
+                checkpoint.get("selection_policy"),
+                checkpoint.get("adaptive_sampling_enabled", False),
+                checkpoint.get("updated_at"),
+            ],
+        )
 
     @staticmethod
     def _insert_many(
