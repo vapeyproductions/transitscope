@@ -52,7 +52,7 @@ docker compose run --rm worker python run_stage1_batch.py \
   --max-workers 1
 ```
 
-The live Docker worker uses a 2,000-target batch setting, bounded CPU parallelism, checkpointing, and a 75-candidate promotion capacity. It selects the operational top-X by status priority (`Promising` > `Needs More Data` > `Inconclusive`) and evidence score within each status. A label alone does not bypass the capacity gate. Each published change saves ranking snapshots, and known matches are removed from active views while remaining in replay history.
+The live Docker worker uses a 2,000-target Stage 1 processing pool, bounded CPU parallelism, checkpointing, and an unprocessed-manifest replacement queue. It displays the top 500 rows per ranking through 100-row pages. Stage 2 and Stage 3 use independent promotion windows of 100 and 25 by default. Only `Promising` candidates advance; `Inconclusive` candidates remain visible in history but release their processing slot; `Needs More Data` holds its slot until an unexamined archive/live window is available; and known matches are removed from active views while remaining in replay history. Each published change saves ranking snapshots.
 
 ## Stage 2 historical validation
 
@@ -106,6 +106,26 @@ GET /api/replay/{view}/events?start_sequence={n}&end_sequence={n}
 ```
 
 The dashboard keeps an independent replay playhead for Overall, Stage 1, Stage 2, and Stage 3. It supports empty-start state, play/pause, approximate dragging, and playback speed. Opening a ranking row loads its normalized light curve, stage-specific metrics, current activity, next action, and lifecycle history in a modal. Replay reads saved state only; it does not call MAST, the NASA Exoplanet Archive, or a model.
+
+Live ranking pages use the same read-only contract, for example:
+
+```text
+GET /api/rankings?view=stage1&limit=100&page=1
+```
+
+The response reports the 500-row display cap, total ranked candidates, and available pages.
+
+## Demo walkthrough
+
+Use a 1–3 minute recording with this sequence:
+
+1. Show the Overall dashboard and explain that ranks are provisional evidence, not confirmation.
+2. Switch through Stage 1, Stage 2, and Stage 3; point out status-gated movement and the Stage 3 `Prime Candidate` label.
+3. Open one candidate and show its light curve, metrics, current activity, and pipeline history.
+4. Start the active tab's replay, pause it at a rank change, and show that the replay reads saved snapshots without rerunning models.
+5. Show an `Already Known` removal and the Identified tab when the final demo dataset contains a catalog match.
+
+If the live archive is quiet, use the persisted replay timeline or a documented local fixture. Do not imply that a candidate is scientifically confirmed.
 
 ## Verification
 

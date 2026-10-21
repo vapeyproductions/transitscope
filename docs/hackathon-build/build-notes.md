@@ -198,3 +198,11 @@ Nearby-star information is relevant as a contamination and systematics signal, n
 - Raised persisted ranking snapshots and the API/UI display contract to a 500-row cap with five 100-row pages. Live and replay responses expose page metadata; replay pages continue to read saved snapshots without invoking a provider or model.
 - Configured Docker defaults for a 2,000-target Stage 1 pool, top 500 display, Stage 2 promotion window 100, Stage 3 promotion window 25, one CPU worker, and eight-sector maximum historical coverage.
 - Verification passed: 24 worker unittests in Docker, 2 API unittests in Docker, Python compilation, Next.js production build/typecheck, healthy API/web/worker containers, paginated ranking metadata, and a saved Stage 3 replay snapshot. The current runtime truthfully shows two active Stage 3 inconclusives and no Stage 1/2 rows because the existing manifest had already been exhausted and those candidates had progressed.
+
+### Item 13: Devpost handoff packet — complete
+
+- Confirmed through the official Devpost service that `Build With AI: Basics` is open for submissions, the participant is registered, the current judging criteria are Design, Innovation/Idea, and Presentation, and the official deliverables are a public repository, a public 1–3 minute video, and a short description.
+- Updated `README.md` with the revised queue policy, paginated ranking API, replay behavior, limitations, and a concise demo walkthrough. Added `docs/hackathon-build/demo-script.md` with a timed recording sequence and screenshot evidence list.
+- Added an MIT `LICENSE` so the public repository can satisfy the required open-source-license field once its public URL exists.
+- Updated `devpost-submission.md` with the current architecture, AI/Codex usage, working-versus-unproven feature boundary, official form-field TODOs, testing commands, demo shot list, and honest readiness blockers. Nothing was sent to Devpost.
+- Verified the repository remains free of tracked `.env`/credential files and that the Docker/test instructions match the current stack. Remaining work is external evidence gathering: publish the repository, record the final multi-stage demo, add public URLs, and answer participant-specific form fields.

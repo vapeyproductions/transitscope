@@ -59,6 +59,8 @@ The planning artifacts are included in `docs/hackathon-build/`.
 - Overall, Stage 1, Stage 2, and Stage 3 ranking APIs and dashboard tabs.
 - Persisted replay metadata, snapshots, and events with independent tab playheads.
 - Candidate modal with light curve, stage-specific metrics, current activity, next action, and pipeline history.
+- Live queue policy with a 2,000-target Stage 1 processing pool, status-gated promotion, separate Stage 2/3 capacities, and same-cycle replacement sampling.
+- Top-500 ranking display with 100-row pagination, coverage watermarks, unchanged-input deduplication, and Stage 3 `Prime Candidate` labeling.
 - Honest loading, empty, unavailable, and provisional-evidence states.
 
 ### Not yet proven in the small local runtime dataset
@@ -98,7 +100,7 @@ docker compose run --rm worker python -m unittest discover -s tests -p 'test_*.p
 docker compose up -d api web worker
 ```
 
-Open `http://localhost:3000`. The current development data includes one real TESS target, so the Overall/Stage 1 dashboard can show a real candidate and its light curve. Click the candidate row to open the modal. Click Replay to inspect the persisted timeline; replay does not invoke a provider or model. Stage views without published candidates show an intentional empty state.
+Open `http://localhost:3000`. The development database contains real MAST/TESS-derived state; depending on the current worker checkpoint, candidates may appear in later stages while an exhausted stage shows an intentional empty state. Click a candidate row to open the modal. Click Replay to inspect the persisted timeline; replay does not invoke a provider or model.
 
 For a fresh official-data probe:
 
@@ -117,7 +119,7 @@ docker compose run --rm worker python run_stage1_batch.py \
   --max-workers 1
 ```
 
-The API endpoints used by the dashboard include `/api/status`, `/api/rankings`, `/api/candidates/{candidate_id}`, `/api/candidates/{candidate_id}/light-curve`, `/api/candidates/{candidate_id}/history`, and the three `/api/replay/{view}/...` endpoints.
+The API endpoints used by the dashboard include `/api/status`, `/api/rankings?view=stage1&limit=100&page=1`, `/api/candidates/{candidate_id}`, `/api/candidates/{candidate_id}/light-curve`, `/api/candidates/{candidate_id}/history`, and the three `/api/replay/{view}/...` endpoints. The complete recording sequence is in `docs/hackathon-build/demo-script.md`.
 
 ## Public Demo Link
 
@@ -143,7 +145,7 @@ Capture 3–5 screenshots after the final demo dataset is ready:
 
 ## Submission Readiness Notes
 
-Official Devpost status checked on 2026-10-21: `Build With AI: Basics` is open for submissions and the participant is registered. The official judging criteria are Design, Innovation/Idea, and Presentation. The official deliverables require a public repository, a public 1–3 minute video, and a short description; a public website is not required.
+Official Devpost status checked on 2026-10-21: `Build With AI: Basics` is open for submissions and the participant is registered. Submissions close October 26, 2026 at 21:00 UTC. The official judging criteria are Design, Innovation/Idea, and Presentation. The official deliverables require a public repository, a public 1–3 minute video, and a short description; a public website is not required.
 
 Current readiness: **drafting, not ready to submit**.
 
@@ -155,9 +157,9 @@ Strengths:
 
 Remaining blockers and proof gaps:
 
-- The repository is not public yet and has no open-source `LICENSE` file. Choose a license, add it, then verify its public URL.
+- The repository is not public yet. The MIT `LICENSE` is present locally; verify its public URL after publishing.
 - There is no public deployed demo URL or video URL yet.
-- The current local runtime dataset has one real Stage 1 candidate. Populate or fixture a convincing Stage 2/Stage 3 progression and known-match removal before recording the final demo.
+- The current local runtime has two active Stage 3 inconclusive candidates from the seeded official data, but it does not yet provide the complete visual showcase. Populate or fixture a convincing Stage 1 → Stage 2 → Stage 3 progression and known-match removal before recording the final demo.
 - The official form still needs participant-provided answers: individual/team selection, country of residence, resources actually used, AI-cost impact, confidence score, open-source license URL, value created, technology-requirement explanation, and eligibility confirmations.
 - Do not describe the evidence score as a planet probability or scientific confirmation.
 
@@ -179,7 +181,7 @@ Use the live Devpost submission form as the source of truth. Do not fill these w
 - Field 28618: Resources actually used — TODO participant answer; options include Intro video, Live build session, Cup of Joe office hours, Discord, or None.
 - Field 28619: AI-cost impact — TODO participant answer.
 - Field 28620: Confidence building a maintainable project with a coding agent — TODO participant answer from 1–5.
-- Field 28998: Public URL to the open-source license file — blocked until the license and public repository exist.
+- Field 28998: Public URL to the open-source license file — `LICENSE` is now present locally; add the public repository URL after publishing.
 - Field 28624: Value created — TODO participant answer.
 - Field 28916: Explain use of the Devpost Learn Skill Pack — draft answer: “I used the Learn Skill Pack to interview and narrow the idea, then generated and followed scope, PRD, technical spec, checklist, and stepwise build documents. Each implementation item was verified before moving on, and the repository includes those planning documents.”
 - Field 28917: Age of majority — participant confirmation required.

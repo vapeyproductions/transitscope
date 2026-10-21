@@ -88,7 +88,7 @@ The target universe remains approximately 126,000 stars. The implementation will
   Acceptance: A live cycle never promotes a non-`Promising` candidate; replacements are drawn from unprocessed Stage 1 targets; Stage 1/2/3 use independent capacity settings; repeated evaluations record a new coverage watermark/window and do not rerun the same input signature; inconclusives remain queryable/rankable until outside the display cutoff; Prime Candidates and Stage 3 `Needs More Data` retain their slots while Stage 3 inconclusives and known matches free them.
   Verify: Run lifecycle and live-cycle tests covering slot release, status-gated promotion, historical-window backfill, deduplication of unchanged coverage, independent capacities, Stage 3 Prime labeling, and pagination. Run the worker/API test suites, rebuild the stack, and inspect the live rankings plus counts. Commit the revised orchestration.
 
-- [ ] **13. Prepare the Devpost handoff**
+- [x] **13. Prepare the Devpost handoff**
   Spec ref: `prd.md > Submission Proof Points` and `spec.md > 16. Definition of done for the first working draft`
   What to build: Finalize README setup/provenance/limitations, confirm the planning docs are present, capture the full-pipeline replay story, prepare demo steps, collect screenshots or recording targets, and document the repo/run instructions needed for `$prepare-submission`.
   Acceptance: The project can be started from the documented Docker commands; the demo can show real ingestion, all three stages, rank changes, known-match removal, candidate inspection, and replay; the write-up clearly avoids scientific-confirmation claims.
