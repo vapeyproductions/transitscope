@@ -3,13 +3,24 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+
+from .store import ReadOnlyStore
 
 
 app = FastAPI(
     title="TransitScope API",
     version="0.1.0",
     description="Read-only API foundation for the TransitScope observatory.",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
 )
 
 
@@ -35,11 +46,66 @@ def health() -> dict:
 
 @app.get("/api/status")
 def status() -> dict:
+    response = ReadOnlyStore().status(worker_status())
+    response["checked_at"] = utc_now()
+    return response
+
+
+def not_found(code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=404,
+        detail={"code": code, "message": message, "retryable": False},
+    )
+
+
+@app.get("/api/rankings")
+def rankings(
+    view: str = Query("stage1"),
+    limit: int = Query(100, ge=1, le=100),
+) -> dict:
+    try:
+        return ReadOnlyStore().rankings(view, limit)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_view", "message": str(exc), "retryable": False},
+        ) from exc
+
+
+@app.get("/api/candidates/{candidate_id}")
+def candidate(candidate_id: str) -> dict:
+    result = ReadOnlyStore().candidate(candidate_id)
+    if result is None:
+        raise not_found("candidate_not_found", f"Candidate {candidate_id} was not found.")
+    return {"data_version": ReadOnlyStore()._version(), "candidate": result}
+
+
+@app.get("/api/candidates/{candidate_id}/light-curve")
+def light_curve(candidate_id: str) -> dict:
+    store = ReadOnlyStore()
+    result = store.light_curve(candidate_id)
+    if result is None:
+        raise not_found("light_curve_unavailable", f"No light curve is available for {candidate_id}.")
+    return result
+
+
+@app.get("/api/candidates/{candidate_id}/history")
+def history(candidate_id: str) -> dict:
+    result = ReadOnlyStore().history(candidate_id)
+    if result is None:
+        raise not_found("candidate_not_found", f"Candidate {candidate_id} was not found.")
+    return result
+
+
+@app.post("/api/refresh")
+def refresh(known_version: int | None = Query(None, ge=0)) -> dict:
+    store = ReadOnlyStore()
+    current = store._version()
     return {
-        "service": "api",
-        "environment": os.getenv("APP_ENV", "unknown"),
-        "data_version": None,
+        "data_version": current,
+        "known_version": known_version,
+        "has_new_data": current is not None and current != known_version,
         "worker": worker_status(),
-        "checked_at": utc_now(),
+        "message": "Refresh reads the newest published state; it does not rerun a model.",
     }
 

@@ -126,3 +126,12 @@ Nearby-star information is relevant as a contamination and systematics signal, n
 - Added `worker/run_stage1.py`; the real cached TESS light curve published version 1 with candidate `stage1-tic-277691220`. DuckDB inspection confirmed one published version, one candidate, one evaluation, and one `stage1` snapshot.
 - The first worker dependency build exposed an Astropy/NumPy 2.4 incompatibility; pinning `numpy<2.4` resolved it. The complete worker suite passes with 8 tests.
 - Astropy references used for FITS and BLS: [FITS file handling](https://docs.astropy.org/en/stable/io/fits/) and [Box Least Squares](https://docs.astropy.org/en/stable/api/astropy.timeseries.BoxLeastSquares.html).
+
+### Item 6: API + Stage 1 dashboard vertical slice — complete
+
+- Added a read-only DuckDB API projection for published worker state: status, rankings, candidate detail, normalized light-curve points, and pipeline history.
+- Added a refresh contract that reads the newest published version and explicitly does not rerun the model. The worker remains the only process that writes pipeline state.
+- Connected the dashboard to the API with loading, error, empty, real-data, refresh, and candidate-modal states. The modal shows the actual TESS target's score, BLS metrics, normalized light curve, target metadata, and Stage 1 history.
+- Added local-development CORS for the separate web and API containers and pinned `pytz` so DuckDB timezone-aware timestamps serialize correctly in the API image.
+- Rebuilt the API and web containers. Endpoint checks confirmed version 1, one processed target out of 126,000, one Stage 1 ranking row, candidate detail, 1,200 plotted light-curve points, history, and no-rerun refresh behavior.
+- Browser smoke check confirmed the rendered dashboard shows `TIC 277691220`, `Inconclusive`, evidence score `56.112`, published version 1, and the candidate investigation modal.

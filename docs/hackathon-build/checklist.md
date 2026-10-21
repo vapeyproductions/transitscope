@@ -46,7 +46,7 @@ The target universe remains approximately 126,000 stars. The implementation will
   Acceptance: One real target produces a normalized series, interpretable Stage 1 features, a score labeled as evidence rather than planet probability, and a valid candidate lifecycle state including `Needs More Data` when coverage is insufficient.
   Verify: Run the single-target pipeline command; inspect the stored features/evaluation and confirm the score is reproducible for the same model version. Commit the Stage 1 single-target path.
 
-- [ ] **6. Connect the API to the live Stage 1 dashboard**
+- [x] **6. Connect the API to the live Stage 1 dashboard**
   Spec ref: `spec.md > 9. API contract` and `spec.md > 10. Frontend specification > 10.2 Ranking row`
   What to build: Implement `/api/status`, `/api/rankings`, candidate detail, light-curve, and history endpoints, then replace the shell placeholder with the persisted Stage 1 result. Add manual refresh behavior that reads the newest published version without rerunning the model.
   Acceptance: The dashboard shows the real candidate identity, evidence score, status, activity, rank movement, and last update; a candidate row opens a detail response; refresh closes any open modal and applies only a newer published state.
