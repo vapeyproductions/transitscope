@@ -117,6 +117,10 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .ranking-rows { border-top: 1px solid rgba(146, 169, 205, 0.08); }
 .ranking-table-row { background: transparent; border: 0; border-bottom: 1px solid rgba(146, 169, 205, 0.09); color: var(--text); cursor: pointer; padding: 18px 22px; text-align: left; transition: background 160ms ease, border-color 160ms ease; width: 100%; }
 .ranking-table-row:hover { background: rgba(118, 228, 237, 0.055); border-color: rgba(118, 228, 237, 0.22); }
+.replay-removal-row { animation: replay-remove 1.8s cubic-bezier(0.22, 0.8, 0.36, 1) both; background: rgba(244, 197, 107, 0.09); border-bottom-color: rgba(244, 197, 107, 0.42); box-shadow: inset 4px 0 0 #f4c56b, 0 0 28px rgba(244, 197, 107, 0.26); color: #f7e3ae; overflow: hidden; pointer-events: none; }
+.replay-removal-row .rank-value, .replay-removal-row .movement { color: #f4c56b; }
+.removal-pulse { background: #f4c56b; box-shadow: 0 0 10px rgba(244, 197, 107, 0.9); }
+@keyframes replay-remove { 0% { opacity: 0; transform: translateX(-14px); } 18% { opacity: 1; transform: translateX(0); } 68% { opacity: 1; transform: translateX(0); } 100% { opacity: 0; transform: translateX(112%); } }
 .rank-value { color: var(--cyan); font-size: 18px; font-weight: 700; }
 .candidate-cell, .activity-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .candidate-cell strong { font-size: 13px; }

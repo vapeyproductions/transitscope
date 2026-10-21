@@ -14,7 +14,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
 from pipeline.stage1 import Stage1Processor
-from pipeline.lifecycle import movement_for_ranks
+from pipeline.lifecycle import STATUS_PRIORITY, movement_for_ranks, processed_target_count
 from pipeline.stage2 import _candidate_rows
 from storage.duckdb_store import DuckDBStore
 
@@ -562,12 +562,48 @@ def publish_stage3_result(
             "last_evaluated_at": result["evaluated_at"],
         }
     )
-    stage3_pool.sort(key=lambda item: (-float(item["stage_score"] or 0.0), item["candidate_id"]))
+    stage3_pool.sort(
+        key=lambda item: (
+            -STATUS_PRIORITY.get(str(item.get("status")), 0),
+            -float(item["stage_score"] or 0.0),
+            item["candidate_id"],
+        )
+    )
     stage3_ranks = {item["candidate_id"]: index for index, item in enumerate(stage3_pool, 1)}
+
+    stage1_pool = [item for item in candidates if item["current_stage"] == "stage1"]
+    stage1_pool.sort(
+        key=lambda item: (
+            -STATUS_PRIORITY.get(str(item.get("status")), 0),
+            -float(item["stage_score"] or 0.0),
+            item["candidate_id"],
+        )
+    )
+    stage1_ranks = {item["candidate_id"]: index for index, item in enumerate(stage1_pool, 1)}
+
+    stage2_pool = [
+        item
+        for item in candidates
+        if item["current_stage"] == "stage2" and item["candidate_id"] != candidate_id
+    ]
+    stage2_pool.sort(
+        key=lambda item: (
+            -STATUS_PRIORITY.get(str(item.get("status")), 0),
+            -float(item["stage_score"] or 0.0),
+            item["candidate_id"],
+        )
+    )
+    stage2_ranks = {item["candidate_id"]: index for index, item in enumerate(stage2_pool, 1)}
 
     overall_pool = [item for item in candidates if item["candidate_id"] != candidate_id]
     overall_pool.append(next(item for item in stage3_pool if item["candidate_id"] == candidate_id))
-    overall_pool.sort(key=lambda item: (-float(item["overall_score"] or 0.0), item["candidate_id"]))
+    overall_pool.sort(
+        key=lambda item: (
+            -STATUS_PRIORITY.get(str(item.get("status")), 0),
+            -float(item["overall_score"] or 0.0),
+            item["candidate_id"],
+        )
+    )
     overall_ranks = {item["candidate_id"]: index for index, item in enumerate(overall_pool, 1)}
     previous_by_id = {item["candidate_id"]: item for item in candidates}
 
@@ -583,7 +619,13 @@ def publish_stage3_result(
                 "candidate_id": item["candidate_id"],
                 "current_stage": "stage3" if item["candidate_id"] == candidate_id else item["current_stage"],
                 "rank_overall": new_overall_rank,
-                "rank_stage": stage3_ranks.get(item["candidate_id"], old["rank_stage"]),
+                "rank_stage": stage3_ranks.get(
+                    item["candidate_id"],
+                    stage2_ranks.get(
+                        item["candidate_id"],
+                        stage1_ranks.get(item["candidate_id"], old["rank_stage"]),
+                    ),
+                ),
                 "rank_delta": delta,
                 "movement_kind": movement,
                 "active": True,
@@ -672,13 +714,22 @@ def publish_stage3_result(
         ],
         snapshots=[
             {
+                "snapshot_id": f"stage2-snapshot-{version}",
+                "view": "stage2",
+                "sequence_number": version,
+                "occurred_at": evaluated_at,
+                "candidate_order_json": [item["candidate_id"] for item in stage2_pool],
+                "active_candidate_count": len(stage2_pool),
+                "processed_target_count": processed_target_count(store),
+            },
+            {
                 "snapshot_id": f"stage3-snapshot-{version}",
                 "view": "stage3",
                 "sequence_number": version,
                 "occurred_at": evaluated_at,
                 "candidate_order_json": [item["candidate_id"] for item in stage3_pool],
                 "active_candidate_count": len(stage3_pool),
-                "processed_target_count": len(overall_pool),
+                "processed_target_count": processed_target_count(store),
             },
             {
                 "snapshot_id": f"overall-snapshot-{version}",
@@ -687,7 +738,7 @@ def publish_stage3_result(
                 "occurred_at": evaluated_at,
                 "candidate_order_json": [item["candidate_id"] for item in overall_pool],
                 "active_candidate_count": len(overall_pool),
-                "processed_target_count": len(overall_pool),
+                "processed_target_count": processed_target_count(store),
             },
         ],
         candidate_updates=updates,

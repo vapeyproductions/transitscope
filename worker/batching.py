@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from pipeline.stage1 import Stage1ProcessingError, Stage1Processor, resolve_artifact_path
-from pipeline.lifecycle import movement_for_ranks
+from pipeline.lifecycle import STATUS_PRIORITY, movement_for_ranks
 from storage.duckdb_store import DuckDBStore
 from storage.paths import DataPaths
 
@@ -74,6 +74,7 @@ def generate_target_universe(
     *,
     universe_size: int,
     seed_rows: Sequence[Mapping[str, Any]] = (),
+    defer_placeholders: bool = False,
 ) -> int:
     """Write a compact queue manifest without loading it into the browser.
 
@@ -118,7 +119,7 @@ def generate_target_universe(
                 "cadence": "pending provider lookup",
                 "source_product_family": "TESS SPOC light curve",
                 "selection_bucket": f"stratum-{written % 32:02d}",
-                "manifest_status": "queued",
+                "manifest_status": "deferred" if defer_placeholders else "queued",
             }
             handle.write(_json_line(row))
             written += 1
@@ -163,9 +164,11 @@ def checkpoint_for(store: DuckDBStore, manifest_path: Path) -> dict[str, Any] | 
     if not row:
         return None
     if Path(str(row[1])).resolve() != manifest_path.resolve():
-        raise ValueError(
-            f"checkpoint manifest differs from requested manifest: {row[1]} != {manifest_path}"
-        )
+        # A new populated queue is a legitimate deployment event: the earlier
+        # checkpoint belongs to a different queue and must not move its cursor
+        # into the new manifest.  The next publish atomically replaces the
+        # checkpoint row for this stage.
+        return None
     return {
         "stage": row[0],
         "manifest_path": row[1],
@@ -196,6 +199,8 @@ def select_next_targets(
     next_cursor = cursor
     for row in skipped:
         next_cursor += 1
+        if row.get("manifest_status") == "deferred":
+            continue
         if row["target_id"] in processed_ids:
             continue
         selected.append(row)
@@ -336,6 +341,7 @@ def publish_stage1_batch(
     stage1_pool = active_stage1 + new_candidates
     stage1_pool.sort(
         key=lambda candidate: (
+            -STATUS_PRIORITY.get(str(candidate.get("status")), 0),
             -float(candidate["stage_score"] or 0.0),
             str(candidate["candidate_id"]),
         )
@@ -344,6 +350,7 @@ def publish_stage1_batch(
     overall_pool = active_existing + new_candidates
     overall_pool.sort(
         key=lambda candidate: (
+            -STATUS_PRIORITY.get(str(candidate.get("status")), 0),
             -float(candidate["overall_score"] or 0.0),
             str(candidate["candidate_id"]),
         )

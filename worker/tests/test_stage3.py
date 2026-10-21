@@ -154,7 +154,7 @@ class Stage3Tests(unittest.TestCase):
                     connection.execute(
                         "SELECT COUNT(*) FROM ranking_snapshots WHERE sequence_number = 2"
                     ).fetchone()[0],
-                    2,
+                    3,
                 )
                 event_count = connection.execute(
                     "SELECT COUNT(*) FROM pipeline_events WHERE event_type = 'stage3_evaluated'"

@@ -49,6 +49,22 @@ class Stage2Tests(unittest.TestCase):
         self.assertGreaterEqual(result["features"]["observed_event_count"], 2)
         self.assertGreaterEqual(result["evidence_score"], 60.0)
 
+    def test_short_recent_window_backfills_older_archive_history(self) -> None:
+        old_time, old_flux = synthetic_series(365.0)
+        recent_time, recent_flux = synthetic_series(30.0)
+        recent_time = recent_time + 1200.0
+        result = Stage2Processor().evaluate_series(
+            np.concatenate((old_time, recent_time)),
+            np.concatenate((old_flux, recent_flux)),
+            candidate_id="stage1-candidate",
+            target_id="TIC 1",
+            stage1_features={"period_days": 10.0, "transit_time": 2.0, "duration_hours": 4.0},
+        )
+
+        self.assertTrue(result["features"]["backfilled_beyond_lookback"])
+        self.assertGreater(result["features"]["coverage_days"], 180.0)
+        self.assertEqual(result["status"], "Promising")
+
     def test_stage2_publish_moves_candidate_and_writes_both_rankings(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -148,7 +164,7 @@ class Stage2Tests(unittest.TestCase):
                     connection.execute(
                         "SELECT COUNT(*) FROM ranking_snapshots WHERE sequence_number = 2"
                     ).fetchone()[0],
-                    2,
+                    3,
                 )
                 self.assertEqual(
                     connection.execute(
@@ -162,7 +178,7 @@ class Stage2Tests(unittest.TestCase):
                             "SELECT payload_json FROM pipeline_events WHERE event_type = 'stage2_evaluated'"
                         ).fetchone()[0]
                     )["model_version"],
-                    "stage2-repeatability-v1",
+                    "stage2-repeatability-v2-backfill",
                 )
 
 

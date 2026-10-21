@@ -316,9 +316,9 @@ Every selection records its policy and weights. The policy has an exploration fl
 
 | Status | Meaning | Processing behavior |
 | --- | --- | --- |
-| Promising | Current evidence is strong enough for the candidate's stage | Eligible for the next stage when it enters that stage's top-X capacity group |
-| Needs More Data | Evidence is insufficient or delayed | Remains in the current stage; can trigger targeted historical backfill; does not advance automatically from rank alone |
-| Inconclusive | Current evidence is not competitive or is not interpretable as a candidate | Remains in historical records; not repeatedly sent through expensive processing |
+| Promising | Current evidence is strong enough for the candidate's stage | Highest operational priority; can be selected when it enters that stage's top-X capacity group |
+| Needs More Data | Evidence is insufficient or delayed | Remains active, ranks above `Inconclusive`, and can trigger targeted historical backfill; it does not bypass the top-X capacity gate |
+| Inconclusive | Current evidence is sufficient but unresolved or not competitive | Remains in active comparative rankings and history, but is lower priority than `Needs More Data` and is not rerun unless new products change the input signature |
 | Known Match | Evidence maps to a known catalog object | Tombstoned from active rankings; mapping remains visible in replay and candidate history |
 
 ### 7.2 Top-X progression
@@ -330,7 +330,7 @@ Each stage has a configurable capacity, for example `stage2_capacity` and `stage
 - the previous stage has published a completed evaluation;
 - the next-stage worker has capacity.
 
-If the top-X group is dominated by `Needs More Data`, the worker backfills the most useful missing historical windows and re-evaluates the current stage. It does not automatically promote those candidates merely because they occupy a rank slot. Known matches and finalized inconclusives leave active rankings, allowing lower-ranked candidates to move upward and become eligible.
+If the top-X group is dominated by `Needs More Data`, the worker backfills the most useful missing historical windows on the next live cycle. Status is part of the ranking policy, not an automatic promotion bypass: `Promising` ranks above `Needs More Data`, which ranks above `Inconclusive`, and evidence score breaks ties within each status. Known matches leave active rankings, allowing lower-ranked candidates to move upward and become eligible; unresolved candidates remain visible until later evidence changes their status.
 
 ### 7.3 Overall ranking
 
@@ -358,6 +358,7 @@ Replay is a view over persisted state, not a second execution path for the model
 4. Play/pause, speed, and dragging are client-side controls over the saved sequence. No provider request or model call is made by replay.
 5. The UI interpolates only presentation timing; it does not invent rankings between snapshots.
 6. Candidate detail can show the candidate's event history up to the selected replay sequence. If the candidate is not yet discovered at that sequence, the modal explains that it is not available at that point in the replay.
+7. When a known-match event removes a candidate, the replay response includes a separate removal transition with the prior rank and catalog identifier. The UI may show that candidate briefly as `Already Known` before animating it out of the active list.
 7. A replay state is deterministic for a given `view` and `sequence_number`.
 
 Recommended first API shape:

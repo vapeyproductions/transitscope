@@ -12,6 +12,12 @@ import numpy as np
 
 VIEW_STAGE = {"stage1": "stage1", "stage2": "stage2", "stage3": "stage3"}
 RANKING_VIEWS = {"overall", "stage1", "stage2", "stage3"}
+STATUS_PRIORITY = {
+    "Promising": 3,
+    "Needs More Data": 2,
+    "Inconclusive": 1,
+    "Known Match": 0,
+}
 
 
 def isoformat(value: object) -> str | None:
@@ -20,6 +26,19 @@ def isoformat(value: object) -> str | None:
     if isinstance(value, datetime):
         return value.isoformat()
     return str(value)
+
+
+def ranking_rationale(status: str, evidence_score: object) -> str:
+    score = "unscored" if evidence_score is None else f"evidence score {float(evidence_score):.1f}"
+    if status == "Promising":
+        return f"Highest operational priority; {score} with sufficient supporting data."
+    if status == "Needs More Data":
+        return "Higher investigation priority than Inconclusive; the model needs more coverage before judging the signal."
+    if status == "Inconclusive":
+        return f"Sufficient data was examined, but the signal remains unresolved; {score}."
+    if status == "Known Match":
+        return "Mapped to a catalog object and removed from active rankings."
+    return f"Ranked by the current pipeline policy; {score}."
 
 
 class ReadOnlyStore:
@@ -65,19 +84,16 @@ class ReadOnlyStore:
             version = self.latest_version(connection)
             response["data_version"] = version
             response["sequence_number"] = version
-            if version is not None:
-                row = connection.execute(
-                    """
-                    SELECT processed_target_count, active_candidate_count, occurred_at
-                    FROM ranking_snapshots
-                    WHERE view = 'stage1' AND sequence_number = ?
-                    """,
-                    [version],
-                ).fetchone()
-                if row:
-                    response["processed_target_count"] = int(row[0])
-                    response["active_candidate_count"] = int(row[1])
-                    response["last_ingest_at"] = isoformat(row[2])
+            response["processed_target_count"] = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM target_manifest WHERE manifest_status = 'processed'"
+                ).fetchone()[0]
+            )
+            response["active_candidate_count"] = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM candidates WHERE active = true"
+                ).fetchone()[0]
+            )
             ingest = connection.execute(
                 """
                 SELECT finished_at
@@ -104,6 +120,7 @@ class ReadOnlyStore:
             "processed_target_count": 0,
             "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", "126000")),
             "rows": [],
+            "removed": [],
         }
         if connection is None:
             return empty
@@ -161,6 +178,9 @@ class ReadOnlyStore:
                         "stage": row[2],
                         "status": row[3],
                         "evidence_score": row[5] if row[5] is not None else row[4],
+                        "ranking_rationale": ranking_rationale(
+                            row[3], row[5] if row[5] is not None else row[4]
+                        ),
                         "activity": row[8],
                         "rank_delta": int(row[9] or 0),
                         "movement": row[10] or "unchanged",
@@ -168,14 +188,21 @@ class ReadOnlyStore:
                     }
                 )
 
+            processed_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM target_manifest WHERE manifest_status = 'processed'"
+                ).fetchone()[0]
+            )
+
             response = {
                 "view": view,
                 "data_version": version,
                 "sequence_number": snapshot[0] if snapshot else version,
                 "occurred_at": isoformat(snapshot[1]) if snapshot else None,
-                "processed_target_count": int(snapshot[3]) if snapshot else 0,
+                "processed_target_count": processed_count,
                 "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", "126000")),
                 "rows": projected_rows,
+                "removed": [],
             }
             return response
         finally:
@@ -240,6 +267,7 @@ class ReadOnlyStore:
             "processed_target_count": 0,
             "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", "126000")),
             "rows": [],
+            "removed": [],
         }
         if connection is None or sequence <= 0:
             if connection is not None:
@@ -264,14 +292,26 @@ class ReadOnlyStore:
             if not isinstance(candidate_ids, list):
                 candidate_ids = []
             rows = self._replay_rows(connection, view, int(snapshot[0]), candidate_ids, limit)
+            removed = self._replay_removals(connection, view, int(snapshot[0]))
+            historical_processed = int(
+                connection.execute(
+                    """
+                    SELECT COALESCE(MAX(processed_target_count), 0)
+                    FROM ranking_snapshots
+                    WHERE view = 'stage1' AND sequence_number <= ?
+                    """,
+                    [int(snapshot[0])],
+                ).fetchone()[0]
+            )
             return {
                 "view": view,
                 "data_version": self.latest_version(connection),
                 "sequence_number": int(snapshot[0]),
                 "occurred_at": isoformat(snapshot[1]),
-                "processed_target_count": int(snapshot[3]),
+                "processed_target_count": historical_processed,
                 "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", "126000")),
                 "rows": rows,
+                "removed": removed,
             }
         finally:
             connection.close()
@@ -379,6 +419,7 @@ class ReadOnlyStore:
                     "stage": stage,
                     "status": status,
                     "evidence_score": evidence,
+                    "ranking_rationale": ranking_rationale(status, evidence),
                     "activity": payload.get("activity", candidate[8]),
                     "rank_delta": int(candidate[9] or 0),
                     "movement": candidate[10] or "unchanged",
@@ -386,6 +427,82 @@ class ReadOnlyStore:
                 }
             )
         return projected_rows
+
+    def _replay_removals(
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        view: str,
+        sequence: int,
+    ) -> list[dict[str, Any]]:
+        """Project catalog removals that happened at this replay snapshot.
+
+        A known match is deliberately absent from the active snapshot. Returning
+        the persisted event separately lets the UI show the candidate's exit
+        animation without pretending that it is still an active ranking row.
+        """
+
+        stage_filter = VIEW_STAGE.get(view)
+        params: list[Any] = [sequence]
+        stage_clause = ""
+        if stage_filter:
+            stage_clause = " AND event.stage = ?"
+            params.append(stage_filter)
+        events = connection.execute(
+            f"""
+            SELECT event.candidate_id, event.stage, event.payload_json,
+                   event.occurred_at, candidate.target_id, candidate.known_match_id
+            FROM pipeline_events AS event
+            LEFT JOIN candidates AS candidate ON candidate.candidate_id = event.candidate_id
+            WHERE event.event_type = 'known_match'
+              AND event.sequence_number = ?{stage_clause}
+            ORDER BY event.occurred_at ASC, event.candidate_id ASC
+            """,
+            params,
+        ).fetchall()
+        if not events:
+            return []
+
+        previous_snapshot = connection.execute(
+            """
+            SELECT candidate_order_json
+            FROM ranking_snapshots
+            WHERE view = ? AND sequence_number < ?
+            ORDER BY sequence_number DESC
+            LIMIT 1
+            """,
+            [view, sequence],
+        ).fetchone()
+        previous_order: list[str] = []
+        if previous_snapshot:
+            try:
+                decoded = json.loads(previous_snapshot[0])
+                if isinstance(decoded, list):
+                    previous_order = [str(item) for item in decoded]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                previous_order = []
+
+        removals: list[dict[str, Any]] = []
+        for candidate_id, stage, payload_json, occurred_at, target_id, known_match_id in events:
+            payload = json.loads(payload_json) if payload_json else {}
+            if not isinstance(payload, dict):
+                payload = {}
+            rank = previous_order.index(str(candidate_id)) + 1 if str(candidate_id) in previous_order else None
+            catalog_id = payload.get("catalog_id") or known_match_id
+            removals.append(
+                {
+                    "candidate_id": str(candidate_id),
+                    "target_id": str(target_id or candidate_id),
+                    "stage": stage,
+                    "status": "Known Match",
+                    "known_match_id": catalog_id,
+                    "rank": rank,
+                    "activity": "Mapped to known catalog object",
+                    "removal_reason": "Already Known",
+                    "ranking_rationale": ranking_rationale("Known Match", None),
+                    "occurred_at": isoformat(occurred_at),
+                }
+            )
+        return removals
 
     def candidate(self, candidate_id: str) -> dict[str, Any] | None:
         connection = self.connect()
@@ -434,6 +551,9 @@ class ReadOnlyStore:
                 "stage": candidate[2],
                 "status": candidate[3],
                 "evidence_score": candidate[5] if candidate[5] is not None else candidate[4],
+                "ranking_rationale": ranking_rationale(
+                    candidate[3], candidate[5] if candidate[5] is not None else candidate[4]
+                ),
                 "overall_score": candidate[4],
                 "rank_overall": candidate[6],
                 "rank_stage": candidate[7],

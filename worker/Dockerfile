@@ -12,6 +12,7 @@ COPY pipeline ./pipeline
 COPY run_stage1.py ./run_stage1.py
 COPY batching.py ./batching.py
 COPY prepare_target_universe.py ./prepare_target_universe.py
+COPY populate_real_targets.py ./populate_real_targets.py
 COPY run_stage1_batch.py ./run_stage1_batch.py
 COPY run_stage2.py ./run_stage2.py
 COPY run_stage3.py ./run_stage3.py

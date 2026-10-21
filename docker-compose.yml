@@ -26,13 +26,16 @@ services:
       dockerfile: Dockerfile
     environment:
       DATA_DIR: /app/data
-      WORKER_MODE: bootstrap
+      WORKER_MODE: live
+      STAGE1_MANIFEST: /app/data/manifests/stage1-real-target-universe.jsonl
       WORKER_HEARTBEAT_SECONDS: 5
+      LIVE_POLL_SECONDS: 30
       TARGET_UNIVERSE_SIZE: 126000
-      STAGE1_BATCH_SIZE: 4
+      STAGE1_BATCH_SIZE: 2000
       STAGE1_MAX_WORKERS: 1
-      STAGE1_CAPACITY: 100
+      STAGE1_CAPACITY: 75
       TOP_N_DISPLAY: 100
+      MAX_HISTORY_SECTORS: 8
     volumes:
       - ./data:/app/data
 

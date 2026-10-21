@@ -86,6 +86,7 @@ Acceptance criteria:
 - The timeline is intentionally approximate; users do not need to select exact timestamps.
 - Each tab has an independent replay position. Replaying Stage 2 does not silently change the replay position of Overall, Stage 1, or Stage 3.
 - Replay uses the saved historical outcome and does not visibly restart expensive analysis.
+- When a candidate is mapped to an existing catalog object, replay briefly highlights it as `Already Known` and shows it exiting the active ranking; the candidate remains available in history.
 
 ### Epic 6: Candidate Investigation Modal
 
@@ -107,10 +108,11 @@ Acceptance criteria:
 
 Acceptance criteria:
 
-- `Promising` candidates can advance when they enter the capacity-driven top-X group for their current stage.
-- `Needs More Data` candidates remain visible and do not advance automatically based only on rank.
+- Candidates in the capacity-driven top-X group can advance when the next stage has capacity; a `Promising` label alone does not bypass the top-X gate.
+- `Promising` ranks above `Needs More Data`, which ranks above `Inconclusive`, with evidence score breaking ties.
+- `Needs More Data` candidates remain visible and can trigger targeted backfill when more coverage is needed.
 - Additional historical or live data can cause a `Needs More Data` candidate to become `Promising`, `Inconclusive`, or `Known Match`.
-- `Inconclusive` candidates remain visible in the historical record and comparative ranking history but are not repeatedly sent through expensive investigation.
+- `Inconclusive` candidates remain visible in active comparative rankings and history, but are not repeatedly sent through expensive investigation unless new products change the input signature.
 - `Known Match` candidates generate a visible mapping event and are removed from all active rankings.
 - When a candidate is removed, lower-ranked active candidates can move up and become eligible for the next stage.
 - A replay shows the status transition and removal at the point it occurred.

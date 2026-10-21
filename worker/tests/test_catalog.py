@@ -194,7 +194,7 @@ class CatalogTests(unittest.TestCase):
                 self.assertEqual(event[0], "known_match")
                 self.assertEqual(json.loads(event[1])["catalog_id"], "Kepler-1 b")
 
-    def test_promotion_requires_promising_status_and_top_x(self) -> None:
+    def test_promotion_uses_status_priority_and_top_x(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             paths = DataPaths(Path(temp_dir))
             paths.ensure()
@@ -235,10 +235,36 @@ class CatalogTests(unittest.TestCase):
                         "known_match_id": None,
                         "active": True,
                     },
+                    {
+                        "candidate_id": "inconclusive",
+                        "target_id": "TIC 3",
+                        "current_stage": "stage1",
+                        "status": "Inconclusive",
+                        "overall_score": 99.0,
+                        "stage_score": 99.0,
+                        "rank_overall": 3,
+                        "rank_stage": 3,
+                        "activity": "No current activity",
+                        "rank_delta": 0,
+                        "movement_kind": "new",
+                        "last_evaluated_at": now,
+                        "known_match_id": None,
+                        "active": True,
+                    },
                 ],
             )
-            selected = promotable_candidates(store, stage="stage1", capacity=2)
+            selected = promotable_candidates(store, stage="stage1", capacity=1)
             self.assertEqual([candidate["candidate_id"] for candidate in selected], ["promising"])
+            selected = promotable_candidates(store, stage="stage1", capacity=2)
+            self.assertEqual(
+                [candidate["candidate_id"] for candidate in selected],
+                ["promising", "needs-data"],
+            )
+            selected = promotable_candidates(store, stage="stage1", capacity=3)
+            self.assertEqual(
+                [candidate["candidate_id"] for candidate in selected],
+                ["promising", "needs-data", "inconclusive"],
+            )
 
 
 if __name__ == "__main__":

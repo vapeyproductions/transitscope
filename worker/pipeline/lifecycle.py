@@ -13,6 +13,12 @@ from storage.duckdb_store import DuckDBStore
 CATALOG_MODEL_VERSION = "exoplanet-archive-match-v1"
 OVERALL_RANKING_VERSION = "overall-ranking-v1"
 RANKING_VIEWS = ("overall", "stage1", "stage2", "stage3")
+STATUS_PRIORITY = {
+    "Promising": 3,
+    "Needs More Data": 2,
+    "Inconclusive": 1,
+    "Known Match": 0,
+}
 
 
 def active_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
@@ -95,7 +101,11 @@ def promotable_candidates(
     stage: str,
     capacity: int,
 ) -> list[dict[str, Any]]:
-    """Select only Promising candidates inside a stage's operational top-X."""
+    """Select the operational top-X for the next stage.
+
+    Advancement is capacity/rank driven. Status affects ordering, but a
+    Promising label alone never bypasses the top-X gate.
+    """
 
     if stage not in {"stage1", "stage2"}:
         raise ValueError("promotion selection supports stage1 and stage2 only")
@@ -105,7 +115,6 @@ def promotable_candidates(
         candidate
         for candidate in active_candidates(store)
         if candidate["current_stage"] == stage
-        and candidate["status"] == "Promising"
         and candidate["rank_stage"] is not None
         and int(candidate["rank_stage"]) <= capacity
     ]
@@ -264,7 +273,7 @@ def publish_known_matches(
             }
         )
 
-    processed_count = _processed_target_count(store)
+    processed_count = processed_target_count(store)
     snapshots = []
     for view in RANKING_VIEWS:
         pool = overall_pool if view == "overall" else stage_pools[view]
@@ -331,7 +340,11 @@ def _candidate_row(row: Sequence[Any]) -> dict[str, Any]:
 def _sort_pool(candidates: Sequence[Mapping[str, Any]], *, score_key: str) -> list[dict[str, Any]]:
     return sorted(
         (dict(candidate) for candidate in candidates),
-        key=lambda candidate: (-float(candidate.get(score_key) or 0.0), str(candidate["candidate_id"])),
+        key=lambda candidate: (
+            -STATUS_PRIORITY.get(str(candidate.get("status")), 0),
+            -float(candidate.get(score_key) or 0.0),
+            str(candidate["candidate_id"]),
+        ),
     )
 
 
@@ -346,7 +359,7 @@ def _first_float(features: Mapping[str, Any], *keys: str) -> float | None:
     return None
 
 
-def _processed_target_count(store: DuckDBStore) -> int:
+def processed_target_count(store: DuckDBStore) -> int:
     store.initialize()
     with store.connect() as connection:
         return int(
@@ -359,9 +372,11 @@ def _processed_target_count(store: DuckDBStore) -> int:
 __all__ = [
     "CATALOG_MODEL_VERSION",
     "OVERALL_RANKING_VERSION",
+    "STATUS_PRIORITY",
     "active_candidates",
     "candidate_match_inputs",
     "movement_for_ranks",
+    "processed_target_count",
     "promotable_candidates",
     "publish_known_matches",
 ]

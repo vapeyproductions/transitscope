@@ -12,7 +12,7 @@ docker compose up --build
 - API health: http://localhost:8000/api/health
 - API status: http://localhost:8000/api/status
 
-The `data/` directory is a durable local volume for provider cache, normalized data, DuckDB state, and replay history. The current stack includes the official MAST/TESS probe, bounded/checkpointed Stage 1 processing, Stage 2 historical repeatability, Stage 3 chronological holdout prediction, NASA Exoplanet Archive matching, Overall/stage ranking snapshots, replay APIs, and the candidate investigation modal. The checked-in pipeline is broader than the small local runtime dataset used for development; the current sample feed contains one real TESS candidate and honest empty states for stages without published candidates.
+The `data/` directory is a durable local volume for provider cache, normalized data, DuckDB state, and replay history. The current stack includes the official MAST/TESS probe, bounded/checkpointed Stage 1 processing, Stage 2 historical repeatability, Stage 3 chronological holdout prediction, NASA Exoplanet Archive matching, Overall/stage ranking snapshots, replay APIs, and the candidate investigation modal. The 126,000-row universe is represented as a durable queue; the local demo downloads a bounded real seed set so it can run official data without pretending that 126,000 FITS files are already local.
 
 ## MAST/TESS probe
 
@@ -26,7 +26,17 @@ The default configuration queries one public Sector 1 TESS target, selects its S
 
 ## Stage 1 batching
 
-Create a durable queue manifest. A probe manifest can seed one real MAST/TESS target; remaining queue slots stay metadata-only until the provider adapter attaches products:
+Populate a durable queue from the NASA Exoplanet Archive TOI table and official MAST/TESS SPOC light curves. This downloads a bounded real seed set and keeps the remaining 126,000-target queue explicit as deferred work:
+
+```bash
+docker compose run --rm worker python populate_real_targets.py \
+  --target-count 8 \
+  --universe-size 126000 \
+  --catalog-rows 500 \
+  --force-refresh
+```
+
+For a synthetic/metadata-first queue, create a durable manifest directly. A probe manifest can seed one real MAST/TESS target; remaining queue slots stay metadata-only until the provider adapter attaches products:
 
 ```bash
 docker compose run --rm worker python prepare_target_universe.py \
@@ -42,7 +52,7 @@ docker compose run --rm worker python run_stage1_batch.py \
   --max-workers 1
 ```
 
-The baseline `random-stratified-v1` selector records its policy, processes only the next queue slice, persists ranking snapshots, and leaves adaptive sampling disabled until outcome statistics are available. Use `--retire-candidate <candidate-id>` when a later stage releases a slot so the next unprocessed targets fill it.
+The live Docker worker uses a 2,000-target batch setting, bounded CPU parallelism, checkpointing, and a 75-candidate promotion capacity. It selects the operational top-X by status priority (`Promising` > `Needs More Data` > `Inconclusive`) and evidence score within each status. A label alone does not bypass the capacity gate. Each published change saves ranking snapshots, and known matches are removed from active views while remaining in replay history.
 
 ## Stage 2 historical validation
 
@@ -54,7 +64,7 @@ docker compose run --rm worker python run_stage2.py \
   --fetch-sectors 1,2,3
 ```
 
-Only `Promising` Stage 1 candidates are eligible by default. Use `--dry-run --allow-nonpromising` only for a diagnostic; results with insufficient historical coverage remain `Needs More Data`.
+The live orchestrator evaluates the current operational top-X from Stage 1; it does not auto-promote a candidate solely because it is labeled `Promising`. Results with insufficient historical coverage remain `Needs More Data`, and the processor can backfill older archive history when a recent two-year window is too sparse.
 
 ## Stage 3 chronological holdout prediction
 
@@ -66,7 +76,7 @@ docker compose run --rm worker python run_stage3.py \
   --history-manifest /app/data/manifests/<history-manifest>.json
 ```
 
-Only `Promising` Stage 2 candidates are eligible by default. Use `--dry-run --allow-nonpromising` for a diagnostic; Stage 3 results are assessments of candidate evidence and never scientific confirmation. Published evaluations and ranking snapshots are stored in DuckDB so replay can read them without rerunning the model.
+The live orchestrator evaluates the current operational top-X from Stage 2 using the same capacity rule. Stage 3 results are assessments of candidate evidence and never scientific confirmation. Published evaluations and ranking snapshots are stored in DuckDB so replay can read them without rerunning the model.
 
 ## Known-object matching and Overall ranking
 
@@ -79,11 +89,11 @@ docker compose run --rm worker python run_catalog_match.py \
   --dry-run
 ```
 
-Remove `--dry-run` to publish a confirmed catalog mapping. The candidate becomes an inactive `Known Match`, remains available in history, and is removed from Overall and all stage ranking snapshots. The remaining active candidates are re-ranked. Promotion selection is capacity-driven but status-gated: only `Promising` candidates inside the configured top-X can be selected; `Needs More Data` does not advance from rank alone.
+Remove `--dry-run` to publish a catalog mapping. The candidate becomes an inactive `Known Match`, remains available in history, and is removed from Overall and all stage ranking snapshots. The remaining active candidates are re-ranked. In replay, the removal event is returned separately so the UI can briefly show an `Already Known` exit row before animating it out of the ranking.
 
 ## Project status
 
-The application assesses potential planets and does not claim scientific confirmation. The production path currently uses an explainable Stage 1 Box Least Squares evidence score and a CPU-capable Stage 3 logistic model adapter with a transparent baseline; a neural-network experiment remains optional and is not claimed as part of this draft. See `docs/hackathon-build/` for the scope, product requirements, technical specification, build checklist, and item-by-item verification notes.
+The application assesses potential planets and does not claim scientific confirmation. The production path currently uses an explainable Stage 1 Box Least Squares evidence score, Stage 2 repeatability features, and a CPU-capable Stage 3 logistic model adapter with a transparent baseline. A neural-network experiment remains optional and is not claimed as part of this draft. See `docs/hackathon-build/` for the scope, product requirements, technical specification, build checklist, and item-by-item verification notes.
 
 ## Replay and candidate investigation
 

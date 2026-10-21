@@ -18,7 +18,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--manifest",
         type=Path,
-        default=data_dir / "manifests" / "stage1-target-universe.jsonl",
+        default=Path(
+            os.getenv(
+                "STAGE1_MANIFEST",
+                str(data_dir / "manifests" / "stage1-target-universe.jsonl"),
+            )
+        ),
     )
     parser.add_argument("--batch-size", type=int, default=int(os.getenv("STAGE1_BATCH_SIZE", "4")))
     parser.add_argument(

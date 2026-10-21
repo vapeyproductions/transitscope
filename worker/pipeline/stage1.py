@@ -12,7 +12,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.timeseries import BoxLeastSquares
 
-from pipeline.lifecycle import active_candidates, movement_for_ranks
+from pipeline.lifecycle import STATUS_PRIORITY, active_candidates, movement_for_ranks
 from storage.duckdb_store import DuckDBStore
 
 
@@ -424,10 +424,22 @@ def publish_stage1_result(
         "last_evaluated_at": evaluated_at,
     }
     stage1_pool = [candidate for candidate in previous if candidate["current_stage"] == "stage1"] + [new_candidate]
-    stage1_pool.sort(key=lambda candidate: (-float(candidate["stage_score"] or 0.0), candidate["candidate_id"]))
+    stage1_pool.sort(
+        key=lambda candidate: (
+            -STATUS_PRIORITY.get(str(candidate.get("status")), 0),
+            -float(candidate["stage_score"] or 0.0),
+            candidate["candidate_id"],
+        )
+    )
     stage1_ranks = {candidate["candidate_id"]: index for index, candidate in enumerate(stage1_pool, 1)}
     overall_pool = previous + [new_candidate]
-    overall_pool.sort(key=lambda candidate: (-float(candidate["overall_score"] or 0.0), candidate["candidate_id"]))
+    overall_pool.sort(
+        key=lambda candidate: (
+            -STATUS_PRIORITY.get(str(candidate.get("status")), 0),
+            -float(candidate["overall_score"] or 0.0),
+            candidate["candidate_id"],
+        )
+    )
     overall_ranks = {candidate["candidate_id"]: index for index, candidate in enumerate(overall_pool, 1)}
     candidate_updates = []
     for candidate in previous:

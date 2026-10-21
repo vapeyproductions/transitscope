@@ -51,7 +51,11 @@ class ReplayStoreTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual([row["candidate_id"] for row in first["rows"]], ["c1", "c2"])
         self.assertEqual(first["rows"][0]["status"], "Promising")
-        self.assertEqual(self.store.replay_snapshot("stage1", 3, 100)["rows"][0]["candidate_id"], "c2")
+        third = self.store.replay_snapshot("stage1", 3, 100)
+        self.assertEqual(third["rows"][0]["candidate_id"], "c2")
+        self.assertEqual(third["removed"][0]["candidate_id"], "c1")
+        self.assertEqual(third["removed"][0]["rank"], 2)
+        self.assertEqual(third["removed"][0]["removal_reason"], "Already Known")
 
         events = self.store.replay_events("stage1", 1, 3)["events"]
         self.assertEqual([event["event_type"] for event in events], ["stage1_evaluated", "stage1_evaluated", "stage1_evaluated", "known_match"])

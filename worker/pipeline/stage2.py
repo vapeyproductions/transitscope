@@ -13,11 +13,11 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from pipeline.stage1 import Stage1Processor
-from pipeline.lifecycle import movement_for_ranks
+from pipeline.lifecycle import STATUS_PRIORITY, movement_for_ranks, processed_target_count
 from storage.duckdb_store import DuckDBStore
 
 
-MODEL_VERSION = "stage2-repeatability-v1"
+MODEL_VERSION = "stage2-repeatability-v2-backfill"
 RANKING_VERSION = "stage2-overall-v1"
 
 
@@ -153,6 +153,21 @@ class Stage2Processor:
             window_time = time_values
             window_flux = flux_values
         coverage_days = float(window_time[-1] - window_time[0])
+        backfilled_beyond_lookback = False
+        if (
+            coverage_days < self.config.minimum_coverage_days
+            and float(time_values[-1] - time_values[0]) > coverage_days
+        ):
+            # Archive coverage can be episodic: a target may have an old TESS
+            # sector and a recent sector with a large gap between them.  When
+            # the recent lookback cannot meet the operational minimum, use the
+            # complete available history rather than silently discarding the
+            # older observations.  This is a data-backfill decision, not a
+            # second period search.
+            window_time = time_values
+            window_flux = flux_values
+            coverage_days = float(window_time[-1] - window_time[0])
+            backfilled_beyond_lookback = True
 
         features: dict[str, Any] = {
             "model_version": MODEL_VERSION,
@@ -164,6 +179,8 @@ class Stage2Processor:
             "window_end": float(window_time[-1]),
             "coverage_days": coverage_days,
             "missing_history_days": max(0.0, self.config.target_lookback_days - coverage_days),
+            "backfilled_beyond_lookback": backfilled_beyond_lookback,
+            "window_policy": "recent-window-with-full-history-backfill",
             "stage1_period_days": period,
             "stage1_transit_time": transit_time,
         }
@@ -383,13 +400,49 @@ def publish_stage2_result(
             "last_evaluated_at": result["evaluated_at"],
         }
     )
-    stage2_pool.sort(key=lambda item: (-float(item["stage_score"] or 0.0), item["candidate_id"]))
+    stage2_pool.sort(
+        key=lambda item: (
+            -STATUS_PRIORITY.get(str(item.get("status")), 0),
+            -float(item["stage_score"] or 0.0),
+            item["candidate_id"],
+        )
+    )
     stage2_ranks = {item["candidate_id"]: index for index, item in enumerate(stage2_pool, 1)}
+
+    stage1_pool = [
+        item
+        for item in candidates
+        if item["current_stage"] == "stage1" and item["candidate_id"] != candidate_id
+    ]
+    stage1_pool.sort(
+        key=lambda item: (
+            -STATUS_PRIORITY.get(str(item.get("status")), 0),
+            -float(item["stage_score"] or 0.0),
+            item["candidate_id"],
+        )
+    )
+    stage1_ranks = {item["candidate_id"]: index for index, item in enumerate(stage1_pool, 1)}
+
+    stage3_pool = [item for item in candidates if item["current_stage"] == "stage3"]
+    stage3_pool.sort(
+        key=lambda item: (
+            -STATUS_PRIORITY.get(str(item.get("status")), 0),
+            -float(item["stage_score"] or 0.0),
+            item["candidate_id"],
+        )
+    )
+    stage3_ranks = {item["candidate_id"]: index for index, item in enumerate(stage3_pool, 1)}
 
     promoted = next(item for item in stage2_pool if item["candidate_id"] == candidate_id)
     overall_pool = [item for item in candidates if item["candidate_id"] != candidate_id]
     overall_pool.append(promoted)
-    overall_pool.sort(key=lambda item: (-float(item["overall_score"] or 0.0), item["candidate_id"]))
+    overall_pool.sort(
+        key=lambda item: (
+            -STATUS_PRIORITY.get(str(item.get("status")), 0),
+            -float(item["overall_score"] or 0.0),
+            item["candidate_id"],
+        )
+    )
     overall_ranks = {item["candidate_id"]: index for index, item in enumerate(overall_pool, 1)}
     previous_by_id = {item["candidate_id"]: item for item in candidates}
 
@@ -405,7 +458,13 @@ def publish_stage2_result(
                 "candidate_id": item["candidate_id"],
                 "current_stage": "stage2" if item["candidate_id"] == candidate_id else item["current_stage"],
                 "rank_overall": new_overall_rank,
-                "rank_stage": stage2_ranks.get(item["candidate_id"], old["rank_stage"]),
+                "rank_stage": stage2_ranks.get(
+                    item["candidate_id"],
+                    stage1_ranks.get(
+                        item["candidate_id"],
+                        stage3_ranks.get(item["candidate_id"], old["rank_stage"]),
+                    ),
+                ),
                 "rank_delta": delta,
                 "movement_kind": movement,
                 "active": True,
@@ -488,13 +547,22 @@ def publish_stage2_result(
         ],
         snapshots=[
             {
+                "snapshot_id": f"stage1-snapshot-{version}",
+                "view": "stage1",
+                "sequence_number": version,
+                "occurred_at": evaluated_at,
+                "candidate_order_json": [item["candidate_id"] for item in stage1_pool],
+                "active_candidate_count": len(stage1_pool),
+                "processed_target_count": processed_target_count(store),
+            },
+            {
                 "snapshot_id": f"stage2-snapshot-{version}",
                 "view": "stage2",
                 "sequence_number": version,
                 "occurred_at": evaluated_at,
                 "candidate_order_json": [item["candidate_id"] for item in stage2_pool],
                 "active_candidate_count": len(stage2_pool),
-                "processed_target_count": len(overall_pool),
+                "processed_target_count": processed_target_count(store),
             },
             {
                 "snapshot_id": f"overall-snapshot-{version}",
@@ -503,7 +571,7 @@ def publish_stage2_result(
                 "occurred_at": evaluated_at,
                 "candidate_order_json": [item["candidate_id"] for item in overall_pool],
                 "active_candidate_count": len(overall_pool),
-                "processed_target_count": len(overall_pool),
+                "processed_target_count": processed_target_count(store),
             },
         ],
         candidate_updates=updates,

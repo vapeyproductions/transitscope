@@ -140,14 +140,38 @@ class MastProductAdapter:
         }
 
     def query_observations(self) -> list[dict[str, Any]]:
+        """Return observations for the configured target and sector."""
+
+        return self._query_observations(sector=self.config.sector, target_name=self.config.target_name)
+
+    def query_all_observations(self, *, target_name: str | None = None) -> list[dict[str, Any]]:
+        """Return all TESS timeseries observations for a target across sectors.
+
+        MAST is an archive rather than a continuously streaming sensor.  The live
+        worker uses this method to discover newly available sectors without
+        hard-coding a sector list.
+        """
+
+        return self._query_observations(
+            sector=None,
+            target_name=self.config.target_name if target_name is None else target_name,
+        )
+
+    def _query_observations(
+        self,
+        *,
+        sector: int | None,
+        target_name: str | None,
+    ) -> list[dict[str, Any]]:
         filters: list[dict[str, Any]] = [
             {"paramName": "obs_collection", "values": ["TESS"]},
-            {"paramName": "sequence_number", "values": [self.config.sector]},
             {"paramName": "dataproduct_type", "values": ["timeseries"]},
         ]
-        if self.config.target_name:
+        if sector is not None:
+            filters.insert(1, {"paramName": "sequence_number", "values": [sector]})
+        if target_name:
             filters.append(
-                {"paramName": "target_name", "values": [self.config.target_name]}
+                {"paramName": "target_name", "values": [str(target_name).removeprefix("TIC ").strip()]}
             )
 
         response = self._mast_request(
@@ -159,7 +183,7 @@ class MastProductAdapter:
                     "filters": filters,
                 },
                 "format": "json",
-                "pagesize": self.config.max_observations,
+                "pagesize": self.config.max_observations if sector is not None else 5000,
                 "page": 1,
                 "removenullcolumns": True,
             }
