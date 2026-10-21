@@ -116,3 +116,13 @@ Nearby-star information is relevant as a contamination and systematics signal, n
 - Downloads use a temporary `.part` file and atomic rename; a rerun reused the cache with the same checksum. Raw data and runtime manifests remain ignored by Git.
 - Added adapter tests and verified six tests pass. The explicit no-match path returned the clear provider error `MAST returned no TESS timeseries observations` with exit code 2.
 - MAST references used for the implementation: [MAST API documentation](https://mast.stsci.edu/api/v0/index.html), [MAST services](https://mast.stsci.edu/api/v0/_services.html), and [TESS archive query guidance](https://outerspace.stsci.edu/spaces/TESS/pages/30278757/7.0%2B-%2BTips%2Band%2BTricks%2Bto%2BGetting%2BTESS%2BData%2BAt%2BMAST).
+
+### Item 5: One-target Stage 1 pipeline — complete
+
+- Added the Astropy FITS reader and quality-aware cleaning path. The processor prefers `PDCSAP_FLUX`, removes non-finite/quality-flagged samples, robustly normalizes flux, and removes a linear long-timescale trend.
+- Added a bounded Astropy Box Least Squares search over the configured 0.5-day to 14-day period range and interpretable features for period, duration, depth, BLS SNR/power, transit count, odd/even consistency, scatter, cadence, coverage, missingness, and quality flags.
+- Added deterministic `stage1-bls-v1` evidence scoring. The value is explicitly stored as an evidence score, not a planet probability; this real target scored 56.112 and was classified `Inconclusive` because its BLS SNR was below the promising threshold.
+- Added normalized-series persistence as a compressed `.npz` artifact, plus transactional persistence of the target manifest, ingest run, candidate, evaluation, pipeline event, and first Stage 1 ranking snapshot.
+- Added `worker/run_stage1.py`; the real cached TESS light curve published version 1 with candidate `stage1-tic-277691220`. DuckDB inspection confirmed one published version, one candidate, one evaluation, and one `stage1` snapshot.
+- The first worker dependency build exposed an Astropy/NumPy 2.4 incompatibility; pinning `numpy<2.4` resolved it. The complete worker suite passes with 8 tests.
+- Astropy references used for FITS and BLS: [FITS file handling](https://docs.astropy.org/en/stable/io/fits/) and [Box Least Squares](https://docs.astropy.org/en/stable/api/astropy.timeseries.BoxLeastSquares.html).

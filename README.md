@@ -12,7 +12,7 @@ docker compose up --build
 - API health: http://localhost:8000/api/health
 - API status: http://localhost:8000/api/status
 
-The `data/` directory is a durable local volume for provider cache, normalized data, DuckDB state, and replay history. The ingestion and processing pipeline is being built incrementally; current services only provide the foundation health checks.
+The `data/` directory is a durable local volume for provider cache, normalized data, DuckDB state, and replay history. The ingestion and processing pipeline is being built incrementally; the current stack includes the official MAST/TESS probe and a one-target Stage 1 worker path.
 
 ## MAST/TESS probe
 

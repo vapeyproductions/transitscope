@@ -40,7 +40,7 @@ The target universe remains approximately 126,000 stars. The implementation will
   Acceptance: The probe can retrieve an official MAST/TESS artifact or reports a reproducible provider failure; the cached artifact has source identifiers and retrieval metadata; no raw file is committed to the repository.
   Verify: Run `python scripts/probe_mast.py` with the probe configuration and inspect the resulting manifest/cache metadata. Commit the adapter and probe.
 
-- [ ] **5. Process one target through Stage 1**
+- [x] **5. Process one target through Stage 1**
   Spec ref: `spec.md > 6. Processing pipeline > 6.2 Light-curve cleaning and normalization` and `spec.md > 6.3 Stage 1: broad periodic-dip screening`
   What to build: Parse the real product, apply quality filtering and robust normalization, run the transparent periodic-dip/BLS feature extraction, calculate a versioned evidence score, and persist the target, evaluation, candidate status, and first ranking event.
   Acceptance: One real target produces a normalized series, interpretable Stage 1 features, a score labeled as evidence rather than planet probability, and a valid candidate lifecycle state including `Needs More Data` when coverage is insufficient.
