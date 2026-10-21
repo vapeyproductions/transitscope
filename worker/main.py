@@ -5,6 +5,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from storage.duckdb_store import DuckDBStore
+from storage.paths import DataPaths
+
 
 running = True
 
@@ -36,6 +39,9 @@ def main() -> None:
 
     data_dir = Path(os.getenv("DATA_DIR", "/app/data"))
     heartbeat_seconds = float(os.getenv("WORKER_HEARTBEAT_SECONDS", "5"))
+    paths = DataPaths(data_dir)
+    paths.ensure()
+    DuckDBStore(paths.database).initialize()
 
     while running:
         write_status(data_dir, "idle")

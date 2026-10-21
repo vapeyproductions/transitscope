@@ -87,3 +87,13 @@ Nearby-star information is relevant as a contamination and systematics signal, n
 - API health returned `status: ok`; API status reported the worker `idle` with a live heartbeat; the web service returned HTML.
 - The web dependency audit initially exposed a vulnerable older Next.js line. The scaffold was upgraded to Next.js 16.4.2 and React/React DOM 19.3.1; the final image build reported zero vulnerabilities.
 - The first foundation commit should be created before beginning item 2.
+
+### Item 2: DuckDB schemas, Parquet paths, and publish boundary — complete
+
+- Added `DataPaths` for raw, normalized, manifests, and the DuckDB database under the shared data directory.
+- Added DuckDB schemas for manifests, ingest runs, candidates, evaluations, pipeline events, ranking snapshots, and publish versions.
+- Added a transactional single-writer `publish_batch` operation with idempotent inserts and a published-version boundary.
+- Added three storage tests covering directory creation, idempotent publishing, and rollback of a failed batch.
+- Rebuilt the worker with DuckDB 1.4.3; `python -m unittest discover -s tests -p 'test_*.py'` passed with 3 tests.
+- Inspected the running database: all seven expected tables exist and no version is published before a batch runs.
+- The database and heartbeat remain runtime data ignored by Git.

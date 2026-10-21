@@ -22,7 +22,7 @@ The target universe remains approximately 126,000 stars. The implementation will
   Acceptance: Docker starts the services; the API reports healthy; the worker reports its configured mode; no authentication is required; configuration values are read from environment variables.
   Verify: Run `docker compose config`, `docker compose up --build`, then check the API and worker health endpoints. Commit the foundation.
 
-- [ ] **2. Create DuckDB schemas, Parquet paths, and the publish boundary**
+- [x] **2. Create DuckDB schemas, Parquet paths, and the publish boundary**
   Spec ref: `spec.md > 5. Normalized data contracts` and `spec.md > 4. System architecture > 4.1 Services`
   What to build: Implement the storage layer for target manifests, ingest runs, candidates, evaluations, pipeline events, ranking snapshots, and published data versions. Add filesystem paths for raw and normalized data. Make writes idempotent and ensure the API cannot observe a partially committed batch.
   Acceptance: A test transaction can insert a target, evaluation, event, and ranking snapshot; the published version appears only after all referenced rows exist; re-running the same write does not duplicate it.

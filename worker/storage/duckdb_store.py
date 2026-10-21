@@ -1,0 +1,225 @@
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Iterable, Mapping, Sequence
+
+import duckdb
+
+
+SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _json_value(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True)
+
+
+class DuckDBStore:
+    """Single-writer store for durable pipeline state and replay history."""
+
+    def __init__(self, database: Path) -> None:
+        self.database = Path(database)
+
+    def connect(self) -> duckdb.DuckDBPyConnection:
+        self.database.parent.mkdir(parents=True, exist_ok=True)
+        return duckdb.connect(str(self.database))
+
+    def initialize(self) -> None:
+        schema = SCHEMA_PATH.read_text()
+        with self.connect() as connection:
+            connection.execute(schema)
+
+    def publish_batch(
+        self,
+        *,
+        version: int,
+        targets: Sequence[Mapping[str, object]] = (),
+        ingest_runs: Sequence[Mapping[str, object]] = (),
+        candidates: Sequence[Mapping[str, object]] = (),
+        evaluations: Sequence[Mapping[str, object]] = (),
+        events: Sequence[Mapping[str, object]] = (),
+        snapshots: Sequence[Mapping[str, object]] = (),
+        note: str | None = None,
+    ) -> None:
+        """Write one consistent batch, publishing only after every row succeeds."""
+
+        self.initialize()
+        with self.connect() as connection:
+            connection.execute("BEGIN TRANSACTION")
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO publish_versions (version, status, created_at, note)
+                    VALUES (?, 'building', ?, ?)
+                    ON CONFLICT (version) DO NOTHING
+                    """,
+                    [version, _now(), note],
+                )
+
+                self._insert_many(
+                    connection,
+                    "target_manifest",
+                    (
+                        "target_id",
+                        "provider_target_id",
+                        "ra_deg",
+                        "dec_deg",
+                        "sector",
+                        "cadence",
+                        "source_product_family",
+                        "selection_bucket",
+                        "manifest_status",
+                    ),
+                    targets,
+                )
+                self._insert_many(
+                    connection,
+                    "ingest_runs",
+                    (
+                        "run_id",
+                        "provider",
+                        "query_config_json",
+                        "started_at",
+                        "finished_at",
+                        "status",
+                        "targets_seen",
+                        "products_downloaded",
+                        "products_failed",
+                        "error_json",
+                    ),
+                    ingest_runs,
+                    json_columns={"query_config_json", "error_json"},
+                )
+                self._insert_many(
+                    connection,
+                    "candidates",
+                    (
+                        "candidate_id",
+                        "target_id",
+                        "current_stage",
+                        "status",
+                        "overall_score",
+                        "stage_score",
+                        "rank_overall",
+                        "rank_stage",
+                        "activity",
+                        "rank_delta",
+                        "movement_kind",
+                        "last_evaluated_at",
+                        "known_match_id",
+                        "active",
+                    ),
+                    candidates,
+                )
+                self._insert_many(
+                    connection,
+                    "evaluations",
+                    (
+                        "evaluation_id",
+                        "candidate_id",
+                        "stage",
+                        "model_version",
+                        "data_window_start",
+                        "data_window_end",
+                        "input_product_ids",
+                        "feature_json",
+                        "metric_json",
+                        "classification",
+                        "data_sufficiency",
+                    ),
+                    evaluations,
+                    json_columns={"input_product_ids", "feature_json", "metric_json"},
+                )
+                self._insert_many(
+                    connection,
+                    "pipeline_events",
+                    (
+                        "event_id",
+                        "sequence_number",
+                        "candidate_id",
+                        "stage",
+                        "event_type",
+                        "payload_json",
+                        "occurred_at",
+                        "model_run_id",
+                    ),
+                    events,
+                    json_columns={"payload_json"},
+                )
+                self._insert_many(
+                    connection,
+                    "ranking_snapshots",
+                    (
+                        "snapshot_id",
+                        "view",
+                        "sequence_number",
+                        "occurred_at",
+                        "candidate_order_json",
+                        "active_candidate_count",
+                        "processed_target_count",
+                    ),
+                    snapshots,
+                    json_columns={"candidate_order_json"},
+                )
+
+                connection.execute(
+                    """
+                    UPDATE publish_versions
+                    SET status = 'published', published_at = ?
+                    WHERE version = ?
+                    """,
+                    [_now(), version],
+                )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+
+    @staticmethod
+    def _insert_many(
+        connection: duckdb.DuckDBPyConnection,
+        table: str,
+        columns: Sequence[str],
+        rows: Iterable[Mapping[str, object]],
+        *,
+        json_columns: set[str] | None = None,
+    ) -> None:
+        rows = list(rows)
+        if not rows:
+            return
+
+        placeholders = ", ".join("?" for _ in columns)
+        column_sql = ", ".join(columns)
+        sql = (
+            f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders}) "
+            "ON CONFLICT DO NOTHING"
+        )
+        values = []
+        for row in rows:
+            values.append(
+                [
+                    _json_value(row[column]) if json_columns and column in json_columns else row[column]
+                    for column in columns
+                ]
+            )
+        connection.executemany(sql, values)
+
+    def latest_published_version(self) -> int | None:
+        self.initialize()
+        with self.connect() as connection:
+            result = connection.execute(
+                """
+                SELECT version
+                FROM publish_versions
+                WHERE status = 'published'
+                ORDER BY version DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return int(result[0]) if result else None
+
