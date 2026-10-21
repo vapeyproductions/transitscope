@@ -1,0 +1,45 @@
+services:
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    environment:
+      DATA_DIR: /app/data
+      APP_ENV: local
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    environment:
+      DATA_DIR: /app/data
+      WORKER_MODE: bootstrap
+      WORKER_HEARTBEAT_SECONDS: 5
+    volumes:
+      - ./data:/app/data
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
