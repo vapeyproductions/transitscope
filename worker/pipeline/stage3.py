@@ -782,12 +782,19 @@ def load_stage2_input(store: DuckDBStore, candidate_id: str) -> dict[str, Any] |
     if not candidate or not evaluation:
         return None
     metric_json = json.loads(evaluation[1])
+    stage2_score = metric_json.get("evidence_score")
+    if not isinstance(stage2_score, (int, float)):
+        # Once a candidate reaches Stage 3, candidates.stage_score contains
+        # the Stage 3 score. Fall back to it only for an in-flight Stage 2
+        # record; otherwise preserve the absence of Stage 2 evidence rather
+        # than accidentally displaying the current-stage score as prior data.
+        stage2_score = candidate[4] if candidate[5] == "stage2" else 0.0
     return {
         "candidate_id": candidate[0],
         "target_id": candidate[1],
         "status": candidate[2],
         "overall_score": float(candidate[3] or 0.0),
-        "stage2_score": float(candidate[4] or 0.0),
+        "stage2_score": float(stage2_score or 0.0),
         "current_stage": candidate[5],
         "stage1_score": float(metric_json.get("stage1_score", 0.0)),
         "features": json.loads(evaluation[0]),
