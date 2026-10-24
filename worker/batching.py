@@ -341,12 +341,14 @@ def publish_stage1_batch(
         {
             "candidate_id": result["result"]["candidate_id"],
             "target_id": result["result"]["target_id"],
+            "current_stage": STAGE,
             "status": result["result"]["status"],
             "overall_score": result["result"]["evidence_score"],
             "stage_score": result["result"]["evidence_score"],
             "active": True,
             "activity": result["result"]["activity"],
             "last_evaluated_at": result["result"]["evaluated_at"],
+            "known_match_id": None,
             "processing_slot_occupied": result["result"]["status"] != "Inconclusive",
         }
         for result in results
