@@ -2,7 +2,7 @@ import json
 import os
 import signal
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pipeline.live import run_live_cycle
@@ -125,10 +125,15 @@ def main() -> None:
                     stage3_capacity=int(os.getenv("STAGE3_CAPACITY", "6")),
                     status_callback=lambda state, details: write_status(data_dir, state, details),
                 )
+                poll_seconds = float(os.getenv("LIVE_POLL_SECONDS", "300"))
                 write_status(
                     data_dir,
                     "idle",
-                    {"last_cycle": result, "history_repair": history_repair},
+                    {
+                        "last_cycle": result,
+                        "history_repair": history_repair,
+                        "next_update_at": (datetime.now(timezone.utc) + timedelta(seconds=poll_seconds)).isoformat(),
+                    },
                 )
             except Exception as exc:  # keep the worker alive and make the error inspectable
                 write_status(data_dir, "error", {"error": repr(exc)})
