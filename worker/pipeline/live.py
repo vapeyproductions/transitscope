@@ -145,6 +145,33 @@ def _stage3_needs_data_queue(candidates: list[dict[str, Any]]) -> list[dict[str,
     )
 
 
+def _stage2_needs_data_queue(
+    candidates: list[dict[str, Any]],
+    *,
+    threshold: int,
+) -> list[dict[str, Any]]:
+    """Return Stage 2 Needs More Data rows inside the rolling priority window.
+
+    The window is a reassessment trigger, not a capacity or promotion gate.
+    Candidates remain in the Stage 2 ranking while this helper orders the
+    work queue by the current Stage 2 rank.
+    """
+
+    return sorted(
+        (
+            candidate
+            for candidate in candidates
+            if candidate["current_stage"] == "stage2"
+            and candidate["active"]
+            and candidate["status"] == "Needs More Data"
+            and candidate["promotion_eligible"]
+            and candidate["rank_stage"] is not None
+            and int(candidate["rank_stage"]) <= threshold
+        ),
+        key=lambda candidate: (int(candidate["rank_stage"]), str(candidate["candidate_id"])),
+    )
+
+
 def _stage3_initial_intake_queue(
     store: DuckDBStore,
     *,
@@ -753,8 +780,8 @@ def run_live_cycle(
     Stage 1 has a ranking window for its own reassessment/promotion policy.
     Stage 2 has a separate top-X reassessment window for ``Needs More Data``;
     it is not a promotion cutoff. After the initial Stage 1 baseline, Stage 3
-    is the durable waterfall dispatcher: it reassesses its ranked Needs More
-    Data queue, performs one durable initial intake of the top eligible
+    is the durable waterfall dispatcher: it keeps Stage 2's reassessment
+    queue moving, performs one durable initial intake of the top eligible
     Promising Stage 2 candidates, then calls the highest-ranked eligible
     Promising Stage 2 candidate without a rank cutoff and asks Stage 2 to
     request Stage 1 replacements.
@@ -927,6 +954,7 @@ def run_live_cycle(
     stage3_publish_lock = Lock()
     attempted_stage1: set[str] = set()
     attempted_stage2: set[str] = set()
+    attempted_stage2_reassessments: set[str] = set()
     def request_stage1_reassessment() -> dict[str, Any]:
         """Ask Stage 1 for more data only after Stage 3 requests a handoff."""
 
@@ -1026,15 +1054,90 @@ def run_live_cycle(
                 stage1_requests.append(replacement)
         return result
 
+    stage2_reassessment_budget = max(
+        1,
+        int(
+            os.getenv(
+                "STAGE2_REASSESSMENTS_PER_CYCLE",
+                str(stage2_reassessment_threshold),
+            )
+        ),
+    )
+
+    def run_stage2_reassessment_queue() -> int:
+        """Process the current Stage 2 top-window queue in rank order.
+
+        This sweep is intentionally independent of whether Stage 2 currently
+        has Promising candidates. A new Stage 3 call or Stage 2 publish can
+        change the ranking, so candidates are selected again after every
+        evaluation. The per-cycle set prevents an unchanged candidate from
+        being retried repeatedly in the same cycle, while the stored coverage
+        signature prevents redundant model reruns across cycles.
+        """
+
+        processed = 0
+        while processed < stage2_reassessment_budget:
+            candidates_now = [
+                candidate
+                for candidate in _stage2_needs_data_queue(
+                    active_candidates(store),
+                    threshold=stage2_reassessment_threshold,
+                )
+                if str(candidate["candidate_id"]) not in attempted_stage2_reassessments
+            ]
+            if not candidates_now:
+                break
+
+            candidate = candidates_now[0]
+            candidate_id = str(candidate["candidate_id"])
+            attempted_stage2_reassessments.add(candidate_id)
+            if status_callback:
+                status_callback(
+                    "processing_stage2",
+                    {
+                        "candidate_id": candidate_id,
+                        "rank": int(candidate["rank_stage"]),
+                        "reason": "stage2_top_window_reassessment",
+                    },
+                )
+            stage2_started = time.perf_counter()
+            result = _evaluate_stage2(
+                store,
+                candidate,
+                data_dir=data_dir,
+                max_history_sectors=max_history_sectors,
+            )
+            result.update(
+                {
+                    "queue_kind": "reassessment",
+                    "queue_status": "Needs More Data",
+                    "queue_reason": "stage2_top_window_reassessment",
+                }
+            )
+            elapsed = add_timing("stage2_seconds", stage2_started)
+            if result.get("status") == "Needs More Data":
+                timings["stage2_needs_more_data_seconds"] += elapsed
+            stage2_results.append(result)
+            processed += 1
+
+            # An inconclusive Stage 2 result releases its processing slot, so
+            # the waterfall immediately asks Stage 1 for the replacement.
+            # A Promising result stays in Stage 2 until Stage 3 calls for it.
+            if result.get("status") == "Inconclusive":
+                request_stage2_replacement()
+
+        return processed
+
     def select_stage2_candidate() -> dict[str, Any] | None:
         """Return the highest-ranked Stage 2 Promising candidate for Stage 3.
 
-        If Stage 2 has no eligible Promising row, this is the point where the
-        Stage 3 request is allowed to reassess Stage 2 Needs More Data and,
-        if necessary, request a replacement from Stage 1.
+        Stage 2's top-window reassessment sweep runs before every selection.
+        The fallback replacement loop is only for the case where that sweep
+        still leaves Stage 3 without an eligible Promising candidate.
         """
 
         for _ in range(3):
+            run_stage2_reassessment_queue()
             candidates_now = [
                 candidate
                 for candidate in active_candidates(store)
@@ -1049,48 +1152,6 @@ def run_live_cycle(
             )
             if candidates_now:
                 return candidates_now[0]
-
-            retry_candidates = [
-                candidate
-                for candidate in active_candidates(store)
-                if candidate["current_stage"] == "stage2"
-                and candidate["status"] == "Needs More Data"
-                and candidate["promotion_eligible"]
-                and candidate["rank_stage"] is not None
-                and int(candidate["rank_stage"]) <= stage2_reassessment_threshold
-                and candidate["candidate_id"] not in attempted_stage2
-            ]
-            if retry_candidates:
-                candidate = sorted(
-                    retry_candidates,
-                    key=lambda item: (int(item["rank_stage"]), str(item["candidate_id"])),
-                )[0]
-                candidate_id = str(candidate["candidate_id"])
-                attempted_stage2.add(candidate_id)
-                if status_callback:
-                    status_callback(
-                        "processing_stage2",
-                        {"candidate_id": candidate_id, "reason": "stage3_waterfall_reassessment"},
-                    )
-                stage2_started = time.perf_counter()
-                result = _evaluate_stage2(
-                    store,
-                    candidate,
-                    data_dir=data_dir,
-                    max_history_sectors=max_history_sectors,
-                )
-                result.update(
-                    {
-                        "queue_kind": "reassessment",
-                        "queue_status": "Needs More Data",
-                        "queue_reason": "stage3_requested_stage2_needs_more_data_reassessment",
-                    }
-                )
-                elapsed = add_timing("stage2_seconds", stage2_started)
-                if result.get("status") == "Needs More Data":
-                    timings["stage2_needs_more_data_seconds"] += elapsed
-                stage2_results.append(result)
-                continue
 
             if request_stage2_replacement() is None:
                 return None
@@ -1110,6 +1171,10 @@ def run_live_cycle(
     reassessment_budget = max(1, int(os.getenv("STAGE3_REASSESSMENTS_PER_CYCLE", "4")))
     attempted_stage3: set[str] = set()
     if waterfall_ready:
+        # Stage 2 owns this rolling window even when Promising candidates are
+        # available. This is the part that prevents a healthy-looking Stage 2
+        # ranking from hiding a growing Needs More Data backlog.
+        run_stage2_reassessment_queue()
         stage3_intake = _stage3_initial_intake_queue(
             store,
             size=stage3_initial_intake_size,
@@ -1157,6 +1222,9 @@ def run_live_cycle(
             add_timing("stage3_seconds", stage3_started)
             stage3_results.append(result)
             check_catalog("stage3")
+            if result.get("publish_version") is not None:
+                request_stage2_replacement()
+                run_stage2_reassessment_queue()
         stage3_intake = _stage3_initial_intake_queue(
             store,
             size=stage3_initial_intake_size,
@@ -1248,14 +1316,14 @@ def run_live_cycle(
                 timings["stage3_needs_more_data_seconds"] += dispatch_elapsed
             stage3_results.append(result)
             check_catalog("stage3")
+            if result.get("publish_version") is not None:
+                # Every actual Stage 2 -> Stage 3 handoff opens a Stage 2
+                # request, regardless of whether the Stage 3 result later
+                # resolves as Prime, Inconclusive, or Known Match.
+                request_stage2_replacement()
+                run_stage2_reassessment_queue()
             if result.get("status") in {"Promising", "Inconclusive"}:
                 enqueue_sources([candidate_id])
-                # This Stage 2 candidate has now resolved in Stage 3, so the
-                # waterfall must immediately refill the Stage 2 queue from
-                # Stage 1. Previously this only happened after Stage 2 had no
-                # eligible Promising rows left, which allowed the existing
-                # Stage 2 backlog to starve Stage 1 indefinitely.
-                request_stage2_replacement()
 
     # Stage 3 is the final assessment stage, so a catalog match here is a
     # legitimate Stage 3 removal and is retained in the identified/replay
@@ -1304,6 +1372,15 @@ def run_live_cycle(
                 for result in stage3_results
                 if result.get("status") != "error"
                 and result.get("candidate_id") in attempted_stage3
+            ),
+        },
+        "stage2_reassessment": {
+            "threshold": stage2_reassessment_threshold,
+            "requested_count": stage2_reassessment_budget if waterfall_ready else 0,
+            "evaluated_count": sum(
+                1
+                for result in stage2_results
+                if result.get("queue_reason") == "stage2_top_window_reassessment"
             ),
         },
         "timings": {key: round(value, 3) for key, value in timings.items()},

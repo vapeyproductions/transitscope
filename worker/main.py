@@ -330,6 +330,7 @@ def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -
         "ranked_samples": ranked_queue_samples(store),
         "queue_events": queue_cycle_events(result, store),
         "events": events,
+        "stage2_reassessment": result.get("stage2_reassessment", {}),
         "stage3_reassessment": result.get("stage3_reassessment", {}),
         "stage3_intake": result.get("stage3_intake", {}),
     }
