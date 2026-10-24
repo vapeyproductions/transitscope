@@ -352,7 +352,7 @@ def _load_catalog_context(data_dir: Path) -> dict[str, Any]:
     config = ExoplanetArchiveConfig(
         data_dir=data_dir,
         tables=("pscomppars", "toi"),
-        max_rows=int(os.getenv("CATALOG_MAX_ROWS", "5000")),
+        max_rows=int(os.getenv("CATALOG_MAX_ROWS", "10000")),
         request_timeout_seconds=int(os.getenv("CATALOG_REQUEST_TIMEOUT_SECONDS", "60")),
         cache_ttl_hours=float(os.getenv("CATALOG_CACHE_TTL_HOURS", "168")),
     )

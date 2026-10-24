@@ -15,6 +15,8 @@ from urllib.request import Request, urlopen
 
 
 DEFAULT_TAP_ENDPOINT = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync"
+CATALOG_CACHE_SCHEMA_VERSION = "exoplanet-archive-cache.v2"
+CATALOG_PROJECTION_VERSION = "pscomppars-tic-id-v2"
 
 
 def utc_now() -> str:
@@ -102,7 +104,7 @@ class ExoplanetArchiveAdapter:
 
     TABLE_COLUMNS = {
         "pscomppars": (
-            "pl_name,hostname,ra,dec,pl_orbper"
+            "pl_name,hostname,tic_id,ra,dec,pl_orbper"
         ),
         "toi": "toi,tid,ra,dec,pl_orbper,tfopwg_disp",
     }
@@ -115,6 +117,7 @@ class ExoplanetArchiveAdapter:
         key = hashlib.sha256(
             json.dumps(
                 {
+                    "projection_version": CATALOG_PROJECTION_VERSION,
                     "tables": self.config.tables,
                     "max_rows": self.config.max_rows,
                     "tap_endpoint": self.config.tap_endpoint,
@@ -142,7 +145,7 @@ class ExoplanetArchiveAdapter:
 
         status = "success" if records and not errors else "partial" if records else "failed"
         payload = {
-            "schema_version": "exoplanet-archive-cache.v1",
+            "schema_version": CATALOG_CACHE_SCHEMA_VERSION,
             "status": status,
             "provider": "NASA Exoplanet Archive",
             "fetched_at": utc_now(),
@@ -276,6 +279,16 @@ class ExoplanetArchiveAdapter:
     def _cache_is_fresh(self, path: Path) -> bool:
         if not path.exists():
             return False
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, ValueError, TypeError):
+            return False
+        if payload.get("schema_version") != CATALOG_CACHE_SCHEMA_VERSION:
+            return False
+        if payload.get("status") not in {"success", "partial"}:
+            return False
+        if not payload.get("records"):
+            return False
         age_seconds = datetime.now(timezone.utc).timestamp() - path.stat().st_mtime
         return age_seconds <= self.config.cache_ttl_hours * 3600.0
 
@@ -332,6 +345,8 @@ def _angular_separation_deg(
 
 __all__ = [
     "CatalogRecord",
+    "CATALOG_CACHE_SCHEMA_VERSION",
+    "CATALOG_PROJECTION_VERSION",
     "DEFAULT_TAP_ENDPOINT",
     "ExoplanetArchiveAdapter",
     "ExoplanetArchiveConfig",

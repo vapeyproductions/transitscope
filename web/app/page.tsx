@@ -219,6 +219,13 @@ type MonitoringCluster = {
   recommendation: string;
 };
 
+type CatalogHealth = {
+  status?: string | null;
+  provider_status?: string | null;
+  matches?: number;
+  stages?: Array<{ stage?: string | null; status?: string | null; matches?: number; catalog_status?: string | null }>;
+};
+
 type MonitoringOverview = {
   generated_at: string;
   data_version: number | null;
@@ -227,7 +234,7 @@ type MonitoringOverview = {
     autostart_enabled: boolean;
     reason: string;
   };
-  worker: { state?: string; last_heartbeat?: string | null; reason?: string };
+  worker: { state?: string; last_heartbeat?: string | null; reason?: string; catalog_health?: CatalogHealth };
   universe: {
     configured_count: number;
     manifest_count: number;
@@ -588,6 +595,12 @@ export function MonitoringPanel({ refreshKey }: { refreshKey: number }) {
   }, []);
 
   const stages = overview ? Object.values(overview.stages) : [];
+  const catalogHealth = overview?.worker.catalog_health;
+  const catalogSummary = catalogHealth?.status === "matched"
+    ? `${catalogHealth.matches ?? 0} match${catalogHealth.matches === 1 ? "" : "es"}`
+    : catalogHealth?.status === "no_matches"
+      ? "No matches"
+      : "Awaiting completed cycle";
 
   if (loading && !overview) {
     return <section className="operations-panel"><div className="empty-state"><div className="loading-ring" aria-hidden="true" /><h4>Reading ML operations state.</h4><p>This view only reads persisted metrics. It never starts the worker.</p></div></section>;
@@ -606,6 +619,7 @@ export function MonitoringPanel({ refreshKey }: { refreshKey: number }) {
       <article className="ops-card ops-card-wide"><span className="metric-label">Universe progress</span><div className="ops-big-number"><strong>{overview.universe.processed_count.toLocaleString()}</strong><span> / {overview.universe.configured_count.toLocaleString()} processed</span></div><div className="progress-track"><span style={{ width: `${Math.max(0, Math.min(100, overview.universe.progress_percent))}%` }} /></div><div className="ops-inline-stats"><span><strong>{overview.universe.remaining_count.toLocaleString()}</strong> remaining</span><span><strong>{overview.universe.manifest_count.toLocaleString()}</strong> manifested</span><span><strong>{overview.universe.initial_stage1_pool.toLocaleString()}</strong> Stage 1 pool</span></div></article>
       <article className="ops-card"><span className="metric-label">Worker heartbeat</span><strong className="ops-card-value">{humanizeState(overview.worker.state)}</strong><span className="metric-detail">{overview.worker.last_heartbeat ? formatDate(overview.worker.last_heartbeat) : "No heartbeat yet"}</span><span className="ops-card-note">Data version {overview.data_version ?? "—"}</span></article>
       <article className="ops-card"><span className="metric-label">Coverage health</span><strong className="ops-card-value">{overview.data_health.coverage.product_count.toLocaleString()}</strong><span className="metric-detail">products across {overview.data_health.coverage.candidate_count.toLocaleString()} candidates</span><span className="ops-card-note">{overview.data_health.coverage.window_count.toLocaleString()} windows observed</span></article>
+      <article className="ops-card"><span className="metric-label">Catalog cross-reference</span><strong className="ops-card-value">{catalogSummary}</strong><span className="metric-detail">{catalogHealth?.provider_status ? `Archive status: ${catalogHealth.provider_status}` : "No completed catalog cycle recorded yet"}</span><span className="ops-card-note">Known matches are removed only after this gate matches them.</span></article>
     </div>
     <section className="ops-section"><div className="ops-section-heading"><div><p className="eyebrow">Capacity and classifications</p><h4>Stage pressure</h4></div><span className="section-note">Occupied slots are the candidates currently consuming compute capacity.</span></div><div className="stage-ops-grid">{stages.map((stage) => <article className="stage-ops-card" key={stage.stage}><div className="stage-ops-card-heading"><strong>{stageName(stage.stage)}</strong><span>{stage.occupied_slots} / {stage.capacity} slots</span></div><div className="progress-track"><span style={{ width: `${stage.capacity ? Math.min(100, (stage.occupied_slots / stage.capacity) * 100) : 0}%` }} /></div><div className="stage-counts">{["Promising", "Needs More Data", "Inconclusive", "Known Match"].map((status) => <span key={status}><strong>{stage.counts[status] ?? 0}</strong>{monitoringStatusLabel(status)}</span>)}</div><small>Last evaluation: {formatDate(stage.last_evaluated_at)}</small></article>)}</div></section>
     <section className="ops-section"><div className="ops-section-heading"><div><p className="eyebrow">Model registry</p><h4>Algorithms and evidence quality</h4></div><span className="section-note">Metrics are aggregates of persisted evaluations, not new runs.</span></div>{overview.models.length ? <div className="model-registry">{overview.models.map((model) => <article className="model-card" key={`${model.stage}-${model.model_version}`}><div className="model-card-heading"><span className="stage-badge">{stageName(model.stage)}</span><strong>{model.model_version}</strong></div><div className="model-stat-grid"><span><small>Evaluations</small><strong>{model.evaluation_count}</strong></span><span><small>Evidence</small><strong>{numberLabel(model.mean_evidence_score, 3)}</strong></span><span><small>Holdout F1</small><strong>{numberLabel(model.mean_holdout_f1, 2)}</strong></span><span><small>Model lift</small><strong>{numberLabel(model.mean_model_lift, 2)}</strong></span></div><p>{Object.entries(model.status_counts).map(([status, count]) => `${status}: ${count}`).join(" · ") || "No classifications recorded"}</p><small>Last evaluated {formatDate(model.last_evaluated_at)}</small></article>)}</div> : <div className="ops-empty">No model evaluations are persisted yet.</div>}</section>

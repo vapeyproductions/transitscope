@@ -126,11 +126,19 @@ def main() -> None:
                     status_callback=lambda state, details: write_status(data_dir, state, details),
                 )
                 poll_seconds = float(os.getenv("LIVE_POLL_SECONDS", "300"))
+                catalog = result.get("catalog") if isinstance(result, dict) else None
+                catalog_health = {
+                    "status": catalog.get("status") if isinstance(catalog, dict) else "unknown",
+                    "provider_status": catalog.get("catalog_status") if isinstance(catalog, dict) else None,
+                    "matches": int(catalog.get("matches") or 0) if isinstance(catalog, dict) else 0,
+                    "stages": catalog.get("stages", []) if isinstance(catalog, dict) else [],
+                }
                 write_status(
                     data_dir,
                     "idle",
                     {
                         "last_cycle": result,
+                        "catalog_health": catalog_health,
                         "history_repair": history_repair,
                         "next_update_at": (datetime.now(timezone.utc) + timedelta(seconds=poll_seconds)).isoformat(),
                     },

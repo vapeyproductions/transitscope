@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ingestion.exoplanet_archive import (
+    CATALOG_CACHE_SCHEMA_VERSION,
     CatalogRecord,
     ExoplanetArchiveAdapter,
     ExoplanetArchiveConfig,
@@ -34,6 +35,23 @@ class FakeArchiveAdapter(ExoplanetArchiveAdapter):
 
 
 class CatalogTests(unittest.TestCase):
+    def test_live_projection_includes_tic_id_and_failed_cache_is_not_reused(self) -> None:
+        self.assertIn("tic_id", ExoplanetArchiveAdapter.TABLE_COLUMNS["pscomppars"])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            adapter = ExoplanetArchiveAdapter(ExoplanetArchiveConfig(data_dir=Path(temp_dir)))
+            cache_path = adapter.cache_path
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": CATALOG_CACHE_SCHEMA_VERSION,
+                        "status": "failed",
+                        "records": [],
+                    }
+                )
+            )
+            self.assertFalse(adapter._cache_is_fresh(cache_path))
+
     def test_overall_ranking_uses_combined_score_before_current_status(self) -> None:
         candidates = [
             {
