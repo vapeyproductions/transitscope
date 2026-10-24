@@ -14,8 +14,10 @@ from ingestion.mast_history import MastHistoryAdapter
 from pipeline.lifecycle import (
     active_candidates,
     candidate_match_inputs,
+    catalog_audit_candidates,
     processed_target_count,
     promotable_candidates,
+    publish_catalog_audit_events,
     publish_known_matches,
     resolve_priority_aliases,
     stage3_replacement_debt,
@@ -394,12 +396,27 @@ def _load_catalog_context(data_dir: Path) -> dict[str, Any]:
     }
 
 
+def _catalog_signature(catalog_context: dict[str, Any]) -> str:
+    payload = catalog_context["payload"]
+    return "|".join(
+        str(value or "")
+        for value in (
+            payload.get("schema_version"),
+            payload.get("fetched_at"),
+            payload.get("cache_path"),
+            payload.get("record_count"),
+        )
+    )
+
+
 def _match_known_candidates(
     store: DuckDBStore,
     data_dir: Path,
     *,
     stage: str | None = None,
+    candidate_ids: list[str] | None = None,
     catalog_context: dict[str, Any] | None = None,
+    return_match_ids: bool = False,
 ) -> dict[str, Any]:
     """Cross-reference only the candidates currently waiting in one stage.
 
@@ -408,7 +425,7 @@ def _match_known_candidates(
     candidates are the only ones allowed to consume the next stage's capacity.
     """
 
-    candidates = candidate_match_inputs(store)
+    candidates = candidate_match_inputs(store, candidate_ids)
     if stage is not None:
         candidates = [candidate for candidate in candidates if candidate["current_stage"] == stage]
     if not candidates:
@@ -435,25 +452,31 @@ def _match_known_candidates(
         if match:
             matches.append({"candidate_id": candidate["candidate_id"], **match})
     if not matches:
-        return {
+        result = {
             "status": "no_matches",
             "matches": 0,
             "stage": stage,
             **catalog_metadata,
         }
+        if return_match_ids:
+            result["matched_candidate_ids"] = []
+        return result
     version = publish_known_matches(
         store,
         matches,
         catalog_cache_path=str(payload.get("cache_path") or adapter.cache_path),
         top_n=int(os.getenv("TOP_N_DISPLAY", "100")),
     )
-    return {
+    result = {
         "status": "matched",
         "matches": len(matches),
         "stage": stage,
         "publish_version": version,
         **catalog_metadata,
     }
+    if return_match_ids:
+        result["matched_candidate_ids"] = [str(match["candidate_id"]) for match in matches]
+    return result
 
 
 def run_live_cycle(
@@ -627,6 +650,14 @@ def run_live_cycle(
     stage1_requests: list[dict[str, Any]] = []
     attempted_stage1: set[str] = set()
     attempted_stage2: set[str] = set()
+    catalog_audit: dict[str, Any] = {
+        "status": "idle",
+        "stage": "stage2",
+        "requested_count": 0,
+        "checked_count": 0,
+        "matches": 0,
+        "remaining_count": 0,
+    }
 
     def request_stage1_reassessment() -> dict[str, Any]:
         """Ask Stage 1 for more data only after Stage 3 requests a handoff."""
@@ -857,6 +888,107 @@ def run_live_cycle(
             if result.get("status") in {"Promising", "Inconclusive"}:
                 enqueue_sources([candidate_id])
 
+        # Stage 3 owns the historical catalog audit as well as model
+        # dispatch. This is deliberately bounded: it compares existing Stage
+        # 2 candidates with the cached catalog, records a durable checked
+        # event, and never reruns Stage 2/3 scientific models.
+        if catalog_context is not None and catalog_context.get("records"):
+            audit_batch_size = max(1, int(os.getenv("CATALOG_AUDIT_BATCH_SIZE", "100")))
+            signature = _catalog_signature(catalog_context)
+            audit_candidates = catalog_audit_candidates(
+                store,
+                stage="stage2",
+                catalog_signature=signature,
+                limit=audit_batch_size,
+            )
+            if audit_candidates:
+                if status_callback:
+                    status_callback(
+                        "catalog_audit",
+                        {
+                            "stage": "stage2",
+                            "requested_count": len(audit_candidates),
+                            "catalog_signature": signature,
+                        },
+                    )
+                audit_ids = [str(candidate["candidate_id"]) for candidate in audit_candidates]
+                match_result = _match_known_candidates(
+                    store,
+                    data_dir,
+                    stage="stage2",
+                    candidate_ids=audit_ids,
+                    catalog_context=catalog_context,
+                    return_match_ids=True,
+                )
+                matched_ids = {str(value) for value in match_result.get("matched_candidate_ids", [])}
+                audit_rows = []
+                for candidate in audit_candidates:
+                    last_evaluated_at = candidate.get("last_evaluated_at")
+                    evaluation_signature = (
+                        last_evaluated_at.isoformat()
+                        if hasattr(last_evaluated_at, "isoformat")
+                        else str(last_evaluated_at or "unassessed")
+                    )
+                    audit_rows.append(
+                        {
+                            "candidate_id": candidate["candidate_id"],
+                            "candidate_evaluation_signature": evaluation_signature,
+                            "matched": str(candidate["candidate_id"]) in matched_ids,
+                        }
+                    )
+                audit_version = publish_catalog_audit_events(
+                    store,
+                    audit_rows,
+                    stage="stage2",
+                    catalog_signature=signature,
+                    catalog_status=str(catalog_context["payload"].get("status") or "unknown"),
+                    catalog_record_count=int(
+                        catalog_context["payload"].get("record_count")
+                        or len(catalog_context.get("records", []))
+                    ),
+                )
+                remaining = len(
+                    catalog_audit_candidates(
+                        store,
+                        stage="stage2",
+                        catalog_signature=signature,
+                        limit=10**9,
+                    )
+                )
+                catalog_audit = {
+                    "status": "complete",
+                    "stage": "stage2",
+                    "requested_count": len(audit_candidates),
+                    "checked_count": len(audit_rows),
+                    "matches": len(matched_ids),
+                    "remaining_count": remaining,
+                    "publish_version": audit_version,
+                }
+            else:
+                catalog_audit = {
+                    "status": "complete",
+                    "stage": "stage2",
+                    "requested_count": 0,
+                    "checked_count": 0,
+                    "matches": 0,
+                    "remaining_count": 0,
+                }
+        elif catalog_context is not None:
+            catalog_audit = {
+                "status": "catalog_unavailable",
+                "stage": "stage2",
+                "requested_count": 0,
+                "checked_count": 0,
+                "matches": 0,
+                "remaining_count": len(
+                    [
+                        candidate
+                        for candidate in active_candidates(store)
+                        if candidate["current_stage"] == "stage2"
+                    ]
+                ),
+            }
+
     # Stage 3 is the final assessment stage, so a catalog match here is a
     # legitimate Stage 3 removal and is retained in the identified/replay
     # history at that stage.
@@ -888,6 +1020,7 @@ def run_live_cycle(
         },
         "stage2": stage2_results,
         "stage3": stage3_results,
+        "catalog_audit": catalog_audit,
         "catalog": catalog,
     }
 

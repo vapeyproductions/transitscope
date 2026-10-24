@@ -14,6 +14,7 @@ The dashboard and `GET /api/monitoring/overview` are read-only. Refreshing them 
 - **Stage prioritization:** the Stage 1 top-100 priority window and Stage 2 top-100 reassessment window, plus counts for Promising, Needs More Data, Inconclusive, and Known Match. These are ranking windows, not caps on how many candidates a stage can retain. Stage 2 has no promotion cutoff: when Stage 3 calls for a candidate, it takes the highest-ranked eligible Promising signal. Stage 3 has no cutoff: it works its Needs More Data queue in rank order and is the only dispatcher for downstream movement.
 - **Models:** model version, evaluation count, evidence score, Stage 3 holdout F1, model lift over the baseline when available, classification counts, and data sufficiency.
 - **Data plane:** provider runs, successes/failures, products downloaded/failed, coverage products/windows, recent batches, and recent pipeline events.
+- **Catalog audit:** after Stage 3 dispatches, the worker checks up to 100 previously unchecked Stage 2 candidates against the cached NASA catalog, records each check durably, and reports the remaining audit queue. This comparison does not rerun scientific models.
 - **Sampling:** checkpoint cursor and policy, selection-bucket outcomes, and coordinate cells summarized into evidence-bearing or known-dense regions. The UI labels these signals as observed guidance until adaptive selection is enabled.
 
 ## Launch sequence
