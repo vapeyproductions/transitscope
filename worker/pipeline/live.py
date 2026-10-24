@@ -14,6 +14,7 @@ from ingestion.mast_history import MastHistoryAdapter
 from pipeline.lifecycle import (
     active_candidates,
     candidate_match_inputs,
+    processed_target_count,
     promotable_candidates,
     publish_known_matches,
 )
@@ -463,16 +464,28 @@ def run_live_cycle(
 
     batch = fill_stage1()
 
+    # The first Stage 2 handoff is intentionally gated on a complete initial
+    # Stage 1 exploration pool.  This prevents a handful of early Promising
+    # results from draining the queue before the comparative baseline exists.
+    initial_stage1_ready = processed_target_count(store) >= stage1_pool_size
     stage2_results: list[dict[str, Any]] = []
-    stage1_candidates = promotable_candidates(store, stage="stage1", capacity=promotion_capacity)
-    stage2_retry_candidates = [
-        candidate
-        for candidate in active_candidates(store)
-        if candidate["current_stage"] == "stage2"
-        and candidate["status"] == "Needs More Data"
-        and candidate["rank_stage"] is not None
-        and int(candidate["rank_stage"]) <= promotion_capacity
-    ]
+    stage1_candidates = (
+        promotable_candidates(store, stage="stage1", capacity=promotion_capacity)
+        if initial_stage1_ready
+        else []
+    )
+    stage2_retry_candidates = (
+        [
+            candidate
+            for candidate in active_candidates(store)
+            if candidate["current_stage"] == "stage2"
+            and candidate["status"] == "Needs More Data"
+            and candidate["rank_stage"] is not None
+            and int(candidate["rank_stage"]) <= promotion_capacity
+        ]
+        if initial_stage1_ready
+        else []
+    )
     for candidate in stage1_candidates + stage2_retry_candidates:
         if status_callback:
             status_callback("processing_stage2", {"candidate_id": candidate["candidate_id"]})
@@ -491,23 +504,40 @@ def run_live_cycle(
     replacement_batch = fill_stage1()
 
     stage3_results: list[dict[str, Any]] = []
-    stage2_candidates = promotable_candidates(store, stage="stage2", capacity=stage3_capacity)
-    stage3_retry_candidates = [
-        candidate
+    stage2_queue_ready = initial_stage1_ready and sum(
+        1
         for candidate in active_candidates(store)
-        if candidate["current_stage"] == "stage3"
-        and candidate["status"] == "Needs More Data"
-        and candidate["rank_stage"] is not None
-        and int(candidate["rank_stage"]) <= stage3_capacity
-    ]
-    stage3_prime_candidates = [
-        candidate
-        for candidate in active_candidates(store)
-        if candidate["current_stage"] == "stage3"
-        and candidate["status"] == "Promising"
-        and candidate["rank_stage"] is not None
-        and int(candidate["rank_stage"]) <= stage3_capacity
-    ]
+        if candidate["current_stage"] == "stage2"
+    ) >= stage3_capacity
+    stage2_candidates = (
+        promotable_candidates(store, stage="stage2", capacity=stage3_capacity)
+        if stage2_queue_ready
+        else []
+    )
+    stage3_retry_candidates = (
+        [
+            candidate
+            for candidate in active_candidates(store)
+            if candidate["current_stage"] == "stage3"
+            and candidate["status"] == "Needs More Data"
+            and candidate["rank_stage"] is not None
+            and int(candidate["rank_stage"]) <= stage3_capacity
+        ]
+        if stage2_queue_ready
+        else []
+    )
+    stage3_prime_candidates = (
+        [
+            candidate
+            for candidate in active_candidates(store)
+            if candidate["current_stage"] == "stage3"
+            and candidate["status"] == "Promising"
+            and candidate["rank_stage"] is not None
+            and int(candidate["rank_stage"]) <= stage3_capacity
+        ]
+        if stage2_queue_ready
+        else []
+    )
     stage3_work: list[dict[str, Any]] = []
     seen_stage3: set[str] = set()
     for candidate in stage2_candidates + stage3_retry_candidates + stage3_prime_candidates:
