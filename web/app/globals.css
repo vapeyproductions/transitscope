@@ -139,6 +139,7 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .activity-cell { color: var(--muted); font-size: 12px; flex-direction: row; align-items: center; }
 .activity-pulse { background: var(--cyan); border-radius: 99px; box-shadow: 0 0 8px rgba(118, 228, 237, 0.6); flex: 0 0 auto; height: 6px; width: 6px; }
 .status-pill { border: 1px solid var(--border-bright); border-radius: 999px; display: inline-flex; font-size: 10px; font-weight: 700; padding: 5px 8px; white-space: nowrap; }
+.stage-status-stage { color: var(--muted); font-size: 12px; font-weight: 500; white-space: nowrap; }
 .status-promising { background: rgba(116, 214, 172, 0.11); border-color: rgba(116, 214, 172, 0.35); color: var(--green); }
 .status-prime-candidate { background: rgba(244, 197, 107, 0.12); border-color: rgba(244, 197, 107, 0.42); color: #f4c56b; }
 .status-needs-more-data { background: rgba(118, 168, 255, 0.1); border-color: rgba(118, 168, 255, 0.3); color: var(--blue); }
