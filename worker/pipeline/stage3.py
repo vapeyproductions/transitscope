@@ -340,6 +340,10 @@ class Stage3Processor:
             "period_days": period,
             "transit_time": transit_time,
             "duration_days": duration_days,
+            "signal_index": stage2_features.get("signal_index"),
+            "signal_id": stage2_features.get("signal_id"),
+            "signal_key": stage2_features.get("signal_key"),
+            "signal_family": stage2_features.get("signal_family"),
             "signal_isolation": (
                 "remove_sibling_transit_windows"
                 if isinstance(stage2_features.get("signal_family"), (list, tuple))

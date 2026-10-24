@@ -437,7 +437,7 @@ def run_live_cycle(
 ) -> dict[str, Any]:
     """Run one bounded archive poll and publish only changed pipeline state."""
 
-    from batching import BatchConfig, run_batch
+    from batching import BatchConfig, run_batch, run_stage1_refresh
 
     paths = DataPaths(data_dir)
     store = DuckDBStore(paths.database)
@@ -522,8 +522,6 @@ def run_live_cycle(
         max_targets=int(os.getenv("STAGE1_REFRESH_TARGETS", "8")),
     )
     if refresh_targets:
-        from batching import BatchConfig, run_stage1_refresh
-
         refresh_batch = run_stage1_refresh(
             data_dir=data_dir,
             manifest_path=manifest_path,
@@ -636,6 +634,49 @@ def run_live_cycle(
     if replacement_batch.get("status") != "idle":
         check_catalog("stage1")
 
+    # Keep exploring the unprocessed manifest after the initial baseline is
+    # complete. Replacement sampling protects the active Stage 1 queue, but
+    # it must not become the only way the 126,000-target universe advances:
+    # otherwise throughput is limited by however many candidates happen to
+    # leave Stage 1 in one cycle. The configured batch size is the total fresh
+    # target budget for this cycle, so replacements use part of that budget
+    # and the exploration batch consumes the remainder.
+    exploration_batch: dict[str, Any] = {
+        "status": "idle",
+        "message": (
+            "Waiting for the initial Stage 1 baseline"
+            if not initial_stage1_ready
+            else "No fresh exploration budget available"
+        ),
+        "selected_count": 0,
+    }
+    if initial_stage1_ready:
+        replacement_count = int(replacement_batch.get("selected_count") or 0)
+        exploration_count = max(0, int(batch_size) - replacement_count)
+        if exploration_count:
+            if status_callback:
+                status_callback(
+                    "processing_stage1",
+                    {
+                        "replacement_slots": 0,
+                        "replacement_reason": "continuous_exploration",
+                        "requested_count": exploration_count,
+                    },
+                )
+            exploration_batch = run_batch(
+                data_dir=data_dir,
+                manifest_path=manifest_path,
+                config=BatchConfig(
+                    batch_size=exploration_count,
+                    max_workers=max_workers,
+                    top_n=top_n,
+                    stage_capacity=promotion_capacity,
+                    target_pool_size=stage1_pool_size,
+                ),
+            )
+            if exploration_batch.get("status") != "idle":
+                check_catalog("stage1")
+
     stage3_results: list[dict[str, Any]] = []
     stage2_queue_ready = initial_stage1_ready and sum(
         1
@@ -727,6 +768,7 @@ def run_live_cycle(
         "stage1_refresh": refresh_batch,
         "stage1_catalog_replacement": stage1_catalog_replacement,
         "replacement_batch": replacement_batch,
+        "exploration_batch": exploration_batch,
         "stage2": stage2_results,
         "stage3": stage3_results,
         "catalog": catalog,

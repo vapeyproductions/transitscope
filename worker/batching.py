@@ -29,8 +29,8 @@ def utc_now() -> datetime:
 
 @dataclass(frozen=True)
 class BatchConfig:
-    batch_size: int = 16
-    max_workers: int = 4
+    batch_size: int = 32
+    max_workers: int = 8
     top_n: int = 100
     stage_capacity: int = 25
     target_pool_size: int = 500

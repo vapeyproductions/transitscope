@@ -110,6 +110,39 @@ class ReadOnlyStore:
         ).fetchone()
         return int(row[0]) if row else None
 
+    @staticmethod
+    def _signal_indices(
+        connection: duckdb.DuckDBPyConnection,
+        candidate_ids: list[str],
+    ) -> dict[str, int]:
+        """Return durable Stage 1 signal ordinals without breaking legacy stores.
+
+        Older replay fixtures and databases may not have ``candidate_signals``
+        yet. The UI can still use its candidate-id fallback in that case.
+        """
+
+        if not candidate_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in candidate_ids)
+        try:
+            rows = connection.execute(
+                f"""
+                SELECT candidate_id, MAX(signal_index) AS signal_index
+                FROM candidate_signals
+                WHERE candidate_id IN ({placeholders})
+                  AND signal_index IS NOT NULL
+                GROUP BY candidate_id
+                """,
+                candidate_ids,
+            ).fetchall()
+        except Exception:
+            return {}
+        return {
+            str(candidate_id): int(signal_index)
+            for candidate_id, signal_index in rows
+            if signal_index is not None
+        }
+
     def status(self, worker: dict[str, Any]) -> dict[str, Any]:
         response = {
             "service": "api",
@@ -272,6 +305,10 @@ class ReadOnlyStore:
                     [effective_limit, offset],
                 ).fetchall()
 
+            signal_indices = self._signal_indices(
+                connection,
+                [str(row[0]) for row in rows],
+            )
             projected_rows = []
             for index, row in enumerate(rows, start=1):
                 rank = row[6] if view == "overall" else row[7]
@@ -295,6 +332,7 @@ class ReadOnlyStore:
                         "signal_resolution": row[13] or "independent",
                         "alias_of_candidate_id": row[14],
                         "promotion_eligible": bool(row[15]),
+                        "signal_index": signal_indices.get(str(row[0])),
                     }
                 )
 
@@ -343,6 +381,10 @@ class ReadOnlyStore:
                 """,
                 [limit],
             ).fetchall()
+            signal_indices = self._signal_indices(
+                connection,
+                [str(candidate[0]) for candidate in candidates],
+            )
 
             rows: list[dict[str, Any]] = []
             for candidate in candidates:
@@ -417,6 +459,7 @@ class ReadOnlyStore:
                     {
                         "candidate_id": candidate[0],
                         "target_id": candidate[1],
+                        "signal_index": signal_indices.get(str(candidate[0])),
                         "identified_stage": identified_stage,
                         "identified_at": isoformat(
                             (catalog_evaluation or {}).get("created_at")
@@ -654,6 +697,10 @@ class ReadOnlyStore:
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         projected_rows: list[dict[str, Any]] = []
+        signal_indices = self._signal_indices(
+            connection,
+            [str(candidate_id) for candidate_id in candidate_ids],
+        )
         for index, raw_candidate_id in enumerate(candidate_ids[offset : offset + limit], start=offset + 1):
             candidate_id = str(raw_candidate_id)
             candidate = connection.execute(
@@ -686,6 +733,9 @@ class ReadOnlyStore:
             status = "Known Match" if event and event[1] == "known_match" else payload.get("classification", candidate[3])
             stage = VIEW_STAGE.get(view) or (event[0] if event and event[0] else candidate[2])
             event_features = payload.get("features") if isinstance(payload.get("features"), dict) else {}
+            signal_index = event_features.get("signal_index")
+            if not isinstance(signal_index, int) or isinstance(signal_index, bool):
+                signal_index = signal_indices.get(str(candidate_id))
             signal_resolution = event_features.get("signal_resolution", candidate[13])
             alias_of_candidate_id = event_features.get("alias_of_candidate_id", candidate[14])
             if event and event[1] == "signal_alias_released":
@@ -712,6 +762,7 @@ class ReadOnlyStore:
                     "signal_resolution": signal_resolution or "independent",
                     "alias_of_candidate_id": alias_of_candidate_id,
                     "promotion_eligible": bool(candidate[15]),
+                    "signal_index": signal_index,
                 }
             )
         return projected_rows
@@ -750,6 +801,11 @@ class ReadOnlyStore:
         if not events:
             return []
 
+        signal_indices = self._signal_indices(
+            connection,
+            [str(event[0]) for event in events],
+        )
+
         previous_snapshot = connection.execute(
             """
             SELECT candidate_order_json
@@ -774,6 +830,10 @@ class ReadOnlyStore:
             payload = json.loads(payload_json) if payload_json else {}
             if not isinstance(payload, dict):
                 payload = {}
+            features = payload.get("features") if isinstance(payload.get("features"), dict) else {}
+            signal_index = features.get("signal_index")
+            if not isinstance(signal_index, int) or isinstance(signal_index, bool):
+                signal_index = signal_indices.get(str(candidate_id))
             rank = previous_order.index(str(candidate_id)) + 1 if str(candidate_id) in previous_order else None
             catalog_id = payload.get("catalog_id") or known_match_id
             removals.append(
@@ -788,6 +848,7 @@ class ReadOnlyStore:
                     "removal_reason": "Already Known",
                     "ranking_rationale": ranking_rationale("Known Match", None),
                     "occurred_at": isoformat(occurred_at),
+                    "signal_index": signal_index,
                 }
             )
         return removals
@@ -844,6 +905,9 @@ class ReadOnlyStore:
             ).fetchone()
             features = json.loads(evaluation[3]) if evaluation else {}
             metrics = json.loads(evaluation[4]) if evaluation else {}
+            signal_index = features.get("signal_index") if isinstance(features, dict) else None
+            if not isinstance(signal_index, int) or isinstance(signal_index, bool):
+                signal_index = self._signal_indices(connection, [str(candidate[0])]).get(str(candidate[0]))
             return {
                 "candidate_id": candidate[0],
                 "target_id": candidate[1],
@@ -866,6 +930,7 @@ class ReadOnlyStore:
                 "signal_resolution": candidate[15] or "independent",
                 "alias_of_candidate_id": candidate[16],
                 "promotion_eligible": bool(candidate[17]),
+                "signal_index": signal_index,
                 "target": {
                     "provider_target_id": target[0],
                     "ra_deg": target[1],

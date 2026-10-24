@@ -23,7 +23,7 @@ The dashboard and `GET /api/monitoring/overview` are read-only. Refreshing them 
 3. Add a scheduler/queue with bounded concurrency, provider rate limits, retries, and idempotency keys. A multi-hour run is expected for the first 500-target pool; the dashboard should show queued, running, succeeded, deferred, failed, and paused work separately.
 4. Seed and validate the Stage 1 manifest for the first 500 targets without dispatching jobs. Confirm that replacements are drawn only when a slot is released and that only Promising candidates can advance.
 5. Enable execution deliberately by changing the worker environment to `RUN_LIVE_PIPELINE=true`. Keep the API read-only; the control-plane change should happen through the worker deployment or an authenticated operator workflow, not a public dashboard button.
-6. Watch the ML Ops view for the first several cycles before increasing concurrency or enabling adaptive sampling. The current bounded acceleration profile is 16 targets per batch, four workers, and a 300-second poll interval; increase these only after provider health and CPU pressure are stable.
+6. Watch the ML Ops view for the first several cycles before increasing concurrency or enabling adaptive sampling. The current bounded acceleration profile is 32 fresh targets per cycle, eight workers, and a 300-second poll interval; reduce these if provider health or CPU pressure becomes unstable.
 
 ## Why this is not a Vercel-only workload
 

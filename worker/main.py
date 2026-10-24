@@ -132,8 +132,8 @@ def main() -> None:
                 result = run_live_cycle(
                     data_dir=data_dir,
                     manifest_path=manifest_path,
-                    batch_size=int(os.getenv("STAGE1_BATCH_SIZE", "16")),
-                    max_workers=int(os.getenv("STAGE1_MAX_WORKERS", "4")),
+                    batch_size=int(os.getenv("STAGE1_BATCH_SIZE", "32")),
+                    max_workers=int(os.getenv("STAGE1_MAX_WORKERS", "8")),
                     top_n=int(os.getenv("TOP_N_DISPLAY", "500")),
                     stage_capacity=int(os.getenv("STAGE2_CAPACITY", "25")),
                     max_history_sectors=int(os.getenv("MAX_HISTORY_SECTORS", "8")),
