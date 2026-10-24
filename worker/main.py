@@ -139,6 +139,7 @@ def main() -> None:
                     stage2_reassessment_threshold=int(os.getenv("STAGE2_REASSESSMENT_THRESHOLD", "100")),
                     max_history_sectors=int(os.getenv("MAX_HISTORY_SECTORS", "8")),
                     stage1_pool_size=int(os.getenv("STAGE1_POOL_SIZE", "500")),
+                    stage3_initial_intake_size=int(os.getenv("STAGE3_INITIAL_INTAKE_SIZE", "100")),
                     status_callback=lambda state, details: write_status(data_dir, state, details),
                 )
                 poll_seconds = float(os.getenv("LIVE_POLL_SECONDS", "300"))

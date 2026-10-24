@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -135,6 +136,169 @@ def _stage3_needs_data_queue(candidates: list[dict[str, Any]]) -> list[dict[str,
         ),
         key=lambda candidate: (int(candidate["rank_stage"]), str(candidate["candidate_id"])),
     )
+
+
+def _stage3_initial_intake_queue(
+    store: DuckDBStore,
+    *,
+    size: int,
+) -> dict[str, Any]:
+    """Create once and read the durable initial Stage 3 intake queue.
+
+    The queue is deliberately recorded as pipeline events instead of being
+    held only in worker memory. A restart can therefore continue the same
+    top-ranked Stage 2 intake without rerunning Stage 2 or silently selecting
+    a different set of candidates.
+    """
+
+    if size < 1:
+        return {
+            "status": "disabled",
+            "batch_id": None,
+            "queued_count": 0,
+            "pending": [],
+        }
+    store.initialize()
+    with store.connect() as connection:
+        started = connection.execute(
+            """
+            SELECT sequence_number, payload_json
+            FROM pipeline_events
+            WHERE event_type = 'stage3_intake_started'
+            ORDER BY sequence_number ASC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    if not started:
+        selected = promotable_candidates(store, stage="stage2", threshold=size)
+        if selected:
+            version = (store.latest_published_version() or 0) + 1
+            batch_id = f"stage3-initial-intake-{version}"
+            occurred_at = datetime.now(timezone.utc)
+            events: list[dict[str, Any]] = [
+                {
+                    "event_id": f"{batch_id}-started",
+                    "sequence_number": version,
+                    "candidate_id": None,
+                    "stage": "stage3",
+                    "event_type": "stage3_intake_started",
+                    "payload_json": {
+                        "batch_id": batch_id,
+                        "requested_count": size,
+                        "selection_policy": "top_stage2_promising_snapshot",
+                    },
+                    "occurred_at": occurred_at,
+                    "model_run_id": batch_id,
+                }
+            ]
+            for candidate in selected:
+                candidate_id = str(candidate["candidate_id"])
+                events.append(
+                    {
+                        "event_id": f"{batch_id}-queued-{candidate_id}",
+                        "sequence_number": version,
+                        "candidate_id": candidate_id,
+                        "stage": "stage3",
+                        "event_type": "stage3_intake_queued",
+                        "payload_json": {
+                            "batch_id": batch_id,
+                            "rank_at_enqueue": int(candidate["rank_stage"]),
+                            "reason": "initial_top_stage2_promising_intake",
+                        },
+                        "occurred_at": occurred_at,
+                        "model_run_id": batch_id,
+                    }
+                )
+            store.publish_batch(
+                version=version,
+                events=events,
+                note=f"Queued top {len(selected)} eligible Stage 2 candidates for initial Stage 3 intake",
+            )
+            started = (version, json.dumps({"batch_id": batch_id}))
+
+    if not started:
+        return {
+            "status": "waiting",
+            "batch_id": None,
+            "queued_count": 0,
+            "pending": [],
+        }
+
+    try:
+        started_payload = json.loads(started[1] or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        started_payload = {}
+    batch_id = str(started_payload.get("batch_id") or "")
+    started_sequence = int(started[0] or 0)
+    with store.connect() as connection:
+        queued_rows = connection.execute(
+            """
+            SELECT q.candidate_id, q.sequence_number, q.payload_json,
+                   c.target_id, c.rank_stage
+            FROM pipeline_events q
+            JOIN candidates c ON c.candidate_id = q.candidate_id
+            WHERE q.event_type = 'stage3_intake_queued'
+              AND q.sequence_number >= ?
+              AND c.current_stage = 'stage2'
+              AND c.status = 'Promising'
+              AND c.promotion_eligible = true
+            """,
+            [started_sequence],
+        ).fetchall()
+        queued_count = int(
+            connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM pipeline_events
+                WHERE event_type = 'stage3_intake_queued'
+                  AND sequence_number >= ?
+                """,
+                [started_sequence],
+            ).fetchone()[0]
+        )
+        completed = {
+            str(row[0])
+            for row in queued_rows
+            if connection.execute(
+                """
+                SELECT 1
+                FROM pipeline_events
+                WHERE event_type = 'stage3_evaluated'
+                  AND candidate_id = ?
+                  AND sequence_number >= ?
+                LIMIT 1
+                """,
+                [row[0], row[1]],
+            ).fetchone()
+        }
+
+    pending: list[dict[str, Any]] = []
+    for candidate_id, sequence_number, payload_json, target_id, rank_stage in queued_rows:
+        candidate_key = str(candidate_id)
+        if candidate_key in completed:
+            continue
+        try:
+            payload = json.loads(payload_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        if str(payload.get("batch_id") or "") != batch_id:
+            continue
+        pending.append(
+            {
+                "candidate_id": candidate_key,
+                "target_id": str(target_id),
+                "rank_at_enqueue": int(payload.get("rank_at_enqueue") or rank_stage or 0),
+                "rank_stage": rank_stage,
+            }
+        )
+    pending.sort(key=lambda item: (int(item["rank_at_enqueue"]), item["candidate_id"]))
+    return {
+        "status": "queued" if pending else "complete",
+        "batch_id": batch_id,
+        "queued_count": queued_count,
+        "pending": pending,
+    }
 
 
 def _stage1_refresh_targets(
@@ -483,6 +647,7 @@ def run_live_cycle(
     max_history_sectors: int,
     stage1_pool_size: int = 500,
     stage2_capacity: int | None = None,
+    stage3_initial_intake_size: int = 100,
     status_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run one bounded archive poll and publish only changed pipeline state.
@@ -491,8 +656,10 @@ def run_live_cycle(
     Stage 2 has a separate top-X reassessment window for ``Needs More Data``;
     it is not a promotion cutoff. After the initial Stage 1 baseline, Stage 3
     is the durable waterfall dispatcher: it reassesses its ranked Needs More
-    Data queue, calls the highest-ranked eligible Promising Stage 2 candidate
-    without a rank cutoff, and asks Stage 2 to request Stage 1 replacements.
+    Data queue, performs one durable initial intake of the top eligible
+    Promising Stage 2 candidates, then calls the highest-ranked eligible
+    Promising Stage 2 candidate without a rank cutoff and asks Stage 2 to
+    request Stage 1 replacements.
     """
 
     from batching import BatchConfig, run_batch, run_stage1_refresh
@@ -786,7 +953,54 @@ def run_live_cycle(
     # it spends durable replacement debt: every legacy/current Prime,
     # Inconclusive, or Stage 3 catalog match gets one downstream call.
     waterfall_ready = initial_stage1_ready
+    stage3_intake: dict[str, Any] = {
+        "status": "waiting",
+        "batch_id": None,
+        "queued_count": 0,
+        "pending": [],
+    }
     if waterfall_ready:
+        stage3_intake = _stage3_initial_intake_queue(
+            store,
+            size=stage3_initial_intake_size,
+        )
+        for queued_candidate in list(stage3_intake["pending"]):
+            candidate_id = str(queued_candidate["candidate_id"])
+            candidate = next(
+                (
+                    item
+                    for item in active_candidates(store)
+                    if str(item["candidate_id"]) == candidate_id
+                    and item["current_stage"] == "stage2"
+                    and item["status"] == "Promising"
+                    and item["promotion_eligible"]
+                ),
+                None,
+            )
+            if candidate is None:
+                continue
+            if status_callback:
+                status_callback(
+                    "processing_stage3",
+                    {
+                        "candidate_id": candidate_id,
+                        "reason": "stage3_initial_intake",
+                        "intake_batch_id": stage3_intake["batch_id"],
+                        "rank_at_enqueue": queued_candidate["rank_at_enqueue"],
+                    },
+                )
+            result = _evaluate_stage3(
+                store,
+                candidate,
+                data_dir=data_dir,
+                max_history_sectors=max_history_sectors,
+            )
+            stage3_results.append(result)
+            check_catalog("stage3")
+        stage3_intake = _stage3_initial_intake_queue(
+            store,
+            size=stage3_initial_intake_size,
+        )
         reassessment_budget = max(1, int(os.getenv("STAGE3_REASSESSMENTS_PER_CYCLE", "4")))
         attempted_stage3: set[str] = set()
         resolved_sources: list[str] = []
@@ -891,6 +1105,13 @@ def run_live_cycle(
         },
         "stage2": stage2_results,
         "stage3": stage3_results,
+        "stage3_intake": {
+            "status": stage3_intake["status"],
+            "batch_id": stage3_intake["batch_id"],
+            "queued_count": stage3_intake["queued_count"],
+            "pending_count": len(stage3_intake["pending"]),
+            "selection_size": stage3_initial_intake_size,
+        },
         "catalog": catalog,
     }
 
