@@ -292,11 +292,11 @@ class CatalogTests(unittest.TestCase):
                     },
                 ],
             )
-            selected = promotable_candidates(store, stage="stage1", capacity=1)
+            selected = promotable_candidates(store, stage="stage1", threshold=1)
             self.assertEqual([candidate["candidate_id"] for candidate in selected], ["promising"])
-            selected = promotable_candidates(store, stage="stage1", capacity=2)
+            selected = promotable_candidates(store, stage="stage1", threshold=2)
             self.assertEqual([candidate["candidate_id"] for candidate in selected], ["promising"])
-            selected = promotable_candidates(store, stage="stage1", capacity=3)
+            selected = promotable_candidates(store, stage="stage1", threshold=3)
             self.assertEqual([candidate["candidate_id"] for candidate in selected], ["promising"])
 
 

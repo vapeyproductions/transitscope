@@ -70,9 +70,9 @@ docker compose run --rm worker python run_stage1_batch.py \
   --max-workers 4
 ```
 
-The live Docker worker uses a 500-target Stage 1 processing pool, bounded CPU parallelism, checkpointing, and an unprocessed-manifest replacement queue. It displays the top 500 rows per ranking through 100-row pages. Stage 2 and Stage 3 use independent promotion windows of 25 and 6 by default. Only `Promising` candidates advance; `Inconclusive` candidates remain visible in history but release their processing slot; `Needs More Data` holds its slot until an unexamined archive/live window is available; and known matches are removed from active views while remaining in replay history. Each published change saves ranking snapshots.
+The live Docker worker uses a 500-target Stage 1 processing pool, bounded CPU parallelism, checkpointing, and an unprocessed-manifest replacement queue. It displays the top 500 rows per ranking through 100-row pages. Stage 1 uses a top-100 promotion threshold, Stage 2 uses a top-25 promotion threshold, and Stage 3 uses a top-6 reassessment threshold by default. Only `Promising` candidates advance; `Inconclusive` candidates remain visible in history but release their processing slot; `Needs More Data` is re-evaluated when it enters a stage's priority threshold; and known matches are removed from active views while remaining in replay history. Each published change saves ranking snapshots.
 
-The accelerated live profile evaluates up to 32 fresh Stage 1 targets per five-minute cycle with eight CPU workers. Released Stage 1 slots are replenished first, and the remaining fresh-target budget continues exploring the unprocessed manifest so throughput is not limited by the number of candidates that happened to leave Stage 1. Provider latency, failures, and refresh work can reduce the observed rate.
+The accelerated live profile evaluates up to 32 fresh Stage 1 targets per five-minute cycle with eight CPU workers. Released Stage 1 work is replenished first, and the remaining fresh-target budget continues exploring the unprocessed manifest so throughput is not limited by the number of candidates that happened to leave Stage 1. Stage 1's top-100, Stage 2's top-25, and Stage 3's top-6 values are priority thresholds, not capacities; candidates outside those windows remain retained in their stage ranking. Provider latency, failures, and refresh work can reduce the observed rate.
 
 Stage 1 now performs an iterative multi-signal search. It records the strongest periodic dimming signal, approximately removes that signal from the normalized light curve, and searches the residual for up to three additional signals when the preceding signal has sufficient SNR. Each child is identified by the parent target plus a durable signal fingerprint derived from period, phase, and duration; the extraction ordinal is metadata only. Existing legacy single-signal rows are matched by target/period/phase tolerance when possible, so their history can continue under the same candidate identity. Every child carries its signal family into Steps 2 and 3, where sibling transit windows are removed before repeatability and holdout evaluation.
 
@@ -106,7 +106,7 @@ docker compose run --rm worker python run_stage3.py \
   --history-manifest /app/data/manifests/<history-manifest>.json
 ```
 
-The live orchestrator evaluates the current operational top-X from Stage 2 using the same capacity rule. Stage 3 results are assessments of candidate evidence and never scientific confirmation. Published evaluations and ranking snapshots are stored in DuckDB so replay can read them without rerunning the model.
+The live orchestrator selects the highest-ranked Promising candidate from the Stage 2 priority window when Stage 3 calls for another candidate. Stage 3 also reassesses high-ranked Promising and Needs More Data candidates inside its reassessment threshold. Stage 3 results are assessments of candidate evidence and never scientific confirmation. Published evaluations and ranking snapshots are stored in DuckDB so replay can read them without rerunning the model.
 
 ## Known-object matching and Overall ranking
 

@@ -124,8 +124,15 @@ def _stage1_refresh_targets(
     *,
     data_dir: Path,
     max_targets: int,
+    priority_threshold: int = 100,
 ) -> list[dict[str, Any]]:
-    """Find a small ranked slice whose MAST product set has advanced."""
+    """Find a small ranked slice whose MAST product set has advanced.
+
+    The threshold keeps refresh work focused on the priority window. In
+    particular, a Stage 1 ``Needs More Data`` candidate inside the window is
+    eligible for another evaluation; it is not silently left behind because
+    only Promising candidates are promotable.
+    """
 
     if max_targets < 1:
         return []
@@ -139,10 +146,11 @@ def _stage1_refresh_targets(
             FROM candidates c
             LEFT JOIN target_manifest tm ON tm.target_id = c.target_id
             WHERE c.active = true AND c.current_stage = 'stage1'
+              AND c.rank_stage IS NOT NULL AND c.rank_stage <= ?
             ORDER BY c.rank_stage NULLS LAST, c.last_evaluated_at ASC, c.candidate_id
             LIMIT ?
             """,
-            [max_targets],
+            [priority_threshold, max_targets],
         ).fetchall()
 
     refreshes: list[dict[str, Any]] = []
@@ -428,21 +436,38 @@ def run_live_cycle(
     batch_size: int,
     max_workers: int,
     top_n: int,
+    stage1_threshold: int = 100,
+    stage2_threshold: int = 25,
+    stage3_threshold: int = 6,
+    # Legacy keyword compatibility. These names used to describe stage
+    # capacity, but now map only to the corresponding priority threshold.
     stage_capacity: int | None = None,
     max_history_sectors: int,
     stage1_pool_size: int = 500,
     stage2_capacity: int | None = None,
-    stage3_capacity: int = 6,
+    stage3_capacity: int | None = None,
     status_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Run one bounded archive poll and publish only changed pipeline state."""
+    """Run one bounded archive poll and publish only changed pipeline state.
+
+    Stage thresholds are ranking windows. They decide which candidates are
+    eligible for prioritization or reassessment; they never cap the number of
+    candidates retained in a stage.
+    """
 
     from batching import BatchConfig, run_batch, run_stage1_refresh
 
     paths = DataPaths(data_dir)
     store = DuckDBStore(paths.database)
     store.initialize()
-    promotion_capacity = stage2_capacity or stage_capacity or 25
+    if stage_capacity is not None:
+        stage1_threshold = stage_capacity
+    if stage2_capacity is not None:
+        stage2_threshold = stage2_capacity
+    if stage3_capacity is not None:
+        stage3_threshold = stage3_capacity
+    if min(stage1_threshold, stage2_threshold, stage3_threshold) < 1:
+        raise ValueError("stage priority thresholds must be positive")
 
     def occupied_stage1_target_ids() -> set[str]:
         """Return source stars with active Stage 1 work.
@@ -510,7 +535,7 @@ def run_live_cycle(
                 batch_size=replacement_needed,
                 max_workers=max_workers,
                 top_n=top_n,
-                stage_capacity=promotion_capacity,
+                stage_capacity=stage1_threshold,
                 target_pool_size=stage1_pool_size,
             ),
         )
@@ -520,6 +545,7 @@ def run_live_cycle(
         store,
         data_dir=data_dir,
         max_targets=int(os.getenv("STAGE1_REFRESH_TARGETS", "8")),
+        priority_threshold=stage1_threshold,
     )
     if refresh_targets:
         refresh_batch = run_stage1_refresh(
@@ -530,7 +556,7 @@ def run_live_cycle(
                 batch_size=len(refresh_targets),
                 max_workers=max_workers,
                 top_n=top_n,
-                stage_capacity=promotion_capacity,
+                stage_capacity=stage1_threshold,
                 target_pool_size=stage1_pool_size,
             ),
         )
@@ -583,13 +609,15 @@ def run_live_cycle(
         check_catalog("stage1")
 
     # The first Stage 2 handoff is intentionally gated on a complete initial
-    # Stage 1 exploration pool.  This prevents a handful of early Promising
+    # Stage 1 exploration pool. This prevents a handful of early Promising
     # results from draining the queue before the comparative baseline exists.
+    # Once the baseline exists, the Stage 1 top-X value is only a priority
+    # threshold; it is not a cap on the retained ranking.
     initial_stage1_ready = processed_target_count(store) >= stage1_pool_size
     stage1_targets_before_stage2 = occupied_stage1_target_ids()
     stage2_results: list[dict[str, Any]] = []
     stage1_candidates = (
-        promotable_candidates(store, stage="stage1", capacity=promotion_capacity)
+        promotable_candidates(store, stage="stage1", threshold=stage1_threshold)
         if initial_stage1_ready
         else []
     )
@@ -600,7 +628,7 @@ def run_live_cycle(
             if candidate["current_stage"] == "stage2"
             and candidate["status"] == "Needs More Data"
             and candidate["rank_stage"] is not None
-            and int(candidate["rank_stage"]) <= promotion_capacity
+            and int(candidate["rank_stage"]) <= stage2_threshold
         ]
         if initial_stage1_ready
         else []
@@ -618,8 +646,8 @@ def run_live_cycle(
         )
 
     # A Stage 2 evaluation can reveal a catalog match before Stage 3 work is
-    # selected. Remove those matches now so they never consume Stage 3
-    # capacity or appear as a Stage 3 known match in replay.
+    # selected. Remove those matches now so they never enter the Stage 3
+    # priority queue or appear as a Stage 3 known match in replay.
     check_catalog("stage2")
 
     # Promotion and an inconclusive result release Stage 1 source-star work.
@@ -670,7 +698,7 @@ def run_live_cycle(
                     batch_size=exploration_count,
                     max_workers=max_workers,
                     top_n=top_n,
-                    stage_capacity=promotion_capacity,
+                    stage_capacity=stage1_threshold,
                     target_pool_size=stage1_pool_size,
                 ),
             )
@@ -678,13 +706,13 @@ def run_live_cycle(
                 check_catalog("stage1")
 
     stage3_results: list[dict[str, Any]] = []
-    stage2_queue_ready = initial_stage1_ready and sum(
-        1
-        for candidate in active_candidates(store)
-        if candidate["current_stage"] == "stage2"
-    ) >= stage3_capacity
+    # Stage 3 does not wait for a fictitious queue capacity to fill. When it
+    # calls for another candidate, it takes the highest-ranked Promising
+    # Stage 2 candidate that is available. The Stage 2 top-X value only
+    # defines which Promising candidates are eligible to be called.
+    stage2_queue_ready = initial_stage1_ready
     stage2_candidates = (
-        promotable_candidates(store, stage="stage2", capacity=stage3_capacity)
+        promotable_candidates(store, stage="stage2", threshold=stage2_threshold)[:1]
         if stage2_queue_ready
         else []
     )
@@ -695,7 +723,7 @@ def run_live_cycle(
             if candidate["current_stage"] == "stage3"
             and candidate["status"] == "Needs More Data"
             and candidate["rank_stage"] is not None
-            and int(candidate["rank_stage"]) <= stage3_capacity
+            and int(candidate["rank_stage"]) <= stage3_threshold
         ]
         if stage2_queue_ready
         else []
@@ -707,28 +735,21 @@ def run_live_cycle(
             if candidate["current_stage"] == "stage3"
             and candidate["status"] == "Promising"
             and candidate["rank_stage"] is not None
-            and int(candidate["rank_stage"]) <= stage3_capacity
+            and int(candidate["rank_stage"]) <= stage3_threshold
         ]
         if stage2_queue_ready
         else []
     )
-    # Existing Stage 3 records still need maintenance even before the initial
-    # Stage 2 queue reaches its promotion threshold. This is intentionally
-    # separate from new Stage 2 -> Stage 3 promotion: it lets an older
-    # proof-of-life record pick up improved persistence/coverage behavior
-    # without opening the gate for new candidates prematurely.
-    stage3_existing_candidates = [
-        candidate
-        for candidate in active_candidates(store)
-        if candidate["current_stage"] == "stage3"
-    ]
+    # Stage 3 candidates outside the reassessment threshold remain in the
+    # ranking but are not rerun. This keeps the threshold meaningful and
+    # prevents every historical Stage 3 row from consuming a new evaluation
+    # on every live cycle.
     stage3_work: list[dict[str, Any]] = []
     seen_stage3: set[str] = set()
     for candidate in (
         stage2_candidates
         + stage3_retry_candidates
         + stage3_prime_candidates
-        + stage3_existing_candidates
     ):
         if candidate["candidate_id"] not in seen_stage3:
             stage3_work.append(candidate)

@@ -1044,13 +1044,12 @@ class ReadOnlyStore:
         }
         configured_universe = int(os.getenv("TARGET_UNIVERSE_SIZE", "126000"))
         initial_stage1_pool = int(os.getenv("STAGE1_POOL_SIZE", "500"))
-        stage_capacities = {
-            # Stage 1 continues exploring beyond the initial baseline. Its
-            # 500 value is a startup baseline/display setting, not a runtime
-            # compute capacity, so it must not be rendered as a full queue.
-            "stage1": None,
-            "stage2": int(os.getenv("STAGE2_CAPACITY", "25")),
-            "stage3": int(os.getenv("STAGE3_CAPACITY", "6")),
+        stage_thresholds = {
+            # These are ranking windows, not runtime compute capacities. A
+            # stage may retain and display candidates beyond its threshold.
+            "stage1": int(os.getenv("STAGE1_PROMOTION_THRESHOLD", "100")),
+            "stage2": int(os.getenv("STAGE2_PROMOTION_THRESHOLD", "25")),
+            "stage3": int(os.getenv("STAGE3_REASSESSMENT_THRESHOLD", "6")),
         }
         empty = {
             "generated_at": datetime.utcnow().isoformat() + "Z",
@@ -1073,7 +1072,7 @@ class ReadOnlyStore:
                 "progress_percent": 0.0,
                 "initial_stage1_pool": initial_stage1_pool,
             },
-            "stages": self._empty_monitoring_stages(stage_capacities),
+            "stages": self._empty_monitoring_stages(stage_thresholds),
             "models": [],
             "sampling": self._empty_sampling(configured_universe),
             "data_health": {
@@ -1109,7 +1108,7 @@ class ReadOnlyStore:
                 ORDER BY current_stage, status
                 """
             ).fetchall()
-            stage_data = self._empty_monitoring_stages(stage_capacities)
+            stage_data = self._empty_monitoring_stages(stage_thresholds)
             for stage, status, count in stage_rows:
                 if stage not in stage_data:
                     continue
@@ -1118,41 +1117,16 @@ class ReadOnlyStore:
 
             for stage in stage_data:
                 try:
-                    if stage == "stage1":
-                        occupied = connection.execute(
-                            """
-                            SELECT COUNT(DISTINCT target_id) FROM candidates
-                            WHERE current_stage = ? AND active = true
-                              AND processing_slot_occupied = true
-                            """,
-                            [stage],
-                        ).fetchone()[0]
-                    else:
-                        occupied = connection.execute(
-                            """
-                            SELECT COUNT(*) FROM candidates
-                            WHERE current_stage = ? AND active = true
-                              AND processing_slot_occupied = true
-                            """,
-                            [stage],
-                        ).fetchone()[0]
+                    priority_count = connection.execute(
+                        """
+                        SELECT COUNT(*) FROM candidates
+                        WHERE current_stage = ? AND active = true
+                          AND rank_stage IS NOT NULL AND rank_stage <= ?
+                        """,
+                        [stage, stage_thresholds[stage]],
+                    ).fetchone()[0]
                 except Exception:
-                    if stage == "stage1":
-                        occupied = connection.execute(
-                            """
-                            SELECT COUNT(DISTINCT target_id) FROM candidates
-                            WHERE current_stage = ? AND active = true
-                            """,
-                            [stage],
-                        ).fetchone()[0]
-                    else:
-                        occupied = connection.execute(
-                            """
-                            SELECT COUNT(*) FROM candidates
-                            WHERE current_stage = ? AND active = true
-                            """,
-                            [stage],
-                        ).fetchone()[0]
+                    priority_count = 0
                 latest = connection.execute(
                     """
                     SELECT MAX(last_evaluated_at), COUNT(*)
@@ -1161,8 +1135,8 @@ class ReadOnlyStore:
                     """,
                     [stage],
                 ).fetchone()
-                stage_data[stage]["occupied_slots"] = int(occupied or 0)
-                stage_data[stage]["capacity"] = stage_capacities[stage]
+                stage_data[stage]["priority_candidates"] = int(priority_count or 0)
+                stage_data[stage]["threshold"] = stage_thresholds[stage]
                 stage_data[stage]["last_evaluated_at"] = isoformat(latest[0])
                 stage_data[stage]["evaluated_candidate_count"] = int(latest[1] or 0)
 
@@ -1276,13 +1250,13 @@ class ReadOnlyStore:
 
     @staticmethod
     def _empty_monitoring_stages(
-        capacities: dict[str, int | None],
+        thresholds: dict[str, int],
     ) -> dict[str, dict[str, Any]]:
         return {
             stage: {
                 "stage": stage,
-                "capacity": capacity,
-                "occupied_slots": 0,
+                "threshold": threshold,
+                "priority_candidates": 0,
                 "total_candidates": 0,
                 "evaluated_candidate_count": 0,
                 "counts": {
@@ -1293,7 +1267,7 @@ class ReadOnlyStore:
                 },
                 "last_evaluated_at": None,
             }
-            for stage, capacity in capacities.items()
+            for stage, threshold in thresholds.items()
         }
 
     @staticmethod
@@ -1527,9 +1501,9 @@ class ReadOnlyStore:
             return "Mapped to a known catalog object; removed from active rankings while history is preserved."
         if status == "Promising":
             if stage == "stage1":
-                return "Eligible for Stage 2 repeatability testing when capacity allows."
+                return "Eligible for Stage 2 repeatability testing when the next Stage 2 call selects it."
             if stage == "stage2":
-                return "Eligible for Stage 3 holdout prediction when capacity allows."
+                return "Eligible for Stage 3 holdout prediction when the next Stage 3 call selects it."
             return "Continue reviewing the latest Stage 3 holdout evidence."
         if status == "Needs More Data":
             return "Wait for additional coverage before changing this assessment."

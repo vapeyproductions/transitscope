@@ -8,7 +8,7 @@ The core technical promise is reproducibility:
 
 - real MAST/TESS observations are ingested and provenance is retained;
 - a fast, explainable screen covers the broad target universe;
-- more expensive modeling is reserved for a capacity-driven shortlist;
+- more expensive modeling is reserved for a threshold-driven priority queue;
 - every published ranking change is persisted;
 - replay reads persisted state and never reruns expensive models.
 
@@ -272,11 +272,11 @@ Stage 1 is designed for coverage and throughput. It uses a Box Least Squares sea
 
 The Stage 1 score is a deterministic weighted ranking score over normalized features. It is labeled `evidence score`, not `planet probability`. The feature weights and model version are stored with every evaluation.
 
-Stage 1 maintains an active capacity. When a candidate is promoted to Stage 2, becomes a known match, or is finalized as inconclusive, the worker selects replacement targets from the unprocessed manifest. Initial selection is random or stratified enough to preserve broad coverage; adaptive sampling is a later policy with an exploration floor.
+Stage 1 maintains a comparative baseline and continues exploring the unprocessed manifest. When a source star is promoted to Stage 2, becomes a known match, or is finalized as inconclusive, the worker selects replacement targets from the unprocessed manifest. Initial selection is random or stratified enough to preserve broad coverage; adaptive sampling is a later policy with an exploration floor.
 
 ### 6.4 Stage 2: longer-baseline repeatability
 
-For a Stage 1 candidate in the current top-X capacity group:
+For a Stage 1 candidate inside the current top-X priority threshold:
 
 1. Request a longer chronological history, targeting approximately two years where MAST coverage permits.
 2. If the target does not have enough historical coverage, persist `Needs More Data` and record the missing window.
@@ -316,21 +316,21 @@ Every selection records its policy and weights. The policy has an exploration fl
 
 | Status | Meaning | Processing behavior |
 | --- | --- | --- |
-| Promising | Current evidence is strong enough for the candidate's stage | Highest operational priority; can be selected when it enters that stage's top-X capacity group |
-| Needs More Data | Evidence is insufficient or delayed | Remains active, ranks above `Inconclusive`, and can trigger targeted historical backfill; it does not bypass the top-X capacity gate |
+| Promising | Current evidence is strong enough for the candidate's stage | Highest operational priority; can be selected when it enters that stage's top-X priority threshold |
+| Needs More Data | Evidence is insufficient or delayed | Remains active, ranks above `Inconclusive`, and triggers targeted historical backfill when it enters the top-X priority threshold; it does not advance on rank alone |
 | Inconclusive | Current evidence is sufficient but unresolved or not competitive | Remains in active comparative rankings and history, but is lower priority than `Needs More Data` and is not rerun unless new products change the input signature |
 | Known Match | Evidence maps to a known catalog object | Tombstoned from active rankings; mapping remains visible in replay and candidate history |
 
 ### 7.2 Top-X progression
 
-Each stage has a configurable capacity, for example `stage2_capacity` and `stage3_capacity`. Capacity is an operational control, not a scientific threshold. A candidate may advance when:
+Each stage has a configurable priority threshold, for example `stage1_promotion_threshold`, `stage2_promotion_threshold`, and `stage3_reassessment_threshold`. A threshold is a ranking window, not a stage capacity. A candidate may advance when:
 
 - it is `Promising`;
-- it is within the current capacity group;
+- it is within the current priority threshold;
 - the previous stage has published a completed evaluation;
-- the next-stage worker has capacity.
+- the next-stage worker calls for another candidate.
 
-If the top-X group is dominated by `Needs More Data`, the worker backfills the most useful missing historical windows on the next live cycle. Status is part of the ranking policy, not an automatic promotion bypass: `Promising` ranks above `Needs More Data`, which ranks above `Inconclusive`, and evidence score breaks ties within each status. Known matches leave active rankings, allowing lower-ranked candidates to move upward and become eligible; unresolved candidates remain visible until later evidence changes their status.
+If `Needs More Data` enters a stage's top-X threshold, the worker backfills the most useful missing historical windows and re-evaluates it. Status is part of the ranking policy, not an automatic promotion bypass: `Promising` ranks above `Needs More Data`, which ranks above `Inconclusive`, and evidence score breaks ties within each status. When Stage 2 calls for a Stage 3 candidate, it selects the highest-ranked eligible `Promising` signal from Stage 2. Stage 3 also uses its threshold to re-evaluate high-ranked `Promising` and `Needs More Data` candidates. Known matches leave active rankings, allowing lower-ranked candidates to move upward and become eligible; unresolved candidates remain visible until later evidence changes their status.
 
 ### 7.3 Overall ranking
 
@@ -574,8 +574,9 @@ The exact values are tuned during the probe, but the code must expose these sett
 ```text
 TARGET_UNIVERSE_SIZE=126000
 DISPLAY_TOP_N=100
-STAGE2_CAPACITY=<measured CPU capacity>
-STAGE3_CAPACITY=<measured CPU capacity>
+STAGE1_PROMOTION_THRESHOLD=100
+STAGE2_PROMOTION_THRESHOLD=25
+STAGE3_REASSESSMENT_THRESHOLD=6
 BATCH_SIZE=<measured>
 MAST_PRODUCT_FAMILY=<probe-selected product family>
 STAGE2_LOOKBACK_DAYS=730

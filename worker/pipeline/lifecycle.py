@@ -131,19 +131,24 @@ def promotable_candidates(
     store: DuckDBStore,
     *,
     stage: str,
-    capacity: int,
+    threshold: int | None = None,
+    capacity: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Select the operational top-X for the next stage.
+    """Select Promising candidates inside a stage's priority threshold.
 
-    Advancement is capacity/rank driven and status-gated. Only Promising
-    candidates can leave a stage; Needs More Data and Inconclusive candidates
-    remain visible in that stage's ranking.
+    The threshold is a ranking window, not a stage capacity. It does not
+    limit how many candidates a stage may retain. Only Promising candidates
+    can leave a stage; Needs More Data and Inconclusive candidates remain
+    visible in that stage's ranking. ``capacity`` is accepted as a backwards-
+    compatible keyword for callers from the earlier capacity-based policy.
     """
 
     if stage not in {"stage1", "stage2"}:
         raise ValueError("promotion selection supports stage1 and stage2 only")
-    if capacity < 1:
-        raise ValueError("capacity must be positive")
+    if threshold is None:
+        threshold = capacity
+    if threshold is None or threshold < 1:
+        raise ValueError("threshold must be positive")
     rows = [
         candidate
         for candidate in active_candidates(store)
@@ -153,10 +158,10 @@ def promotable_candidates(
         and candidate["promotion_eligible"]
         and candidate["rank_stage"] is not None
     ]
-    # Capacity applies to eligible candidates, not to held sibling rows. A
-    # pending alias remains visible in the ranking but must not occupy one of
-    # the operational top-X handoff slots.
-    return sorted(rows, key=lambda candidate: (candidate["rank_stage"], candidate["candidate_id"]))[:capacity]
+    # The threshold applies to eligible candidates, not to held sibling rows.
+    # A pending alias remains visible in the ranking but is not eligible for
+    # the top-X handoff queue.
+    return sorted(rows, key=lambda candidate: (candidate["rank_stage"], candidate["candidate_id"]))[:threshold]
 
 
 def movement_for_ranks(old_rank: int | None, new_rank: int) -> tuple[int, str]:

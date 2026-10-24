@@ -11,7 +11,7 @@ The dashboard and `GET /api/monitoring/overview` are read-only. Refreshing them 
 ## What the operations view monitors
 
 - **Universe:** configured 126,000-target universe, manifest coverage, processed count, remaining count, and the initial 500-target Stage 1 pool.
-- **Stage pressure:** occupied slots and capacity for Stage 1 (500), Stage 2 (25), and Stage 3 (6), plus counts for Promising, Needs More Data, Inconclusive, and Known Match.
+- **Stage prioritization:** the Stage 1 top-100 promotion threshold, Stage 2 top-25 promotion threshold, and Stage 3 top-6 reassessment threshold, plus counts for Promising, Needs More Data, Inconclusive, and Known Match. These are ranking windows, not caps on how many candidates a stage can retain.
 - **Models:** model version, evaluation count, evidence score, Stage 3 holdout F1, model lift over the baseline when available, classification counts, and data sufficiency.
 - **Data plane:** provider runs, successes/failures, products downloaded/failed, coverage products/windows, recent batches, and recent pipeline events.
 - **Sampling:** checkpoint cursor and policy, selection-bucket outcomes, and coordinate cells summarized into evidence-bearing or known-dense regions. The UI labels these signals as observed guidance until adaptive selection is enabled.
@@ -22,7 +22,7 @@ The dashboard and `GET /api/monitoring/overview` are read-only. Refreshing them 
 2. Move durable state from local DuckDB to a managed Postgres-compatible store and raw/normalized artifacts to durable object storage. The worker can continue to use Python and the existing model adapters.
 3. Add a scheduler/queue with bounded concurrency, provider rate limits, retries, and idempotency keys. A multi-hour run is expected for the first 500-target pool; the dashboard should show queued, running, succeeded, deferred, failed, and paused work separately.
 4. Seed and validate the Stage 1 manifest for the first 500 targets without dispatching jobs. Confirm that replacements are drawn only when a slot is released and that only Promising candidates can advance.
-5. Enable execution deliberately by changing the worker environment to `RUN_LIVE_PIPELINE=true`. Keep the API read-only; the control-plane change should happen through the worker deployment or an authenticated operator workflow, not a public dashboard button.
+5. Enable execution deliberately by changing the worker environment to `RUN_LIVE_PIPELINE=true`. Keep the API read-only; the control-plane change should happen through the worker deployment or an authenticated operator workflow, not a public dashboard button. The stage thresholds only prioritize work: Stage 2 calls the highest-ranked eligible Promising Stage 1 candidate, and Stage 3 calls the highest-ranked eligible Promising Stage 2 candidate.
 6. Watch the ML Ops view for the first several cycles before increasing concurrency or enabling adaptive sampling. The current bounded acceleration profile is 32 fresh targets per cycle, eight workers, and a 300-second poll interval; reduce these if provider health or CPU pressure becomes unstable.
 
 ## Why this is not a Vercel-only workload
