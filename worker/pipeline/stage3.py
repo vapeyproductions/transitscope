@@ -722,7 +722,7 @@ def publish_stage3_result(
                     "model_run_id": f"stage3-run-{candidate_id}-{version}",
                 }
             ]
-            if stage2_input["current_stage"] == "stage2"
+            if existing["current_stage"] == "stage2"
             else []
         )
         + [
