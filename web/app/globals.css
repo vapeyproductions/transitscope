@@ -130,6 +130,9 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .footer-note { color: var(--faint); font-size: 10px; gap: 8px; justify-content: flex-start; padding: 18px 4px 0; }
 .footer-pulse { border: 1px solid var(--faint); border-radius: 99px; height: 8px; width: 8px; }
 .ranking-rows { border-top: 1px solid rgba(146, 169, 205, 0.08); }
+.filtered-empty-state { align-items: center; border: 1px dashed rgba(146, 169, 205, 0.2); border-radius: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 8px 10px; margin: 22px; min-height: 92px; padding: 22px; }
+.filtered-empty-state strong { color: var(--text); }
+.filtered-empty-state span:last-child { flex-basis: 100%; font-size: 12px; }
 .ranking-pages { align-items: center; border-top: 1px solid rgba(146, 169, 205, 0.09); color: var(--faint); display: flex; font-size: 11px; justify-content: space-between; padding: 14px 22px; }
 .ranking-pages > div { display: flex; gap: 6px; }
 .page-button { background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); cursor: pointer; font-size: 11px; min-width: 28px; padding: 6px 8px; }
