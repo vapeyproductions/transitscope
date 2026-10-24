@@ -444,28 +444,70 @@ def run_live_cycle(
     store.initialize()
     promotion_capacity = stage2_capacity or stage_capacity or 25
 
-    def fill_stage1() -> dict[str, Any]:
-        stage1 = [
-            candidate
+    def occupied_stage1_target_ids() -> set[str]:
+        """Return source stars with active Stage 1 work.
+
+        A source star can produce several signal candidates. Treating those
+        rows as separate pool capacity is incorrect, and treating the display
+        cap as operational capacity is worse: it silently stops the universe
+        scan once the first page of the ranking is full. This helper is only
+        used to detect source stars that actually leave the active Stage 1
+        queue and therefore need replacement sampling.
+        """
+
+        return {
+            str(candidate["target_id"])
             for candidate in active_candidates(store)
             if candidate["current_stage"] == "stage1"
             and candidate["processing_slot_occupied"]
-        ]
-        replacement_needed = max(0, stage1_pool_size - len(stage1))
+        }
+
+    def fill_stage1(replacement_slots: int | None = None) -> dict[str, Any]:
+        """Seed the initial baseline or replace released Stage 1 work.
+
+        ``stage1_pool_size`` is used only to establish the initial comparative
+        baseline. It is not a cap on the number of stars that may be explored
+        and it is not the ranking display limit. After the baseline exists,
+        ``replacement_slots`` is driven exclusively by source stars that left
+        active Stage 1 work.
+        """
+
+        if replacement_slots is None:
+            replacement_needed = max(0, stage1_pool_size - processed_target_count(store))
+            replacement_reason = "initial_baseline"
+        else:
+            replacement_needed = max(0, replacement_slots)
+            replacement_reason = "released_stage1_work"
         if not replacement_needed:
             return {
                 "status": "idle",
-                "message": "Stage 1 processing pool is full; waiting for a slot to open",
+                "message": (
+                    "Initial Stage 1 baseline is complete"
+                    if replacement_slots is None
+                    else "No Stage 1 source stars were released"
+                ),
                 "replacement_slots": 0,
+                "replacement_reason": replacement_reason,
+                "processed_target_count": processed_target_count(store),
                 "publish_version": store.latest_published_version(),
             }
         if status_callback:
-            status_callback("processing_stage1", {"replacement_slots": replacement_needed})
+            status_callback(
+                "processing_stage1",
+                {
+                    "replacement_slots": replacement_needed,
+                    "replacement_reason": replacement_reason,
+                },
+            )
         return run_batch(
             data_dir=data_dir,
             manifest_path=manifest_path,
             config=BatchConfig(
-                batch_size=min(batch_size, replacement_needed),
+                # A released source-star slot should be replenished in the
+                # same cycle. The worker pool still bounds parallelism via
+                # max_workers; batch_size here controls how many replacements
+                # are requested, not how many candidates are shown.
+                batch_size=replacement_needed,
                 max_workers=max_workers,
                 top_n=top_n,
                 stage_capacity=promotion_capacity,
@@ -473,6 +515,7 @@ def run_live_cycle(
             ),
         )
 
+    stage1_targets_before_refresh = occupied_stage1_target_ids()
     refresh_targets = _stage1_refresh_targets(
         store,
         data_dir=data_dir,
@@ -496,7 +539,12 @@ def run_live_cycle(
     else:
         refresh_batch = {"status": "idle", "refresh_count": 0}
 
-    batch = fill_stage1()
+    if processed_target_count(store) < stage1_pool_size:
+        batch = fill_stage1()
+    else:
+        batch = fill_stage1(
+            len(stage1_targets_before_refresh - occupied_stage1_target_ids())
+        )
 
     # Keep one immutable catalog snapshot for the entire cycle. Each gate
     # below sees only the candidates in that stage, so a known match is
@@ -524,10 +572,15 @@ def run_live_cycle(
         return result
 
     # Stage 1 known matches must be removed before the first Stage 2 queue is
-    # selected. Fill any slots they released, then check those fresh targets as
-    # well before allowing them to advance in a later part of this cycle.
+    # selected. Replenish only source stars that actually left active Stage 1
+    # work; the number shown in the UI is irrelevant to this decision.
+    stage1_targets_before_catalog = occupied_stage1_target_ids()
     check_catalog("stage1")
-    stage1_catalog_replacement = fill_stage1()
+    stage1_catalog_replacement = fill_stage1(
+        len(stage1_targets_before_catalog - occupied_stage1_target_ids())
+        if processed_target_count(store) >= stage1_pool_size
+        else None
+    )
     if stage1_catalog_replacement.get("status") != "idle":
         check_catalog("stage1")
 
@@ -535,6 +588,7 @@ def run_live_cycle(
     # Stage 1 exploration pool.  This prevents a handful of early Promising
     # results from draining the queue before the comparative baseline exists.
     initial_stage1_ready = processed_target_count(store) >= stage1_pool_size
+    stage1_targets_before_stage2 = occupied_stage1_target_ids()
     stage2_results: list[dict[str, Any]] = []
     stage1_candidates = (
         promotable_candidates(store, stage="stage1", capacity=promotion_capacity)
@@ -570,10 +624,15 @@ def run_live_cycle(
     # capacity or appear as a Stage 3 known match in replay.
     check_catalog("stage2")
 
-    # Promotion and an inconclusive result both release a Stage 1 slot. Fill
-    # those openings in the same live cycle so the next poll starts with a
-    # fresh exploration frontier rather than waiting for another heartbeat.
-    replacement_batch = fill_stage1()
+    # Promotion and an inconclusive result release Stage 1 source-star work.
+    # Fill those openings in the same live cycle. This is deliberately based
+    # on the before/after active target set, never on the presentational top-N
+    # display cap.
+    replacement_batch = fill_stage1(
+        len(stage1_targets_before_stage2 - occupied_stage1_target_ids())
+        if initial_stage1_ready
+        else None
+    )
     if replacement_batch.get("status") != "idle":
         check_catalog("stage1")
 

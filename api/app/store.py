@@ -978,8 +978,12 @@ class ReadOnlyStore:
             "on",
         }
         configured_universe = int(os.getenv("TARGET_UNIVERSE_SIZE", "126000"))
+        initial_stage1_pool = int(os.getenv("STAGE1_POOL_SIZE", "500"))
         stage_capacities = {
-            "stage1": int(os.getenv("STAGE1_POOL_SIZE", "500")),
+            # Stage 1 continues exploring beyond the initial baseline. Its
+            # 500 value is a startup baseline/display setting, not a runtime
+            # compute capacity, so it must not be rendered as a full queue.
+            "stage1": None,
             "stage2": int(os.getenv("STAGE2_CAPACITY", "25")),
             "stage3": int(os.getenv("STAGE3_CAPACITY", "6")),
         }
@@ -1002,7 +1006,7 @@ class ReadOnlyStore:
                 "processed_count": 0,
                 "remaining_count": configured_universe,
                 "progress_percent": 0.0,
-                "initial_stage1_pool": stage_capacities["stage1"],
+                "initial_stage1_pool": initial_stage1_pool,
             },
             "stages": self._empty_monitoring_stages(stage_capacities),
             "models": [],
@@ -1049,22 +1053,41 @@ class ReadOnlyStore:
 
             for stage in stage_data:
                 try:
-                    occupied = connection.execute(
-                        """
-                        SELECT COUNT(*) FROM candidates
-                        WHERE current_stage = ? AND active = true
-                          AND processing_slot_occupied = true
-                        """,
-                        [stage],
-                    ).fetchone()[0]
+                    if stage == "stage1":
+                        occupied = connection.execute(
+                            """
+                            SELECT COUNT(DISTINCT target_id) FROM candidates
+                            WHERE current_stage = ? AND active = true
+                              AND processing_slot_occupied = true
+                            """,
+                            [stage],
+                        ).fetchone()[0]
+                    else:
+                        occupied = connection.execute(
+                            """
+                            SELECT COUNT(*) FROM candidates
+                            WHERE current_stage = ? AND active = true
+                              AND processing_slot_occupied = true
+                            """,
+                            [stage],
+                        ).fetchone()[0]
                 except Exception:
-                    occupied = connection.execute(
-                        """
-                        SELECT COUNT(*) FROM candidates
-                        WHERE current_stage = ? AND active = true
-                        """,
-                        [stage],
-                    ).fetchone()[0]
+                    if stage == "stage1":
+                        occupied = connection.execute(
+                            """
+                            SELECT COUNT(DISTINCT target_id) FROM candidates
+                            WHERE current_stage = ? AND active = true
+                            """,
+                            [stage],
+                        ).fetchone()[0]
+                    else:
+                        occupied = connection.execute(
+                            """
+                            SELECT COUNT(*) FROM candidates
+                            WHERE current_stage = ? AND active = true
+                            """,
+                            [stage],
+                        ).fetchone()[0]
                 latest = connection.execute(
                     """
                     SELECT MAX(last_evaluated_at), COUNT(*)
@@ -1172,7 +1195,7 @@ class ReadOnlyStore:
                         else 0.0,
                         2,
                     ),
-                    "initial_stage1_pool": stage_capacities["stage1"],
+                    "initial_stage1_pool": initial_stage1_pool,
                 },
                 "stages": stage_data,
                 "models": models,
@@ -1187,7 +1210,9 @@ class ReadOnlyStore:
         return round(sum(values) / len(values), 4) if values else None
 
     @staticmethod
-    def _empty_monitoring_stages(capacities: dict[str, int]) -> dict[str, dict[str, Any]]:
+    def _empty_monitoring_stages(
+        capacities: dict[str, int | None],
+    ) -> dict[str, dict[str, Any]]:
         return {
             stage: {
                 "stage": stage,

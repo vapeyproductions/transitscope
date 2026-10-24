@@ -260,6 +260,7 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .stage-ops-card { background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(146, 169, 205, 0.14); border-radius: 9px; padding: 13px; }
 .stage-ops-card-heading { align-items: center; display: flex; font-size: 12px; justify-content: space-between; margin-bottom: 11px; }
 .stage-ops-card-heading span { color: var(--muted); font-size: 10px; }
+.stage-ops-inline-note { color: var(--muted); font-size: 10px; line-height: 1.4; margin: -3px 0 11px; }
 .stage-counts { display: grid; gap: 7px; grid-template-columns: repeat(2, 1fr); margin: 14px 0 12px; }
 .stage-counts span { color: var(--muted); display: flex; flex-direction: column; font-size: 9px; gap: 3px; }
 .stage-counts strong { color: var(--text); font-size: 14px; }
