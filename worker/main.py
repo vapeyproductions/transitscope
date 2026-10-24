@@ -36,6 +36,34 @@ def write_status(data_dir: Path, state: str, details: dict | None = None) -> Non
     status_path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
+def auto_populate_manifest(data_dir: Path, manifest_path: Path) -> bool:
+    enabled = os.getenv("AUTO_POPULATE_MANIFEST", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if manifest_path.exists() or not enabled:
+        return manifest_path.exists()
+    write_status(
+        data_dir,
+        "populating_manifest",
+        {
+            "pipeline_paused": True,
+            "reason": "Building a metadata-only MAST target universe before model jobs begin.",
+            "manifest": str(manifest_path),
+        },
+    )
+    try:
+        from populate_mast_universe import main as populate_main
+
+        populate_main()
+    except Exception as exc:  # keep the worker inspectable and retryable
+        write_status(data_dir, "population_error", {"error": repr(exc)})
+        return False
+    return manifest_path.exists()
+
+
 def main() -> None:
     signal.signal(signal.SIGTERM, stop_worker)
     signal.signal(signal.SIGINT, stop_worker)
@@ -74,6 +102,7 @@ def main() -> None:
                 str(data_dir / "manifests" / "stage1-real-target-universe.jsonl"),
             )
         )
+        auto_populate_manifest(data_dir, manifest_path)
         while running:
             if not manifest_path.exists():
                 write_status(data_dir, "waiting_for_population", {"manifest": str(manifest_path)})

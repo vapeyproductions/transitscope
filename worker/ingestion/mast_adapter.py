@@ -142,9 +142,47 @@ class MastProductAdapter:
     def query_observations(self) -> list[dict[str, Any]]:
         """Return observations for the configured target and sector."""
 
-        return self._query_observations(sector=self.config.sector, target_name=self.config.target_name)
+        return self._query_observations(
+            sector=self.config.sector,
+            target_name=self.config.target_name,
+            page=1,
+            page_size=self.config.max_observations,
+        )
 
-    def query_all_observations(self, *, target_name: str | None = None) -> list[dict[str, Any]]:
+    def query_sector_observations(
+        self,
+        sector: int,
+        *,
+        max_records: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """Return a bounded, paginated target list for one TESS sector."""
+
+        if sector < 1 or max_records < 1:
+            raise ValueError("sector and max_records must be positive")
+        observations: list[dict[str, Any]] = []
+        page_size = min(5000, max_records)
+        page = 1
+        while len(observations) < max_records:
+            page_rows = self._query_observations(
+                sector=sector,
+                target_name=None,
+                page=page,
+                page_size=page_size,
+            )
+            if not page_rows:
+                break
+            observations.extend(page_rows)
+            if len(page_rows) < page_size:
+                break
+            page += 1
+        return observations[:max_records]
+
+    def query_all_observations(
+        self,
+        *,
+        target_name: str | None = None,
+        max_records: int = 5000,
+    ) -> list[dict[str, Any]]:
         """Return all TESS timeseries observations for a target across sectors.
 
         MAST is an archive rather than a continuously streaming sensor.  The live
@@ -152,16 +190,33 @@ class MastProductAdapter:
         hard-coding a sector list.
         """
 
-        return self._query_observations(
-            sector=None,
-            target_name=self.config.target_name if target_name is None else target_name,
-        )
+        if max_records < 1:
+            raise ValueError("max_records must be positive")
+        observations: list[dict[str, Any]] = []
+        page_size = min(5000, max_records)
+        page = 1
+        while len(observations) < max_records:
+            page_rows = self._query_observations(
+                sector=None,
+                target_name=self.config.target_name if target_name is None else target_name,
+                page=page,
+                page_size=page_size,
+            )
+            if not page_rows:
+                break
+            observations.extend(page_rows)
+            if len(page_rows) < page_size:
+                break
+            page += 1
+        return observations[:max_records]
 
     def _query_observations(
         self,
         *,
         sector: int | None,
         target_name: str | None,
+        page: int = 1,
+        page_size: int | None = None,
     ) -> list[dict[str, Any]]:
         filters: list[dict[str, Any]] = [
             {"paramName": "obs_collection", "values": ["TESS"]},
@@ -183,8 +238,8 @@ class MastProductAdapter:
                     "filters": filters,
                 },
                 "format": "json",
-                "pagesize": self.config.max_observations if sector is not None else 5000,
-                "page": 1,
+                "pagesize": page_size or self.config.max_observations,
+                "page": page,
                 "removenullcolumns": True,
             }
         )
@@ -381,4 +436,69 @@ class MastProductAdapter:
         return digest.hexdigest()
 
 
-__all__ = ["MastProbeConfig", "MastProbeError", "MastProductAdapter"]
+def attach_product_to_target(
+    target: Mapping[str, Any],
+    *,
+    data_dir: Path,
+    request_timeout_seconds: int = 60,
+) -> dict[str, Any]:
+    """Resolve and cache the current public light curve for a queued target.
+
+    The target universe intentionally stores lightweight MAST observation
+    metadata.  FITS files are fetched only when a target enters a processing
+    batch, which keeps the 126,000-target queue inexpensive to maintain.
+    """
+
+    provider_target_id = str(
+        target.get("provider_target_id") or target.get("target_id") or ""
+    ).removeprefix("TIC ").strip()
+    if not provider_target_id or provider_target_id.startswith("queued-target-"):
+        raise MastProbeError("target has no provider-backed TIC identifier")
+    try:
+        sector = int(target.get("sector") or target.get("selected_sector") or 1)
+    except (TypeError, ValueError) as exc:
+        raise MastProbeError(f"target has invalid TESS sector: {target.get('sector')!r}") from exc
+
+    config = MastProbeConfig(
+        data_dir=data_dir,
+        sector=sector,
+        target_name=provider_target_id,
+        max_observations=5,
+        request_timeout_seconds=request_timeout_seconds,
+    )
+    adapter = MastProductAdapter(config)
+    observations = adapter.query_observations()
+    if not observations:
+        observations = adapter.query_all_observations(target_name=provider_target_id, max_records=50)
+    if not observations:
+        raise MastProbeError(f"MAST returned no TESS observation for TIC {provider_target_id}")
+    observation = adapter._select_observation(observations)
+    products = adapter.query_products(observation["obsid"])
+    product = adapter.select_light_curve_product(products)
+    artifact = adapter.download_product(product)
+    enriched = dict(target)
+    enriched.update(
+        {
+            "provider_target_id": provider_target_id,
+            "source_observation_id": observation.get("obsid"),
+            "source_observation_name": observation.get("obs_id"),
+            "source_product_name": product.get("productFilename"),
+            "sector": observation.get("sequence_number", sector),
+            "ra_deg": observation.get("s_ra", target.get("ra_deg")),
+            "dec_deg": observation.get("s_dec", target.get("dec_deg")),
+            "artifact_path": artifact["cache_path"],
+            "cache_path": artifact["cache_path"],
+            "product_id": artifact["data_uri"],
+            "product_checksum": artifact["sha256"],
+            "manifest_status": "queued",
+        }
+    )
+    return enriched
+
+
+__all__ = [
+    "MastProbeConfig",
+    "MastProbeError",
+    "MastProductAdapter",
+    "attach_product_to_target",
+]

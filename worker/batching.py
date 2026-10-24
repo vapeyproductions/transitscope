@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from pipeline.stage1 import Stage1ProcessingError, Stage1Processor, resolve_artifact_path
 from pipeline.lifecycle import STATUS_PRIORITY, movement_for_ranks
+from ingestion.mast_adapter import MastProbeError, attach_product_to_target
 from storage.duckdb_store import DuckDBStore
 from storage.paths import DataPaths
 
@@ -217,11 +218,17 @@ def _process_target(payload: Mapping[str, Any]) -> dict[str, Any]:
     data_dir = Path(str(payload["data_dir"]))
     artifact_value = row.get("artifact_path") or row.get("cache_path")
     if not artifact_value:
-        return {
-            "kind": "failed",
-            "target": row,
-            "error": "no cached product is attached; provider lookup is required before processing",
-        }
+        try:
+            row = attach_product_to_target(
+                row,
+                data_dir=data_dir,
+                request_timeout_seconds=int(os.getenv("MAST_REQUEST_TIMEOUT_SECONDS", "60")),
+            )
+            artifact_value = row.get("artifact_path") or row.get("cache_path")
+        except (MastProbeError, OSError, ValueError) as exc:
+            return {"kind": "failed", "target": row, "error": str(exc)}
+    if not artifact_value:
+        return {"kind": "failed", "target": row, "error": "MAST returned no cached product"}
     artifact_path = resolve_artifact_path(str(artifact_value), data_dir=data_dir)
     if not artifact_path.exists():
         return {
@@ -433,8 +440,13 @@ def publish_stage1_batch(
                 }
             )
 
+    refreshed_ids = {str(item["result"]["candidate_id"]) for item in results}
     for candidate in previous:
-        if candidate["candidate_id"] in retiring and candidate["active"]:
+        if (
+            candidate["candidate_id"] in retiring
+            and candidate["active"]
+            and candidate["candidate_id"] not in refreshed_ids
+        ):
             candidate_updates.append(
                 {
                     "candidate_id": candidate["candidate_id"],
@@ -717,6 +729,61 @@ def run_batch(
     }
 
 
+def run_stage1_refresh(
+    *,
+    data_dir: Path,
+    manifest_path: Path,
+    targets: Sequence[Mapping[str, Any]],
+    config: BatchConfig,
+) -> dict[str, Any]:
+    """Re-evaluate Stage 1 candidates whose MAST coverage advanced.
+
+    Refreshes do not consume new-universe cursor positions.  They replace the
+    candidate's previous Stage 1 evaluation in the current ranking while
+    preserving the manifest checkpoint and replay history.
+    """
+
+    if not targets:
+        return {"status": "idle", "message": "no Stage 1 refresh targets"}
+    paths = DataPaths(data_dir)
+    paths.ensure()
+    store = DuckDBStore(paths.database)
+    store.initialize()
+    checkpoint = checkpoint_for(store, manifest_path)
+    cursor = int(checkpoint["cursor"]) if checkpoint else 0
+    processed_count = int(checkpoint["processed_count"]) if checkpoint else 0
+    universe_count = int(checkpoint["universe_count"]) if checkpoint else manifest_count(manifest_path)
+    results, failures = process_targets(
+        targets,
+        data_dir=data_dir,
+        max_workers=min(config.max_workers, len(targets)),
+    )
+    successful_ids = [str(item["result"]["candidate_id"]) for item in results]
+    batch_id = f"stage1-refresh-{utc_now().strftime('%Y%m%dT%H%M%S%fZ')}"
+    version = publish_stage1_batch(
+        store,
+        config=config,
+        batch_id=batch_id,
+        manifest_path=manifest_path,
+        universe_count=universe_count,
+        cursor=cursor,
+        processed_count=processed_count,
+        selected=targets,
+        results=results,
+        failures=failures,
+        retire_candidate_ids=successful_ids,
+    )
+    return {
+        "status": "published",
+        "publish_version": version,
+        "batch_id": batch_id,
+        "refresh_count": len(targets),
+        "evaluated_count": len(results),
+        "failed_count": len(failures),
+        "candidate_ids": successful_ids,
+    }
+
+
 __all__ = [
     "BatchConfig",
     "SELECTION_POLICY",
@@ -725,5 +792,6 @@ __all__ = [
     "load_probe_seed",
     "manifest_count",
     "run_batch",
+    "run_stage1_refresh",
     "select_next_targets",
 ]

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ingestion.exoplanet_archive import ExoplanetArchiveAdapter, ExoplanetArchiveConfig
-from ingestion.mast_adapter import MastProbeConfig
+from ingestion.mast_adapter import MastProbeConfig, MastProductAdapter, MastProbeError
 from ingestion.mast_history import MastHistoryAdapter
 from pipeline.lifecycle import (
     active_candidates,
@@ -116,6 +116,103 @@ def _history_limit(max_history_sectors: int, previous_product_count: int) -> int
     if previous_product_count:
         return min(max_history_sectors, previous_product_count + expansion)
     return min(max_history_sectors, initial)
+
+
+def _stage1_refresh_targets(
+    store: DuckDBStore,
+    *,
+    data_dir: Path,
+    max_targets: int,
+) -> list[dict[str, Any]]:
+    """Find a small ranked slice whose MAST product set has advanced."""
+
+    if max_targets < 1:
+        return []
+    store.initialize()
+    with store.connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT c.candidate_id, c.target_id, c.rank_stage,
+                   tm.provider_target_id, tm.sector, tm.ra_deg, tm.dec_deg,
+                   tm.cadence, tm.source_product_family, tm.selection_bucket
+            FROM candidates c
+            LEFT JOIN target_manifest tm ON tm.target_id = c.target_id
+            WHERE c.active = true AND c.current_stage = 'stage1'
+            ORDER BY c.rank_stage NULLS LAST, c.last_evaluated_at ASC, c.candidate_id
+            LIMIT ?
+            """,
+            [max_targets],
+        ).fetchall()
+
+    refreshes: list[dict[str, Any]] = []
+    for row in rows:
+        provider_target_id = str(row[3] or row[1]).removeprefix("TIC ").strip()
+        if not provider_target_id or provider_target_id.startswith("queued-target-"):
+            continue
+        known_signature = _latest_evaluation_signature(store, str(row[0]), "stage1")
+        known_products = set(known_signature[1] if known_signature else ())
+        try:
+            discovery_config = MastProbeConfig(
+                data_dir=data_dir,
+                sector=1,
+                target_name=provider_target_id,
+                max_observations=5,
+                request_timeout_seconds=int(os.getenv("MAST_REQUEST_TIMEOUT_SECONDS", "60")),
+            )
+            discovery = MastProductAdapter(discovery_config)
+            observations = discovery.query_all_observations(
+                target_name=provider_target_id,
+                max_records=int(os.getenv("STAGE1_REFRESH_MAX_OBSERVATIONS", "50")),
+            )
+            observations.sort(
+                key=lambda item: int(item.get("sequence_number", 0) or 0),
+                reverse=True,
+            )
+            for observation in observations:
+                try:
+                    sector = int(observation["sequence_number"])
+                    adapter = MastProductAdapter(
+                        MastProbeConfig(
+                            data_dir=data_dir,
+                            sector=sector,
+                            target_name=provider_target_id,
+                            max_observations=5,
+                            request_timeout_seconds=discovery_config.request_timeout_seconds,
+                        )
+                    )
+                    products = adapter.query_products(observation["obsid"])
+                    product = adapter.select_light_curve_product(products)
+                    product_id = str(product.get("dataURI", ""))
+                    if not product_id or product_id in known_products:
+                        continue
+                    artifact = adapter.download_product(product)
+                except (KeyError, MastProbeError, TypeError, ValueError, OSError):
+                    continue
+                refreshes.append(
+                    {
+                        "target_id": row[1],
+                        "provider_target_id": provider_target_id,
+                        "candidate_id": row[0],
+                        "ra_deg": row[5],
+                        "dec_deg": row[6],
+                        "sector": sector,
+                        "cadence": row[7],
+                        "source_product_family": row[8],
+                        "selection_bucket": row[9] or "stage1-refresh",
+                        "source_observation_id": observation.get("obsid"),
+                        "source_observation_name": observation.get("obs_id"),
+                        "source_product_name": product.get("productFilename"),
+                        "artifact_path": artifact["cache_path"],
+                        "cache_path": artifact["cache_path"],
+                        "product_id": artifact["data_uri"],
+                        "product_checksum": artifact["sha256"],
+                        "manifest_status": "queued",
+                    }
+                )
+                break
+        except (MastProbeError, OSError, ValueError):
+            continue
+    return refreshes
 
 
 def _evaluate_stage2(
@@ -341,6 +438,29 @@ def run_live_cycle(
             ),
         )
 
+    refresh_targets = _stage1_refresh_targets(
+        store,
+        data_dir=data_dir,
+        max_targets=int(os.getenv("STAGE1_REFRESH_TARGETS", "8")),
+    )
+    if refresh_targets:
+        from batching import BatchConfig, run_stage1_refresh
+
+        refresh_batch = run_stage1_refresh(
+            data_dir=data_dir,
+            manifest_path=manifest_path,
+            targets=refresh_targets,
+            config=BatchConfig(
+                batch_size=len(refresh_targets),
+                max_workers=max_workers,
+                top_n=top_n,
+                stage_capacity=promotion_capacity,
+                target_pool_size=stage1_pool_size,
+            ),
+        )
+    else:
+        refresh_batch = {"status": "idle", "refresh_count": 0}
+
     batch = fill_stage1()
 
     stage2_results: list[dict[str, Any]] = []
@@ -411,6 +531,7 @@ def run_live_cycle(
     catalog = _match_known_candidates(store, data_dir)
     return {
         "batch": batch,
+        "stage1_refresh": refresh_batch,
         "replacement_batch": replacement_batch,
         "stage2": stage2_results,
         "stage3": stage3_results,
