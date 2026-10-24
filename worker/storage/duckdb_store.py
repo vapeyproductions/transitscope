@@ -85,12 +85,41 @@ class DuckDBStore:
                 "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS signal_id VARCHAR"
             )
             connection.execute(
+                "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS signal_group_id VARCHAR"
+            )
+            connection.execute(
+                "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS signal_resolution VARCHAR DEFAULT 'independent'"
+            )
+            connection.execute(
+                "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS alias_of_candidate_id VARCHAR"
+            )
+            connection.execute(
+                "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS promotion_eligible BOOLEAN DEFAULT true"
+            )
+            connection.execute(
                 """
                 UPDATE candidates
                 SET processing_slot_occupied = CASE
                     WHEN active = false OR status IN ('Inconclusive', 'Known Match') THEN false
+                    WHEN signal_resolution = 'pending_alias_review' THEN false
                     ELSE true
                 END
+                """
+            )
+            connection.execute(
+                """
+                UPDATE candidates
+                SET signal_group_id = COALESCE(signal_group_id, candidate_id),
+                    signal_resolution = COALESCE(signal_resolution, 'independent'),
+                    promotion_eligible = CASE
+                        WHEN active = false OR status IN ('Inconclusive', 'Known Match') THEN false
+                        WHEN signal_resolution = 'pending_alias_review' THEN false
+                        ELSE COALESCE(promotion_eligible, true)
+                    END
+                WHERE signal_group_id IS NULL
+                   OR signal_resolution IS NULL
+                   OR promotion_eligible IS NULL
+                   OR status IN ('Inconclusive', 'Known Match')
                 """
             )
 
@@ -179,6 +208,10 @@ class DuckDBStore:
                         "last_evaluated_at",
                         "known_match_id",
                         "active",
+                        "signal_group_id",
+                        "signal_resolution",
+                        "alias_of_candidate_id",
+                        "promotion_eligible",
                     ),
                     candidates,
                 )
@@ -348,7 +381,11 @@ class DuckDBStore:
                 SET current_stage = COALESCE(?, current_stage), signal_id = COALESCE(?, signal_id), rank_overall = ?, rank_stage = ?, rank_delta = ?, movement_kind = ?,
                     active = ?, activity = ?, status = ?, overall_score = ?, stage_score = ?,
                     last_evaluated_at = ?, known_match_id = ?,
-                    processing_slot_occupied = COALESCE(?, processing_slot_occupied)
+                    processing_slot_occupied = COALESCE(?, processing_slot_occupied),
+                    signal_group_id = COALESCE(?, signal_group_id),
+                    signal_resolution = COALESCE(?, signal_resolution),
+                    alias_of_candidate_id = ?,
+                    promotion_eligible = COALESCE(?, promotion_eligible)
                 WHERE candidate_id = ?
                 """,
                 [
@@ -366,6 +403,10 @@ class DuckDBStore:
                     update.get("last_evaluated_at"),
                     update.get("known_match_id"),
                     update.get("processing_slot_occupied"),
+                    update.get("signal_group_id"),
+                    update.get("signal_resolution"),
+                    update.get("alias_of_candidate_id"),
+                    update.get("promotion_eligible"),
                     candidate_id,
                 ],
             )

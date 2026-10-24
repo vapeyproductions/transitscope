@@ -135,6 +135,7 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .candidate-cell, .activity-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .candidate-cell strong { font-size: 13px; }
 .candidate-cell small, .score-label { color: var(--faint); display: block; font-size: 10px; margin-top: 5px; }
+.candidate-cell .signal-resolution-note { color: var(--accent); font-size: 9px; letter-spacing: .02em; }
 .activity-cell { color: var(--muted); font-size: 12px; flex-direction: row; align-items: center; }
 .activity-pulse { background: var(--cyan); border-radius: 99px; box-shadow: 0 0 8px rgba(118, 228, 237, 0.6); flex: 0 0 auto; height: 6px; width: 6px; }
 .status-pill { border: 1px solid var(--border-bright); border-radius: 999px; display: inline-flex; font-size: 10px; font-weight: 700; padding: 5px 8px; white-space: nowrap; }

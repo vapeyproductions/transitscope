@@ -15,7 +15,13 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
 from pipeline.stage1 import Stage1Processor
-from pipeline.lifecycle import STATUS_PRIORITY, movement_for_ranks, overall_sort_key, processed_target_count
+from pipeline.lifecycle import (
+    STATUS_PRIORITY,
+    movement_for_ranks,
+    overall_sort_key,
+    processed_target_count,
+    release_alias_siblings,
+)
 from pipeline.stage2 import _candidate_rows
 from storage.duckdb_store import DuckDBStore
 
@@ -552,6 +558,11 @@ def publish_stage3_result(
 
     candidates = _candidate_rows(store)
     candidate_id = str(result["candidate_id"])
+    candidates, released_alias_ids = release_alias_siblings(
+        candidates,
+        primary_candidate_id=candidate_id,
+        outcome=str(result["status"]),
+    )
     existing = next((item for item in candidates if item["candidate_id"] == candidate_id), None)
     if existing is None:
         raise Stage3ProcessingError(f"candidate does not exist: {candidate_id}")
@@ -574,6 +585,10 @@ def publish_stage3_result(
             "activity": result["activity"],
             "last_evaluated_at": result["evaluated_at"],
             "processing_slot_occupied": result["status"] != "Inconclusive",
+            "signal_group_id": existing.get("signal_group_id"),
+            "signal_resolution": existing.get("signal_resolution"),
+            "alias_of_candidate_id": existing.get("alias_of_candidate_id"),
+            "promotion_eligible": existing.get("promotion_eligible", True),
         }
     )
     stage3_pool.sort(
@@ -644,6 +659,10 @@ def publish_stage3_result(
                 "last_evaluated_at": item["last_evaluated_at"],
                 "known_match_id": None,
                 "processing_slot_occupied": item["processing_slot_occupied"],
+                "signal_group_id": item.get("signal_group_id"),
+                "signal_resolution": item.get("signal_resolution"),
+                "alias_of_candidate_id": item.get("alias_of_candidate_id"),
+                "promotion_eligible": item.get("promotion_eligible"),
             }
         )
 
@@ -735,6 +754,23 @@ def publish_stage3_result(
             if existing["current_stage"] == "stage2"
             else []
         )
+        + [
+            {
+                "event_id": f"signal-alias-released-{released_id}-{version}",
+                "sequence_number": version,
+                "candidate_id": released_id,
+                "stage": "stage2",
+                "event_type": "signal_alias_released",
+                "payload_json": {
+                    "reason": "primary_signal_was_inconclusive",
+                    "primary_candidate_id": candidate_id,
+                    "resolution": "released_for_independent_review",
+                },
+                "occurred_at": evaluated_at,
+                "model_run_id": f"stage3-run-{candidate_id}-{version}",
+            }
+            for released_id in released_alias_ids
+        ]
         + [
             {
                 "event_id": f"stage3-evaluated-{candidate_id}-{version}",

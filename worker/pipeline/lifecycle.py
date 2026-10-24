@@ -21,6 +21,36 @@ STATUS_PRIORITY = {
 }
 
 
+def release_alias_siblings(
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    primary_candidate_id: str,
+    outcome: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Release held sibling signals when their primary no longer advances.
+
+    A primary that is still Promising or Needs More Data keeps its siblings on
+    hold. Once it is Inconclusive or Known Match, each sibling is eligible for
+    independent review. No candidate is deleted by this transition.
+    """
+
+    if outcome not in {"Inconclusive", "Known Match"}:
+        return [dict(candidate) for candidate in candidates], []
+    released: list[str] = []
+    updated: list[dict[str, Any]] = []
+    for candidate in candidates:
+        item = dict(candidate)
+        if item.get("alias_of_candidate_id") == primary_candidate_id and item.get("active", True):
+            item["alias_of_candidate_id"] = None
+            item["signal_resolution"] = "released_for_independent_review"
+            item["promotion_eligible"] = item.get("status") not in {"Inconclusive", "Known Match"}
+            item["processing_slot_occupied"] = item["promotion_eligible"]
+            item["activity"] = "Released for independent review"
+            released.append(str(item["candidate_id"]))
+        updated.append(item)
+    return updated, released
+
+
 def active_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
     store.initialize()
     with store.connect() as connection:
@@ -29,7 +59,9 @@ def active_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
             SELECT candidate_id, target_id, current_stage, status,
                    overall_score, stage_score, rank_overall, rank_stage,
                    activity, rank_delta, movement_kind, last_evaluated_at,
-                   known_match_id, active, processing_slot_occupied
+                   known_match_id, active, processing_slot_occupied,
+                   signal_group_id, signal_resolution, alias_of_candidate_id,
+                   promotion_eligible
             FROM candidates
             WHERE active = true
             """
@@ -118,10 +150,13 @@ def promotable_candidates(
         if candidate["current_stage"] == stage
         and candidate["status"] == "Promising"
         and candidate["processing_slot_occupied"]
+        and candidate["promotion_eligible"]
         and candidate["rank_stage"] is not None
-        and int(candidate["rank_stage"]) <= capacity
     ]
-    return sorted(rows, key=lambda candidate: (candidate["rank_stage"], candidate["candidate_id"]))
+    # Capacity applies to eligible candidates, not to held sibling rows. A
+    # pending alias remains visible in the ranking but must not occupy one of
+    # the operational top-X handoff slots.
+    return sorted(rows, key=lambda candidate: (candidate["rank_stage"], candidate["candidate_id"]))[:capacity]
 
 
 def movement_for_ranks(old_rank: int | None, new_rank: int) -> tuple[int, str]:
@@ -156,6 +191,22 @@ def publish_known_matches(
     if top_n < 1:
         raise ValueError("top_n must be positive")
     candidates = active_candidates(store)
+    released_alias_ids: list[str] = []
+    released_alias_primary_ids: dict[str, str] = {}
+    for match in matches:
+        primary_candidate_id = str(match.get("candidate_id"))
+        primary_aliases = {
+            str(candidate["candidate_id"]): str(candidate.get("alias_of_candidate_id"))
+            for candidate in candidates
+            if candidate.get("alias_of_candidate_id") == primary_candidate_id
+        }
+        candidates, released = release_alias_siblings(
+            candidates,
+            primary_candidate_id=primary_candidate_id,
+            outcome="Known Match",
+        )
+        released_alias_ids.extend(released)
+        released_alias_primary_ids.update(primary_aliases)
     by_id = {candidate["candidate_id"]: candidate for candidate in candidates}
     matched_by_id = {
         str(match["candidate_id"]): dict(match)
@@ -202,6 +253,10 @@ def publish_known_matches(
                 "last_evaluated_at": candidate["last_evaluated_at"],
                 "known_match_id": candidate["known_match_id"],
                 "processing_slot_occupied": candidate["processing_slot_occupied"],
+                "signal_group_id": candidate.get("signal_group_id"),
+                "signal_resolution": candidate.get("signal_resolution"),
+                "alias_of_candidate_id": candidate.get("alias_of_candidate_id"),
+                "promotion_eligible": candidate.get("promotion_eligible"),
             }
         )
     for candidate_id, match in matched_by_id.items():
@@ -225,6 +280,10 @@ def publish_known_matches(
                 "last_evaluated_at": candidate["last_evaluated_at"],
                 "known_match_id": str(match["catalog_id"]),
                 "processing_slot_occupied": False,
+                "signal_group_id": candidate.get("signal_group_id"),
+                "signal_resolution": candidate.get("signal_resolution"),
+                "alias_of_candidate_id": candidate.get("alias_of_candidate_id"),
+                "promotion_eligible": False,
             }
         )
 
@@ -278,6 +337,23 @@ def publish_known_matches(
                 },
                 "occurred_at": occurred_at,
                 "model_run_id": f"catalog-match-{suffix}-{version}",
+            }
+        )
+    for released_id in released_alias_ids:
+        events.append(
+            {
+                "event_id": f"signal-alias-released-{released_id}-{version}",
+                "sequence_number": version,
+                "candidate_id": released_id,
+                "stage": previous_by_id[released_id]["current_stage"],
+                "event_type": "signal_alias_released",
+                "payload_json": {
+                    "reason": "primary_signal_was_known_match",
+                    "primary_candidate_id": released_alias_primary_ids.get(released_id),
+                    "resolution": "released_for_independent_review",
+                },
+                "occurred_at": occurred_at,
+                "model_run_id": f"catalog-match-alias-release-{version}",
             }
         )
 
@@ -476,6 +552,10 @@ def _candidate_row(row: Sequence[Any]) -> dict[str, Any]:
         "known_match_id": row[12],
         "active": bool(row[13]),
         "processing_slot_occupied": bool(row[14]),
+        "signal_group_id": row[15],
+        "signal_resolution": row[16] or "independent",
+        "alias_of_candidate_id": row[17],
+        "promotion_eligible": bool(row[18]),
     }
 
 
@@ -542,5 +622,6 @@ __all__ = [
     "processed_target_count",
     "promotable_candidates",
     "publish_known_matches",
+    "release_alias_siblings",
     "repair_legacy_history",
 ]

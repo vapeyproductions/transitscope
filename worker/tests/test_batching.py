@@ -6,16 +6,64 @@ from pathlib import Path
 
 from batching import (
     BatchConfig,
+    classify_signal_relationships,
     generate_target_universe,
     publish_stage1_batch,
     run_batch,
     select_next_targets,
+    signal_alias_comparison,
 )
 from storage.duckdb_store import DuckDBStore
 from storage.paths import DataPaths
 
 
 class BatchingTests(unittest.TestCase):
+    def test_phase_shifted_siblings_are_held_without_being_deleted(self) -> None:
+        first = {
+            "target": {"target_id": "TIC 10935379"},
+            "result": {
+                "candidate_id": "candidate-signal-1",
+                "target_id": "TIC 10935379",
+                "status": "Promising",
+                "evidence_score": 83.0,
+                "features": {
+                    "period_days": 2.08147,
+                    "transit_time": 1411.50,
+                    "duration_hours": 4.0,
+                    "depth": 0.014,
+                },
+            },
+        }
+        second = {
+            "target": {"target_id": "TIC 10935379"},
+            "result": {
+                "candidate_id": "candidate-signal-2",
+                "target_id": "TIC 10935379",
+                "status": "Promising",
+                "evidence_score": 82.0,
+                "features": {
+                    "period_days": 2.08147,
+                    "transit_time": 1411.17,
+                    "duration_hours": 4.0,
+                    "depth": 0.0135,
+                },
+            },
+        }
+
+        comparison = signal_alias_comparison(first["result"], second["result"])
+        self.assertIsNotNone(comparison)
+        grouped, alias_events = classify_signal_relationships([first, second])
+        by_id = {item["result"]["candidate_id"]: item["result"] for item in grouped}
+        primary = by_id["candidate-signal-1"]
+        sibling = by_id["candidate-signal-2"]
+        self.assertEqual(primary["signal_resolution"], "primary")
+        self.assertTrue(primary["promotion_eligible"])
+        self.assertEqual(sibling["signal_resolution"], "pending_alias_review")
+        self.assertFalse(sibling["promotion_eligible"])
+        self.assertFalse(sibling["processing_slot_occupied"])
+        self.assertEqual(sibling["alias_of_candidate_id"], primary["candidate_id"])
+        self.assertEqual(len(alias_events), 1)
+
     def test_universe_generation_is_deterministic_and_stratified(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "targets.jsonl"

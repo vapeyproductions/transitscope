@@ -223,7 +223,9 @@ class ReadOnlyStore:
                                      AND event.event_type IN ('stage1_evaluated', 'stage2_evaluated', 'stage3_evaluated')
                                ),
                                c.last_evaluated_at
-                           ) AS last_evaluated_at
+                           ) AS last_evaluated_at,
+                           c.signal_group_id, c.signal_resolution,
+                           c.alias_of_candidate_id, c.promotion_eligible
                     FROM candidates AS c
                     WHERE c.active = true AND c.current_stage = ?
                     ORDER BY c.rank_stage NULLS LAST, c.stage_score DESC NULLS LAST
@@ -245,7 +247,9 @@ class ReadOnlyStore:
                                      AND event.event_type IN ('stage1_evaluated', 'stage2_evaluated', 'stage3_evaluated')
                                ),
                                c.last_evaluated_at
-                           ) AS last_evaluated_at
+                           ) AS last_evaluated_at,
+                           c.signal_group_id, c.signal_resolution,
+                           c.alias_of_candidate_id, c.promotion_eligible
                     FROM candidates AS c
                     WHERE c.active = true
                     ORDER BY c.rank_overall NULLS LAST, c.overall_score DESC NULLS LAST
@@ -273,6 +277,10 @@ class ReadOnlyStore:
                         "rank_delta": int(row[9] or 0),
                         "movement": row[10] or "unchanged",
                         "last_evaluated_at": isoformat(row[11]),
+                        "signal_group_id": row[12],
+                        "signal_resolution": row[13] or "independent",
+                        "alias_of_candidate_id": row[14],
+                        "promotion_eligible": bool(row[15]),
                     }
                 )
 
@@ -626,7 +634,9 @@ class ReadOnlyStore:
                 """
                 SELECT candidate_id, target_id, current_stage, status,
                        overall_score, stage_score, rank_overall, rank_stage,
-                       activity, rank_delta, movement_kind, last_evaluated_at
+                       activity, rank_delta, movement_kind, last_evaluated_at,
+                       signal_group_id, signal_resolution, alias_of_candidate_id,
+                       promotion_eligible
                 FROM candidates
                 WHERE candidate_id = ?
                 """,
@@ -649,6 +659,12 @@ class ReadOnlyStore:
                 payload = {}
             status = "Known Match" if event and event[1] == "known_match" else payload.get("classification", candidate[3])
             stage = VIEW_STAGE.get(view) or (event[0] if event and event[0] else candidate[2])
+            event_features = payload.get("features") if isinstance(payload.get("features"), dict) else {}
+            signal_resolution = event_features.get("signal_resolution", candidate[13])
+            alias_of_candidate_id = event_features.get("alias_of_candidate_id", candidate[14])
+            if event and event[1] == "signal_alias_released":
+                signal_resolution = payload.get("resolution", "released_for_independent_review")
+                alias_of_candidate_id = None
             evidence = payload.get("evidence_score")
             if evidence is None:
                 evidence = candidate[5] if candidate[5] is not None else candidate[4]
@@ -666,6 +682,10 @@ class ReadOnlyStore:
                     "rank_delta": int(candidate[9] or 0),
                     "movement": candidate[10] or "unchanged",
                     "last_evaluated_at": isoformat(event[3] if event else candidate[11]),
+                    "signal_group_id": candidate[12],
+                    "signal_resolution": signal_resolution or "independent",
+                    "alias_of_candidate_id": alias_of_candidate_id,
+                    "promotion_eligible": bool(candidate[15]),
                 }
             )
         return projected_rows
@@ -765,7 +785,9 @@ class ReadOnlyStore:
                            ),
                            c.last_evaluated_at
                        ) AS last_evaluated_at,
-                       c.known_match_id, c.active
+                       c.known_match_id, c.active, c.signal_group_id,
+                       c.signal_resolution, c.alias_of_candidate_id,
+                       c.promotion_eligible
                 FROM candidates AS c
                 WHERE c.candidate_id = ?
                 """,
@@ -814,6 +836,10 @@ class ReadOnlyStore:
                 "last_evaluated_at": isoformat(candidate[11]),
                 "known_match_id": candidate[12],
                 "active": bool(candidate[13]),
+                "signal_group_id": candidate[14],
+                "signal_resolution": candidate[15] or "independent",
+                "alias_of_candidate_id": candidate[16],
+                "promotion_eligible": bool(candidate[17]),
                 "target": {
                     "provider_target_id": target[0],
                     "ra_deg": target[1],

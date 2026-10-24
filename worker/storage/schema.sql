@@ -48,7 +48,11 @@ CREATE TABLE IF NOT EXISTS candidates (
     last_evaluated_at TIMESTAMP WITH TIME ZONE,
     known_match_id VARCHAR,
     active BOOLEAN NOT NULL DEFAULT true,
-    processing_slot_occupied BOOLEAN NOT NULL DEFAULT true
+    processing_slot_occupied BOOLEAN NOT NULL DEFAULT true,
+    signal_group_id VARCHAR,
+    signal_resolution VARCHAR NOT NULL DEFAULT 'independent',
+    alias_of_candidate_id VARCHAR,
+    promotion_eligible BOOLEAN NOT NULL DEFAULT true
 );
 
 CREATE TABLE IF NOT EXISTS candidate_signals (

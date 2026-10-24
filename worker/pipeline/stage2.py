@@ -14,7 +14,13 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from pipeline.stage1 import Stage1Processor
-from pipeline.lifecycle import STATUS_PRIORITY, movement_for_ranks, overall_sort_key, processed_target_count
+from pipeline.lifecycle import (
+    STATUS_PRIORITY,
+    movement_for_ranks,
+    overall_sort_key,
+    processed_target_count,
+    release_alias_siblings,
+)
 from storage.duckdb_store import DuckDBStore
 
 
@@ -364,7 +370,9 @@ def _candidate_rows(store: DuckDBStore) -> list[dict[str, Any]]:
             """
             SELECT candidate_id, target_id, current_stage, status,
                    overall_score, stage_score, rank_overall, rank_stage,
-                   activity, last_evaluated_at, active, processing_slot_occupied
+                   activity, last_evaluated_at, active, processing_slot_occupied,
+                   signal_group_id, signal_resolution, alias_of_candidate_id,
+                   promotion_eligible
             FROM candidates
             WHERE active = true
             """
@@ -383,6 +391,10 @@ def _candidate_rows(store: DuckDBStore) -> list[dict[str, Any]]:
             "last_evaluated_at": row[9],
             "active": bool(row[10]),
             "processing_slot_occupied": bool(row[11]),
+            "signal_group_id": row[12],
+            "signal_resolution": row[13] or "independent",
+            "alias_of_candidate_id": row[14],
+            "promotion_eligible": bool(row[15]),
         }
         for row in rows
     ]
@@ -400,6 +412,11 @@ def publish_stage2_result(
 
     candidates = _candidate_rows(store)
     candidate_id = str(result["candidate_id"])
+    candidates, released_alias_ids = release_alias_siblings(
+        candidates,
+        primary_candidate_id=candidate_id,
+        outcome=str(result["status"]),
+    )
     existing = next((item for item in candidates if item["candidate_id"] == candidate_id), None)
     if existing is None:
         raise Stage2ProcessingError(f"candidate does not exist: {candidate_id}")
@@ -417,6 +434,10 @@ def publish_stage2_result(
             "activity": result["activity"],
             "last_evaluated_at": result["evaluated_at"],
             "processing_slot_occupied": result["status"] != "Inconclusive",
+            "signal_group_id": existing.get("signal_group_id"),
+            "signal_resolution": existing.get("signal_resolution"),
+            "alias_of_candidate_id": existing.get("alias_of_candidate_id"),
+            "promotion_eligible": existing.get("promotion_eligible", True),
         }
     )
     stage2_pool.sort(
@@ -488,6 +509,10 @@ def publish_stage2_result(
                 "last_evaluated_at": item["last_evaluated_at"],
                 "known_match_id": None,
                 "processing_slot_occupied": item["processing_slot_occupied"],
+                "signal_group_id": item.get("signal_group_id"),
+                "signal_resolution": item.get("signal_resolution"),
+                "alias_of_candidate_id": item.get("alias_of_candidate_id"),
+                "promotion_eligible": item.get("promotion_eligible"),
             }
         )
 
@@ -574,6 +599,23 @@ def publish_stage2_result(
             if existing["current_stage"] == "stage1"
             else []
         )
+        + [
+            {
+                "event_id": f"signal-alias-released-{released_id}-{version}",
+                "sequence_number": version,
+                "candidate_id": released_id,
+                "stage": "stage1",
+                "event_type": "signal_alias_released",
+                "payload_json": {
+                    "reason": "primary_signal_was_inconclusive",
+                    "primary_candidate_id": candidate_id,
+                    "resolution": "released_for_independent_review",
+                },
+                "occurred_at": evaluated_at,
+                "model_run_id": f"stage2-run-{candidate_id}-{version}",
+            }
+            for released_id in released_alias_ids
+        ]
         + [
             {
                 "event_id": f"stage2-evaluated-{candidate_id}-{version}",

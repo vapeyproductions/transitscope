@@ -639,6 +639,7 @@ def publish_stage1_result(
     ]
     new_candidate = {
         "candidate_id": candidate_id,
+        "signal_id": result.get("signal_id"),
         "target_id": target_id,
         "current_stage": "stage1",
         "status": result["status"],
@@ -646,6 +647,11 @@ def publish_stage1_result(
         "stage_score": result["evidence_score"],
         "activity": result["activity"],
         "last_evaluated_at": evaluated_at,
+        "signal_group_id": f"signal-group-{candidate_id}",
+        "signal_resolution": "independent",
+        "alias_of_candidate_id": None,
+        "promotion_eligible": result["status"] not in {"Inconclusive", "Known Match"},
+        "processing_slot_occupied": result["status"] != "Inconclusive",
     }
     stage1_pool = [candidate for candidate in previous if candidate["current_stage"] == "stage1"] + [new_candidate]
     stage1_pool.sort(
@@ -679,8 +685,37 @@ def publish_stage1_result(
                 "stage_score": candidate["stage_score"],
                 "last_evaluated_at": candidate["last_evaluated_at"],
                 "known_match_id": candidate["known_match_id"],
+                "signal_group_id": candidate.get("signal_group_id"),
+                "signal_resolution": candidate.get("signal_resolution"),
+                "alias_of_candidate_id": candidate.get("alias_of_candidate_id"),
+                "promotion_eligible": candidate.get("promotion_eligible"),
+                "processing_slot_occupied": candidate.get("processing_slot_occupied"),
             }
         )
+
+    candidate_updates.append(
+        {
+            "candidate_id": candidate_id,
+            "signal_id": result.get("signal_id"),
+            "current_stage": "stage1",
+            "rank_overall": overall_ranks[candidate_id],
+            "rank_stage": stage1_ranks[candidate_id],
+            "rank_delta": 0,
+            "movement_kind": "new",
+            "active": True,
+            "activity": result["activity"],
+            "status": result["status"],
+            "overall_score": result["evidence_score"],
+            "stage_score": result["evidence_score"],
+            "last_evaluated_at": evaluated_at,
+            "known_match_id": None,
+            "signal_group_id": new_candidate["signal_group_id"],
+            "signal_resolution": new_candidate["signal_resolution"],
+            "alias_of_candidate_id": None,
+            "promotion_eligible": new_candidate["promotion_eligible"],
+            "processing_slot_occupied": new_candidate["processing_slot_occupied"],
+        }
+    )
 
     store.publish_batch(
         version=version,
@@ -715,6 +750,7 @@ def publish_stage1_result(
         candidates=[
             {
                 "candidate_id": candidate_id,
+                "signal_id": result.get("signal_id"),
                 "target_id": target_id,
                 "current_stage": "stage1",
                 "status": result["status"],
@@ -728,6 +764,11 @@ def publish_stage1_result(
                 "last_evaluated_at": evaluated_at,
                 "known_match_id": None,
                 "active": True,
+                "processing_slot_occupied": new_candidate["processing_slot_occupied"],
+                "signal_group_id": new_candidate["signal_group_id"],
+                "signal_resolution": new_candidate["signal_resolution"],
+                "alias_of_candidate_id": None,
+                "promotion_eligible": new_candidate["promotion_eligible"],
             }
         ],
         evaluations=[

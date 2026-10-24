@@ -291,7 +291,8 @@ def _existing_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
             """
             SELECT candidate_id, signal_id, target_id, current_stage, status, overall_score, stage_score,
                    rank_overall, rank_stage, activity, last_evaluated_at, known_match_id, active,
-                   processing_slot_occupied
+                   processing_slot_occupied, signal_group_id, signal_resolution,
+                   alias_of_candidate_id, promotion_eligible
             FROM candidates
             """
         ).fetchall()
@@ -311,6 +312,10 @@ def _existing_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
             "known_match_id": row[11],
             "active": bool(row[12]),
             "processing_slot_occupied": bool(row[13]),
+            "signal_group_id": row[14] or row[0],
+            "signal_resolution": row[15] or "independent",
+            "alias_of_candidate_id": row[16],
+            "promotion_eligible": bool(row[17]),
         }
         for row in rows
     ]
@@ -332,6 +337,193 @@ def _phase(period: float | None, transit_time: float | None) -> float | None:
     if period is None or period <= 0 or transit_time is None:
         return None
     return (transit_time % period) / period
+
+
+def signal_alias_comparison(
+    left: Mapping[str, Any], right: Mapping[str, Any]
+) -> dict[str, float] | None:
+    """Return conservative alias evidence for two signals from one target.
+
+    This is deliberately a *hold* decision, not a deletion decision. Signals
+    with nearly the same period, duration, depth, and a nearby phase are
+    treated as possible alternate fits to the same transit train. Their
+    distinction is preserved for later review.
+    """
+
+    if str(left.get("target_id")) != str(right.get("target_id")):
+        return None
+
+    def value(signal: Mapping[str, Any], key: str) -> Any:
+        features = signal.get("features")
+        if isinstance(features, Mapping) and key in features:
+            return features.get(key)
+        return signal.get(key)
+
+    period_left = _finite_float(value(left, "period_days"))
+    period_right = _finite_float(value(right, "period_days"))
+    if period_left is None or period_right is None or period_left <= 0 or period_right <= 0:
+        return None
+    period_delta = abs(period_left - period_right) / max(period_left, period_right)
+    if period_delta > float(os.getenv("STAGE1_ALIAS_PERIOD_TOLERANCE", "0.005")):
+        return None
+
+    duration_left = _finite_float(value(left, "duration_hours"))
+    duration_right = _finite_float(value(right, "duration_hours"))
+    duration_delta = 0.0
+    if duration_left is not None and duration_right is not None:
+        duration_delta = abs(duration_left - duration_right) / max(duration_left, duration_right)
+        if duration_delta > float(os.getenv("STAGE1_ALIAS_DURATION_TOLERANCE", "0.50")):
+            return None
+
+    depth_left = _finite_float(value(left, "depth"))
+    depth_right = _finite_float(value(right, "depth"))
+    depth_delta = 0.0
+    if depth_left is not None and depth_right is not None and max(abs(depth_left), abs(depth_right)) > 0:
+        depth_delta = abs(depth_left - depth_right) / max(abs(depth_left), abs(depth_right))
+        if depth_delta > float(os.getenv("STAGE1_ALIAS_DEPTH_TOLERANCE", "0.50")):
+            return None
+
+    phase_left = _phase(period_left, _finite_float(value(left, "transit_time")))
+    phase_right = _phase(period_right, _finite_float(value(right, "transit_time")))
+    if phase_left is None or phase_right is None:
+        phase_delta = 0.0
+    else:
+        phase_delta = abs(phase_left - phase_right)
+        phase_delta = min(phase_delta, 1.0 - phase_delta)
+    duration_days = max(duration_left or 0.0, duration_right or 0.0) / 24.0
+    phase_window = max(
+        float(os.getenv("STAGE1_ALIAS_MIN_PHASE_WINDOW", "0.04")),
+        min(float(os.getenv("STAGE1_ALIAS_MAX_PHASE_WINDOW", "0.20")), 2.5 * duration_days / period_left),
+    )
+    if phase_delta > phase_window:
+        return None
+    return {
+        "period_delta_fraction": period_delta,
+        "phase_delta_fraction": phase_delta,
+        "phase_window_fraction": phase_window,
+        "duration_delta_fraction": duration_delta,
+        "depth_delta_fraction": depth_delta,
+    }
+
+
+def classify_signal_relationships(
+    items: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Annotate Stage 1 results with durable primary/sibling relationships."""
+
+    if not items:
+        return [], []
+    normalized = [{"target": dict(item["target"]), "result": dict(item["result"])} for item in items]
+    count = len(normalized)
+    adjacency = [set() for _ in range(count)]
+    for left_index in range(count):
+        for right_index in range(left_index + 1, count):
+            comparison = signal_alias_comparison(
+                normalized[left_index]["result"], normalized[right_index]["result"]
+            )
+            if comparison is None:
+                continue
+            adjacency[left_index].add(right_index)
+            adjacency[right_index].add(left_index)
+
+    groups: list[list[int]] = []
+    seen: set[int] = set()
+    for start in range(count):
+        if start in seen:
+            continue
+        component: list[int] = []
+        pending = [start]
+        seen.add(start)
+        while pending:
+            current = pending.pop()
+            component.append(current)
+            for neighbor in adjacency[current]:
+                if neighbor not in seen:
+                    seen.add(neighbor)
+                    pending.append(neighbor)
+        groups.append(sorted(component))
+
+    alias_events: list[dict[str, Any]] = []
+    for component in groups:
+        candidate_ids = [str(normalized[index]["result"]["candidate_id"]) for index in component]
+        target_id = str(normalized[component[0]]["result"]["target_id"])
+        group_id = "signal-group-" + hashlib.sha256(
+            (target_id + "|" + "|".join(sorted(candidate_ids))).encode("utf-8")
+        ).hexdigest()[:16]
+        primary_index = max(
+            component,
+            key=lambda index: (
+                STATUS_PRIORITY.get(str(normalized[index]["result"].get("status")), 0),
+                float(normalized[index]["result"].get("evidence_score") or 0.0),
+                str(normalized[index]["result"]["candidate_id"]),
+            ),
+        )
+        primary_id = str(normalized[primary_index]["result"]["candidate_id"])
+        is_alias_group = len(component) > 1
+        primary_outcome = str(normalized[primary_index]["result"].get("status"))
+        for index in component:
+            result = normalized[index]["result"]
+            result_features = dict(result.get("features") or {})
+            is_primary = index == primary_index
+            sibling_released = (
+                is_alias_group
+                and not is_primary
+                and primary_outcome in {"Inconclusive", "Known Match"}
+            )
+            resolution = (
+                "primary"
+                if is_alias_group and is_primary
+                else "released_for_independent_review"
+                if sibling_released
+                else "pending_alias_review"
+                if is_alias_group
+                else "independent"
+            )
+            promotion_eligible = resolution != "pending_alias_review" and result.get("status") not in {
+                "Inconclusive",
+                "Known Match",
+            }
+            result_features.update(
+                {
+                    "signal_group_id": group_id,
+                    "signal_resolution": resolution,
+                    "alias_of_candidate_id": None
+                    if not is_alias_group or is_primary or sibling_released
+                    else primary_id,
+                    "promotion_eligible": promotion_eligible,
+                }
+            )
+            result["features"] = result_features
+            result["signal_group_id"] = group_id
+            result["signal_resolution"] = resolution
+            result["alias_of_candidate_id"] = None if not is_alias_group or is_primary or sibling_released else primary_id
+            result["promotion_eligible"] = promotion_eligible
+            if resolution == "pending_alias_review":
+                result["activity"] = "Awaiting independent-signal review"
+            elif resolution == "released_for_independent_review":
+                result["activity"] = "Released for independent review"
+            result["processing_slot_occupied"] = (
+                result.get("status") != "Inconclusive" and resolution != "pending_alias_review"
+            )
+            if is_alias_group and not is_primary:
+                comparison = signal_alias_comparison(
+                    normalized[index]["result"], normalized[primary_index]["result"]
+                ) or {}
+                alias_events.append(
+                    {
+                        "candidate_id": str(result["candidate_id"]),
+                        "primary_candidate_id": primary_id,
+                        "signal_group_id": group_id,
+                        "comparison": comparison,
+                        "event_type": "signal_alias_released" if sibling_released else "signal_alias_held",
+                        "reason": (
+                            "primary signal was inconclusive"
+                            if sibling_released
+                            else "possible phase-shifted duplicate; awaiting independent review"
+                        ),
+                    }
+                )
+    return normalized, alias_events
 
 
 def _signal_matches(existing: Mapping[str, Any], result: Mapping[str, Any]) -> bool:
@@ -498,6 +690,7 @@ def publish_stage1_batch(
         results,
         include_advanced=preserve_advanced_candidates,
     )
+    results, alias_events = classify_signal_relationships(results)
     previous = _existing_candidates(store)
     retiring = set(retire_candidate_ids)
     selected_target_ids = {str(target["target_id"]) for target in selected}
@@ -547,7 +740,13 @@ def publish_stage1_batch(
             "activity": result["result"]["activity"],
             "last_evaluated_at": result["result"]["evaluated_at"],
             "known_match_id": None,
-            "processing_slot_occupied": result["result"]["status"] != "Inconclusive",
+            "signal_group_id": result["result"].get("signal_group_id"),
+            "signal_resolution": result["result"].get("signal_resolution", "independent"),
+            "alias_of_candidate_id": result["result"].get("alias_of_candidate_id"),
+            "promotion_eligible": result["result"].get("promotion_eligible", True),
+            "processing_slot_occupied": result["result"].get(
+                "processing_slot_occupied", result["result"]["status"] != "Inconclusive"
+            ),
         }
         for result in stage1_results
     ]
@@ -594,6 +793,10 @@ def publish_stage1_batch(
                     "last_evaluated_at": candidate["last_evaluated_at"],
                     "known_match_id": None,
                     "active": True,
+                    "signal_group_id": candidate.get("signal_group_id"),
+                    "signal_resolution": candidate.get("signal_resolution"),
+                    "alias_of_candidate_id": candidate.get("alias_of_candidate_id"),
+                    "promotion_eligible": candidate.get("promotion_eligible"),
                     "processing_slot_occupied": candidate["processing_slot_occupied"],
                 }
             )
@@ -613,6 +816,10 @@ def publish_stage1_batch(
                     "stage_score": candidate["stage_score"],
                     "last_evaluated_at": candidate["last_evaluated_at"],
                     "known_match_id": None,
+                    "signal_group_id": candidate.get("signal_group_id"),
+                    "signal_resolution": candidate.get("signal_resolution"),
+                    "alias_of_candidate_id": candidate.get("alias_of_candidate_id"),
+                    "promotion_eligible": candidate.get("promotion_eligible"),
                     "processing_slot_occupied": candidate["processing_slot_occupied"],
                 }
             )
@@ -633,6 +840,10 @@ def publish_stage1_batch(
                     "stage_score": candidate["stage_score"],
                     "last_evaluated_at": candidate["last_evaluated_at"],
                     "known_match_id": candidate["known_match_id"],
+                    "signal_group_id": candidate.get("signal_group_id"),
+                    "signal_resolution": candidate.get("signal_resolution"),
+                    "alias_of_candidate_id": candidate.get("alias_of_candidate_id"),
+                    "promotion_eligible": candidate.get("promotion_eligible"),
                     "processing_slot_occupied": candidate["processing_slot_occupied"],
                 }
             )
@@ -658,6 +869,11 @@ def publish_stage1_batch(
                     "stage_score": candidate["stage_score"],
                     "last_evaluated_at": candidate["last_evaluated_at"],
                     "known_match_id": candidate["known_match_id"],
+                    "signal_group_id": candidate.get("signal_group_id"),
+                    "signal_resolution": candidate.get("signal_resolution"),
+                    "alias_of_candidate_id": candidate.get("alias_of_candidate_id"),
+                    "promotion_eligible": False,
+                    "processing_slot_occupied": False,
                 }
             )
 
@@ -745,6 +961,27 @@ def publish_stage1_batch(
                     "features": result["features"],
                 },
                 "occurred_at": result["evaluated_at"],
+                "model_run_id": f"stage1-run-{batch_id}",
+            }
+        )
+    for alias_event in alias_events:
+        events.append(
+            {
+                "event_id": f"stage1-alias-held-{batch_id}-{alias_event['candidate_id']}",
+                "sequence_number": version,
+                "candidate_id": alias_event["candidate_id"],
+                "stage": STAGE,
+                "event_type": alias_event["event_type"],
+                "payload_json": {
+                    "signal_group_id": alias_event["signal_group_id"],
+                    "primary_candidate_id": alias_event["primary_candidate_id"],
+                    "comparison": alias_event["comparison"],
+                    "reason": alias_event["reason"],
+                    "resolution": "released_for_independent_review"
+                    if alias_event["event_type"] == "signal_alias_released"
+                    else "pending_alias_review",
+                },
+                "occurred_at": evaluated_at,
                 "model_run_id": f"stage1-run-{batch_id}",
             }
         )
