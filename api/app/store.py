@@ -167,12 +167,21 @@ class ReadOnlyStore:
             if stage_filter:
                 rows = connection.execute(
                     """
-                    SELECT candidate_id, target_id, current_stage, status,
-                           overall_score, stage_score, rank_overall, rank_stage,
-                           activity, rank_delta, movement_kind, last_evaluated_at
-                    FROM candidates
-                    WHERE active = true AND current_stage = ?
-                    ORDER BY rank_stage NULLS LAST, stage_score DESC NULLS LAST
+                    SELECT c.candidate_id, c.target_id, c.current_stage, c.status,
+                           c.overall_score, c.stage_score, c.rank_overall, c.rank_stage,
+                           c.activity, c.rank_delta, c.movement_kind,
+                           COALESCE(
+                               (
+                                   SELECT MAX(event.occurred_at)
+                                   FROM pipeline_events AS event
+                                   WHERE event.candidate_id = c.candidate_id
+                                     AND event.event_type IN ('stage1_evaluated', 'stage2_evaluated', 'stage3_evaluated')
+                               ),
+                               c.last_evaluated_at
+                           ) AS last_evaluated_at
+                    FROM candidates AS c
+                    WHERE c.active = true AND c.current_stage = ?
+                    ORDER BY c.rank_stage NULLS LAST, c.stage_score DESC NULLS LAST
                     LIMIT ? OFFSET ?
                     """,
                     [stage_filter, effective_limit, offset],
@@ -180,12 +189,21 @@ class ReadOnlyStore:
             else:
                 rows = connection.execute(
                     """
-                    SELECT candidate_id, target_id, current_stage, status,
-                           overall_score, stage_score, rank_overall, rank_stage,
-                           activity, rank_delta, movement_kind, last_evaluated_at
-                    FROM candidates
-                    WHERE active = true
-                    ORDER BY rank_overall NULLS LAST, overall_score DESC NULLS LAST
+                    SELECT c.candidate_id, c.target_id, c.current_stage, c.status,
+                           c.overall_score, c.stage_score, c.rank_overall, c.rank_stage,
+                           c.activity, c.rank_delta, c.movement_kind,
+                           COALESCE(
+                               (
+                                   SELECT MAX(event.occurred_at)
+                                   FROM pipeline_events AS event
+                                   WHERE event.candidate_id = c.candidate_id
+                                     AND event.event_type IN ('stage1_evaluated', 'stage2_evaluated', 'stage3_evaluated')
+                               ),
+                               c.last_evaluated_at
+                           ) AS last_evaluated_at
+                    FROM candidates AS c
+                    WHERE c.active = true
+                    ORDER BY c.rank_overall NULLS LAST, c.overall_score DESC NULLS LAST
                     LIMIT ? OFFSET ?
                     """,
                     [effective_limit, offset],
@@ -690,12 +708,21 @@ class ReadOnlyStore:
         try:
             candidate = connection.execute(
                 """
-                SELECT candidate_id, target_id, current_stage, status,
-                       overall_score, stage_score, rank_overall, rank_stage,
-                       activity, rank_delta, movement_kind, last_evaluated_at,
-                       known_match_id, active
-                FROM candidates
-                WHERE candidate_id = ?
+                SELECT c.candidate_id, c.target_id, c.current_stage, c.status,
+                       c.overall_score, c.stage_score, c.rank_overall, c.rank_stage,
+                       c.activity, c.rank_delta, c.movement_kind,
+                       COALESCE(
+                           (
+                               SELECT MAX(event.occurred_at)
+                               FROM pipeline_events AS event
+                               WHERE event.candidate_id = c.candidate_id
+                                 AND event.event_type IN ('stage1_evaluated', 'stage2_evaluated', 'stage3_evaluated')
+                           ),
+                           c.last_evaluated_at
+                       ) AS last_evaluated_at,
+                       c.known_match_id, c.active
+                FROM candidates AS c
+                WHERE c.candidate_id = ?
                 """,
                 [candidate_id],
             ).fetchone()
@@ -814,7 +841,10 @@ class ReadOnlyStore:
                        occurred_at, model_run_id
                 FROM pipeline_events
                 WHERE candidate_id = ?
-                ORDER BY sequence_number ASC, occurred_at ASC
+                ORDER BY sequence_number ASC, occurred_at ASC,
+                         CASE WHEN event_type IN ('stage1_released', 'stage2_released')
+                              THEN 0 ELSE 1 END,
+                         event_type ASC
                 """,
                 [candidate_id],
             ).fetchall()

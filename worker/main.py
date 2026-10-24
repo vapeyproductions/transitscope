@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pipeline.live import run_live_cycle
+from pipeline.lifecycle import repair_legacy_history
 from storage.duckdb_store import DuckDBStore
 from storage.paths import DataPaths
 
@@ -72,7 +73,9 @@ def main() -> None:
     heartbeat_seconds = float(os.getenv("WORKER_HEARTBEAT_SECONDS", "5"))
     paths = DataPaths(data_dir)
     paths.ensure()
-    DuckDBStore(paths.database).initialize()
+    store = DuckDBStore(paths.database)
+    store.initialize()
+    history_repair = repair_legacy_history(store)
 
     mode = os.getenv("WORKER_MODE", "bootstrap").lower()
     if mode == "live":
@@ -122,7 +125,11 @@ def main() -> None:
                     stage3_capacity=int(os.getenv("STAGE3_CAPACITY", "6")),
                     status_callback=lambda state, details: write_status(data_dir, state, details),
                 )
-                write_status(data_dir, "idle", {"last_cycle": result})
+                write_status(
+                    data_dir,
+                    "idle",
+                    {"last_cycle": result, "history_repair": history_repair},
+                )
             except Exception as exc:  # keep the worker alive and make the error inspectable
                 write_status(data_dir, "error", {"error": repr(exc)})
                 time.sleep(float(os.getenv("WORKER_ERROR_RETRY_SECONDS", "30")))

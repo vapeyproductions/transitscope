@@ -539,7 +539,26 @@ def publish_stage2_result(
                 "updated_at": evaluated_at,
             }
         ],
-        events=[
+        events=(
+            [
+                {
+                    "event_id": f"stage1-released-{candidate_id}-{version}",
+                    "sequence_number": version,
+                    "candidate_id": candidate_id,
+                    "stage": "stage1",
+                    "event_type": "stage1_released",
+                    "payload_json": {
+                        "reason": "advanced_to_stage2",
+                        "next_stage": "stage2",
+                    },
+                    "occurred_at": evaluated_at,
+                    "model_run_id": f"stage2-run-{candidate_id}-{version}",
+                }
+            ]
+            if stage1_input["current_stage"] == "stage1"
+            else []
+        )
+        + [
             {
                 "event_id": f"stage2-evaluated-{candidate_id}-{version}",
                 "sequence_number": version,

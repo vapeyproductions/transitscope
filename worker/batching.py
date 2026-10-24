@@ -767,7 +767,6 @@ def run_stage1_refresh(
         selected=targets,
         results=results,
         failures=failures,
-        retire_candidate_ids=successful_ids,
     )
     return {
         "status": "published",

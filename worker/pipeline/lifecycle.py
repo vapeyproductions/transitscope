@@ -219,7 +219,10 @@ def publish_known_matches(
                 "status": "Known Match",
                 "overall_score": candidate["overall_score"],
                 "stage_score": candidate["stage_score"],
-                "last_evaluated_at": datetime.now(timezone.utc),
+                # Catalog cross-referencing is a lifecycle decision, not a
+                # model evaluation. Keep the timestamp tied to the latest
+                # actual stage assessment.
+                "last_evaluated_at": candidate["last_evaluated_at"],
                 "known_match_id": str(match["catalog_id"]),
                 "processing_slot_occupied": False,
             }
@@ -323,6 +326,139 @@ def publish_known_matches(
     return version
 
 
+def repair_legacy_history(store: DuckDBStore) -> dict[str, int]:
+    """Repair pre-stage-gating history without changing scientific results.
+
+    Older live cycles sent Stage 1 refreshes through the replacement-slot
+    path. That emitted ``stage1_released`` events even though the candidate
+    remained in Stage 1. Remove only those explicitly marked refresh events,
+    infer the one-time handoff events from the first downstream evaluation,
+    and restore candidate timestamps from real evaluation events.
+
+    The operation is idempotent and runs during worker startup so the durable
+    live database is corrected once without rerunning any model.
+    """
+
+    store.initialize()
+    with store.connect() as connection:
+        connection.execute("BEGIN TRANSACTION")
+        try:
+            legacy_release_count = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM pipeline_events
+                    WHERE event_type = 'stage1_released'
+                      AND payload_json LIKE '%replacement_slot_opened%'
+                    """
+                ).fetchone()[0]
+            )
+            connection.execute(
+                """
+                DELETE FROM pipeline_events
+                WHERE event_type = 'stage1_released'
+                  AND payload_json LIKE '%replacement_slot_opened%'
+                """
+            )
+
+            inferred_release_count = 0
+            for source_event_type, released_stage, next_stage in (
+                ("stage2_evaluated", "stage1", "stage2"),
+                ("stage3_evaluated", "stage2", "stage3"),
+            ):
+                source_rows = connection.execute(
+                    """
+                    SELECT candidate_id, sequence_number, occurred_at, model_run_id
+                    FROM pipeline_events
+                    WHERE event_type = ? AND candidate_id IS NOT NULL
+                    ORDER BY candidate_id, sequence_number, occurred_at
+                    """,
+                    [source_event_type],
+                ).fetchall()
+                first_by_candidate: dict[str, tuple[object, object, object]] = {}
+                for candidate_id, sequence_number, occurred_at, model_run_id in source_rows:
+                    first_by_candidate.setdefault(
+                        str(candidate_id),
+                        (sequence_number, occurred_at, model_run_id),
+                    )
+                for candidate_id, (sequence_number, occurred_at, model_run_id) in first_by_candidate.items():
+                    already_exists = connection.execute(
+                        """
+                        SELECT 1
+                        FROM pipeline_events
+                        WHERE candidate_id = ? AND event_type = ?
+                        LIMIT 1
+                        """,
+                        [candidate_id, f"{released_stage}_released"],
+                    ).fetchone()
+                    if already_exists:
+                        continue
+                    suffix = re.sub(r"[^a-zA-Z0-9]+", "", candidate_id)[-24:]
+                    connection.execute(
+                        """
+                        INSERT INTO pipeline_events (
+                            event_id, sequence_number, candidate_id, stage,
+                            event_type, payload_json, occurred_at, model_run_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        [
+                            f"legacy-repair-{released_stage}-released-{suffix}-{sequence_number}",
+                            sequence_number,
+                            candidate_id,
+                            released_stage,
+                            f"{released_stage}_released",
+                            json.dumps(
+                                {
+                                    "reason": f"advanced_to_{next_stage}",
+                                    "next_stage": next_stage,
+                                    "legacy_repaired": True,
+                                    "inferred_from": source_event_type,
+                                    "source_model_run_id": model_run_id,
+                                },
+                                sort_keys=True,
+                            ),
+                            occurred_at,
+                            f"history-repair-{released_stage}-{suffix}-{sequence_number}",
+                        ],
+                    )
+                    inferred_release_count += 1
+
+            connection.execute(
+                """
+                UPDATE candidates AS candidate
+                SET last_evaluated_at = COALESCE(
+                    (
+                        SELECT MAX(event.occurred_at)
+                        FROM pipeline_events AS event
+                        WHERE event.candidate_id = candidate.candidate_id
+                          AND event.event_type IN (
+                              'stage1_evaluated', 'stage2_evaluated', 'stage3_evaluated'
+                          )
+                    ),
+                    (
+                        SELECT MAX(evaluation.created_at)
+                        FROM evaluations AS evaluation
+                        WHERE evaluation.candidate_id = candidate.candidate_id
+                          AND evaluation.stage IN ('stage1', 'stage2', 'stage3')
+                    ),
+                    candidate.last_evaluated_at
+                )
+                """
+            )
+            connection.execute("COMMIT")
+        except Exception:
+            try:
+                connection.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+    return {
+        "legacy_release_events_removed": legacy_release_count,
+        "handoff_events_inferred": inferred_release_count,
+    }
+
+
 def _candidate_row(row: Sequence[Any]) -> dict[str, Any]:
     return {
         "candidate_id": row[0],
@@ -406,4 +542,5 @@ __all__ = [
     "processed_target_count",
     "promotable_candidates",
     "publish_known_matches",
+    "repair_legacy_history",
 ]
