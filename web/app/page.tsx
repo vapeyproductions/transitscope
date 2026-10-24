@@ -402,10 +402,20 @@ function LightCurveChart({ points, emptyMessage }: { points: LightCurveResponse[
   const minFlux = Math.min(...values);
   const maxFlux = Math.max(...values);
   const fluxRange = maxFlux - minFlux || 0.001;
+  const cadenceGaps = points.slice(1)
+    .map((point, index) => point.time - points[index].time)
+    .filter((delta) => Number.isFinite(delta) && delta > 0)
+    .sort((left, right) => left - right);
+  const typicalCadence = cadenceGaps.length
+    ? cadenceGaps[Math.floor(cadenceGaps.length / 2)]
+    : 0;
+  const gapThreshold = typicalCadence > 0 ? typicalCadence * 10 : Infinity;
   const path = points.map((point, index) => {
     const x = padding + ((point.time - minTime) / (maxTime - minTime || 1)) * (width - padding * 2);
     const y = height - padding - ((point.normalized_flux - minFlux) / fluxRange) * (height - padding * 2);
-    return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
+    const timeGap = index > 0 ? point.time - points[index - 1].time : 0;
+    const startsNewObservation = index === 0 || timeGap > gapThreshold;
+    return `${startsNewObservation ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
   }).join(" ");
   return <div className="chart-wrap"><svg aria-label="Normalized light curve" role="img" viewBox={`0 0 ${width} ${height}`}><line className="chart-baseline" x1={padding} x2={width - padding} y1={height / 2} y2={height / 2} /><path className="chart-line" d={path} /></svg><div className="chart-axis"><span>{minTime.toFixed(2)} BJD−2457000</span><span>{maxTime.toFixed(2)}</span></div></div>;
 }
