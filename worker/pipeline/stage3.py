@@ -20,7 +20,7 @@ from pipeline.stage2 import _candidate_rows
 from storage.duckdb_store import DuckDBStore
 
 
-MODEL_VERSION = "stage3-logreg-phase-v2"
+MODEL_VERSION = "stage3-logreg-phase-v3"
 BASELINE_MODEL_VERSION = "stage3-phase-window-v1"
 RANKING_VERSION = "stage3-overall-v2-score-first"
 
