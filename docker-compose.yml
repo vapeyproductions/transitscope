@@ -6,6 +6,8 @@ services:
     environment:
       DATA_DIR: /app/data
       APP_ENV: local
+      OPS_PASSWORD: monitor
+      OPS_CONTROL_TOKEN: monitor
     ports:
       - "8000:8000"
     volumes:
@@ -60,6 +62,8 @@ services:
     environment:
       NEXT_PUBLIC_API_BASE_URL: ""
       API_BACKEND_URL: http://api:8000
+      OPS_PASSWORD: monitor
+      OPS_CONTROL_TOKEN: monitor
     ports:
       - "3000:3000"
     depends_on:

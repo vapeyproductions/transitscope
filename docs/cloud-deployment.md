@@ -49,6 +49,7 @@ DATA_DIR=/app/data
 WORKER_MODE=live
 RUN_LIVE_PIPELINE=false
 CORS_ALLOWED_ORIGINS=https://<web-domain>
+OPS_CONTROL_TOKEN=<long-random-server-token>
 ```
 
 The remaining queue and capacity variables already have safe defaults in the
@@ -58,6 +59,9 @@ Dockerfile and can be adjusted later from Railway variables.
    - Dockerfile path: `Dockerfile.web`
    - `NEXT_PUBLIC_API_BASE_URL=` (empty, so the browser uses same-origin `/api`)
    - `API_BACKEND_URL=https://<api-domain>`
+   - `OPS_PASSWORD=<private-monitor-password>`
+   - `OPS_SESSION_SECRET=<long-random-session-secret>`
+   - `OPS_CONTROL_TOKEN=<same-long-random-server-token-as-api-worker>`
    - Generate a public domain for the web service
 6. Replace `<web-domain>` in the API service's `CORS_ALLOWED_ORIGINS`, then
    redeploy both services.
@@ -69,8 +73,11 @@ https://<api-domain>/api/monitoring/overview
 https://<web-domain>/
 ```
 
-The ML Ops view should show the worker as paused by configuration. No MAST
-download should appear until the execution gate is deliberately changed.
+The ML Ops view requires the configured password. Its Pause worker button writes
+a durable operator gate that the worker checks between cycles; its Resume worker
+button only works when `RUN_LIVE_PIPELINE=true` and `PIPELINE_PAUSED=false`.
+No MAST download starts while either deployment gate or the operator gate is
+paused. A pause does not interrupt an in-flight cycle; it prevents the next one.
 
 ## When to enable processing
 

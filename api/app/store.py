@@ -1048,7 +1048,7 @@ class ReadOnlyStore:
             connection.close()
 
     def monitoring(self, worker: dict[str, Any]) -> dict[str, Any]:
-        """Build a read-only operations view for the ML/pipeline dashboard.
+        """Build an operations view for the authenticated ML/pipeline dashboard.
 
         The worker owns execution. This projection only reads the published
         DuckDB state, so opening or refreshing the ML Ops tab cannot enqueue a
@@ -1060,6 +1060,39 @@ class ReadOnlyStore:
             "true",
             "yes",
             "on",
+        }
+        deployment_paused = os.getenv("PIPELINE_PAUSED", "true").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        control_path = Path(os.getenv("DATA_DIR", "/app/data")) / "pipeline-control.json"
+        operator_control: dict[str, Any] = {"pipeline_paused": False}
+        if control_path.exists():
+            try:
+                loaded_control = json.loads(control_path.read_text())
+                if isinstance(loaded_control, dict):
+                    operator_control = loaded_control
+            except (OSError, json.JSONDecodeError):
+                operator_control = {"pipeline_paused": False}
+        operator_paused = bool(operator_control.get("pipeline_paused"))
+        pipeline_paused = not autostart or deployment_paused or operator_paused
+        if not autostart:
+            control_reason = "RUN_LIVE_PIPELINE is false; no MAST downloads or model jobs will start."
+        elif deployment_paused:
+            control_reason = "PIPELINE_PAUSED is true; clear the deployment pause before resuming the worker."
+        elif operator_paused:
+            control_reason = "Paused from ML Ops; the worker will stop starting new jobs after its current cycle."
+        else:
+            control_reason = "The live worker is armed and will dispatch work on its next heartbeat."
+        control_state = {
+            "pipeline_paused": pipeline_paused,
+            "autostart_enabled": autostart,
+            "deployment_gate": not deployment_paused,
+            "operator_control": operator_paused,
+            "updated_at": operator_control.get("updated_at"),
+            "reason": control_reason,
         }
         configured_universe = int(os.getenv("TARGET_UNIVERSE_SIZE", "126000"))
         initial_stage1_pool = int(os.getenv("STAGE1_POOL_SIZE", "500"))
@@ -1074,15 +1107,7 @@ class ReadOnlyStore:
         empty = {
             "generated_at": datetime.utcnow().isoformat() + "Z",
             "data_version": None,
-            "control": {
-                "pipeline_paused": not autostart,
-                "autostart_enabled": autostart,
-                "reason": (
-                    "RUN_LIVE_PIPELINE is false; no MAST downloads or model jobs will start."
-                    if not autostart
-                    else "The live worker is allowed to run when a scheduler dispatches it."
-                ),
-            },
+            "control": control_state,
             "worker": worker,
             "universe": {
                 "configured_count": configured_universe,
@@ -1095,6 +1120,16 @@ class ReadOnlyStore:
             "stages": self._empty_monitoring_stages(stage_thresholds),
             "models": [],
             "sampling": self._empty_sampling(configured_universe),
+            "cycle_activity": {
+                "window_minutes": 60,
+                "expected_runs": 12,
+                "run_count": 0,
+                "runs": [],
+                "throughput": {},
+                "timings": {},
+                "queue": {"current": {}, "series": []},
+                "note": "Cycle history will appear after the worker records its first completed cycle.",
+            },
             "data_health": {
                 "providers": [],
                 "coverage": {"candidate_count": 0, "product_count": 0, "last_updated_at": None},
@@ -1251,10 +1286,11 @@ class ReadOnlyStore:
 
             sampling = self._monitoring_sampling(connection, configured_universe)
             data_health = self._monitoring_data_health(connection)
+            cycle_activity = self._monitoring_cycle_activity(connection, stage_data)
             return {
                 "generated_at": datetime.utcnow().isoformat() + "Z",
                 "data_version": version,
-                "control": empty["control"],
+                "control": control_state,
                 "worker": worker,
                 "universe": {
                     "configured_count": configured_universe,
@@ -1274,6 +1310,7 @@ class ReadOnlyStore:
                 "stages": stage_data,
                 "models": models,
                 "sampling": sampling,
+                "cycle_activity": cycle_activity,
                 "data_health": data_health,
             }
         finally:
@@ -1520,6 +1557,137 @@ class ReadOnlyStore:
                 }
                 for row in events
             ],
+        }
+
+    def _monitoring_cycle_activity(
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        stage_data: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Return the recent worker-cycle ledger used by the live ML Ops view."""
+
+        try:
+            rows = connection.execute(
+                """
+                SELECT cycle_id, started_at, finished_at, status,
+                       duration_seconds, payload_json
+                FROM pipeline_cycles
+                WHERE finished_at >= current_timestamp - INTERVAL '1 hour'
+                ORDER BY finished_at DESC
+                LIMIT 12
+                """
+            ).fetchall()
+        except Exception:
+            rows = []
+
+        runs: list[dict[str, Any]] = []
+        for row in reversed(rows):
+            try:
+                payload = json.loads(row[5] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            stages = payload.get("stage", payload.get("stages", {}))
+            if not isinstance(stages, dict):
+                stages = {}
+            queue = payload.get("queue", {})
+            if not isinstance(queue, dict):
+                queue = {}
+            runs.append(
+                {
+                    "cycle_id": row[0],
+                    "started_at": isoformat(row[1]),
+                    "finished_at": isoformat(row[2]),
+                    "status": row[3],
+                    "duration_seconds": round(float(row[4] or 0.0), 2),
+                    "stages": stages,
+                    "queue": queue,
+                    "stage3_reassessment": payload.get("stage3_reassessment", {}),
+                    "stage3_intake": payload.get("stage3_intake", {}),
+                }
+            )
+
+        stage_names = ("stage1", "stage2", "stage3")
+        throughput: dict[str, dict[str, Any]] = {}
+        timings: dict[str, dict[str, Any]] = {}
+        for stage in stage_names:
+            attempted = 0
+            evaluated = 0
+            promising = 0
+            needs_more_data = 0
+            inconclusive = 0
+            errors = 0
+            timing_values: list[float] = []
+            needs_timing_values: list[float] = []
+            dispatch_timing_values: list[float] = []
+            handoffs = 0
+            for run in runs:
+                summary = run["stages"].get(stage, {})
+                if not isinstance(summary, dict):
+                    continue
+                attempted += int(summary.get("attempted") or summary.get("evaluated") or 0)
+                evaluated += int(summary.get("evaluated") or summary.get("attempted") or 0)
+                promising += int(summary.get("promising") or 0)
+                needs_more_data += int(summary.get("needs_more_data") or 0)
+                inconclusive += int(summary.get("inconclusive") or 0)
+                errors += int(summary.get("errors") or summary.get("failed") or 0)
+                if isinstance(summary.get("timing_seconds"), (int, float)):
+                    timing_values.append(float(summary["timing_seconds"]))
+                if isinstance(summary.get("needs_more_data_seconds"), (int, float)):
+                    needs_timing_values.append(float(summary["needs_more_data_seconds"]))
+                if isinstance(summary.get("dispatch_seconds"), (int, float)):
+                    dispatch_timing_values.append(float(summary["dispatch_seconds"]))
+                handoffs += int(summary.get("handoffs") or 0)
+            throughput[stage] = {
+                "attempted": attempted,
+                "evaluated": evaluated,
+                "promising": promising,
+                "needs_more_data": needs_more_data,
+                "inconclusive": inconclusive,
+                "errors": errors,
+                "handoffs": handoffs,
+                "per_hour": evaluated,
+                "per_minute": round(evaluated / 60, 2),
+            }
+            timings[stage] = {
+                "average_cycle_seconds": round(sum(timing_values) / len(timing_values), 2) if timing_values else None,
+                "needs_more_data_seconds": round(sum(needs_timing_values), 2) if needs_timing_values else 0.0,
+                "average_needs_more_data_seconds": round(sum(needs_timing_values) / max(1, needs_more_data), 2) if needs_more_data else None,
+                "average_dispatch_seconds": round(sum(dispatch_timing_values) / max(1, handoffs), 2) if handoffs else None,
+                "handoffs": handoffs,
+            }
+
+        latest_queue = runs[-1]["queue"] if runs else {}
+        if not latest_queue:
+            latest_queue = {
+                stage: dict(stage_data[stage].get("counts", {}))
+                for stage in stage_names
+                if stage in stage_data
+            }
+        queue_series = []
+        for run in runs:
+            queue = run.get("queue", {})
+            queue_series.append(
+                {
+                    "finished_at": run["finished_at"],
+                    "stage1": sum(int(value or 0) for value in (queue.get("stage1", {}) or {}).values()),
+                    "stage2": sum(int(value or 0) for value in (queue.get("stage2", {}) or {}).values()),
+                    "stage3": sum(int(value or 0) for value in (queue.get("stage3", {}) or {}).values()),
+                }
+            )
+
+        return {
+            "window_minutes": 60,
+            "expected_runs": 12,
+            "run_count": len(runs),
+            "runs": runs,
+            "throughput": throughput,
+            "timings": timings,
+            "queue": {"current": latest_queue, "series": queue_series},
+            "note": (
+                "Cycle history is written at worker cycle boundaries. A cycle can contain several serialized publishes, so timing is wall-clock worker time, not dashboard refresh time."
+            ),
         }
 
     def _version(self) -> int | None:

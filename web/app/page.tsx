@@ -248,6 +248,65 @@ type CatalogHealth = {
   stages?: Array<{ stage?: string | null; status?: string | null; matches?: number; catalog_status?: string | null }>;
 };
 
+type MonitoringCycleStage = {
+  selected?: number;
+  evaluated?: number;
+  attempted?: number;
+  failed?: number;
+  released?: number;
+  promising?: number;
+  needs_more_data?: number;
+  inconclusive?: number;
+  known_match?: number;
+  errors?: number;
+  unchanged?: number;
+  handoffs?: number;
+  timing_seconds?: number;
+  needs_more_data_seconds?: number;
+  dispatch_seconds?: number;
+};
+
+type MonitoringCycle = {
+  cycle_id: string;
+  started_at: string;
+  finished_at: string;
+  status: string;
+  duration_seconds: number;
+  stages: Record<string, MonitoringCycleStage>;
+  queue: Record<string, Record<string, number>>;
+};
+
+type MonitoringCycleActivity = {
+  window_minutes: number;
+  expected_runs: number;
+  run_count: number;
+  runs: MonitoringCycle[];
+  throughput: Record<string, {
+    attempted: number;
+    evaluated: number;
+    promising: number;
+    needs_more_data: number;
+    inconclusive: number;
+    known_match: number;
+    errors: number;
+    handoffs: number;
+    per_hour: number;
+    per_minute: number;
+  }>;
+  timings: Record<string, {
+    average_cycle_seconds: number | null;
+    needs_more_data_seconds: number;
+    average_needs_more_data_seconds: number | null;
+    average_dispatch_seconds: number | null;
+    handoffs: number;
+  }>;
+  queue: {
+    current: Record<string, Record<string, number>>;
+    series: Array<{ finished_at: string; stage1: number; stage2: number; stage3: number }>;
+  };
+  note: string;
+};
+
 type MonitoringOverview = {
   generated_at: string;
   data_version: number | null;
@@ -255,7 +314,11 @@ type MonitoringOverview = {
     pipeline_paused: boolean;
     autostart_enabled: boolean;
     reason: string;
+    operator_control?: boolean;
+    deployment_gate?: boolean;
+    updated_at?: string | null;
   };
+  cycle_activity: MonitoringCycleActivity;
   worker: { state?: string; last_heartbeat?: string | null; reason?: string; catalog_health?: CatalogHealth };
   universe: {
     configured_count: number;
@@ -493,6 +556,13 @@ function numberLabel(value: number | null | undefined, digits = 1): string {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "—";
 }
 
+function durationLabel(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  if (value < 1) return `${Math.round(value * 1000)} ms`;
+  if (value < 60) return `${value.toFixed(1)} s`;
+  return `${Math.floor(value / 60)}m ${Math.round(value % 60)}s`;
+}
+
 function identifiedPerformanceStats(performance: IdentifiedPerformance): string {
   const stats: string[] = [];
   if (typeof performance.coverage_days === "number") stats.push(`${numberLabel(performance.coverage_days)} d coverage`);
@@ -674,11 +744,34 @@ function monitoringStatusLabel(status: string): string {
   return status;
 }
 
+function MonitoringCycleActivityPanel({ activity }: { activity: MonitoringCycleActivity }) {
+  const runs = activity.runs ?? [];
+  const stages: AssessmentStage[] = ["stage1", "stage2", "stage3"];
+  const evaluatedTotal = stages.reduce((total, stage) => total + (activity.throughput[stage]?.evaluated ?? 0), 0);
+  const needsTotal = stages.reduce((total, stage) => total + (activity.throughput[stage]?.needs_more_data ?? 0), 0);
+  const handoffTotal = stages.reduce((total, stage) => total + (activity.throughput[stage]?.handoffs ?? 0), 0);
+  const queueMax = Math.max(1, ...activity.queue.series.flatMap((point) => [point.stage1, point.stage2, point.stage3]));
+  const countsFor = (stage: string) => activity.queue.current?.[stage] ?? {};
+
+  return <section className="ops-section cycle-activity-section" aria-labelledby="cycle-activity-title">
+    <div className="ops-section-heading"><div><p className="eyebrow">Live worker activity</p><h4 id="cycle-activity-title">Last {activity.expected_runs} runs · queue movement</h4></div><span className="section-note">{activity.run_count} completed in the last {activity.window_minutes} minutes · updates with the monitoring poll</span></div>
+    {!runs.length ? <div className="ops-empty">No cycle history has been recorded in this deployment yet. The activity model will populate after the next worker cycle completes.</div> : <>
+      <div className="cycle-summary-grid"><article className="cycle-summary-card"><span className="metric-label">Completed cycles</span><strong>{activity.run_count} / {activity.expected_runs}</strong><small>worker runs observed</small></article><article className="cycle-summary-card"><span className="metric-label">Candidates evaluated</span><strong>{evaluatedTotal.toLocaleString()}</strong><small>across all stages · {numberLabel(evaluatedTotal / Math.max(1, activity.window_minutes), 2)} per minute</small></article><article className="cycle-summary-card"><span className="metric-label">Needs more data</span><strong>{needsTotal.toLocaleString()}</strong><small>reassessments or new evaluations</small></article><article className="cycle-summary-card"><span className="metric-label">Downstream handoffs</span><strong>{handoffTotal.toLocaleString()}</strong><small>Stage 2 candidates called by Stage 3</small></article></div>
+      <div className="cycle-activity-scroll"><div className="cycle-activity-grid" style={{ gridTemplateColumns: "minmax(132px, 1.4fr) repeat(" + runs.length + ", minmax(58px, 1fr))" }} role="table" aria-label="Worker activity by run"><div className="cycle-activity-corner" role="columnheader">Stage / run</div>{runs.map((run) => <div className="cycle-run-label" key={run.cycle_id} role="columnheader"><strong>{formatDate(run.finished_at)}</strong><small>{durationLabel(run.duration_seconds)}</small></div>)}{stages.map((stage) => <div className="cycle-row" key={stage} role="row"><div className="cycle-stage-label"><strong>{stageName(stage)}</strong><small>{activity.throughput[stage]?.evaluated ?? 0} assessed/hr</small></div>{runs.map((run) => { const summary = run.stages[stage] ?? {}; const work = Number(summary.evaluated ?? summary.attempted ?? 0); const needs = Number(summary.needs_more_data ?? 0); const known = Number(summary.known_match ?? 0); return <div className={work ? "cycle-cell has-work" : "cycle-cell no-work"} key={run.cycle_id + stage} role="cell"><strong>{work || "—"}</strong><small>{needs ? "+" + needs + " needs" : known ? known + " known" : summary.handoffs ? summary.handoffs + " handoff" : run.status === "error" ? "error" : "idle"}</small></div>; })}</div>)}</div></div>
+      <p className="cycle-activity-note">{activity.note}</p>
+      <div className="timing-card-grid">{stages.map((stage) => { const timing = activity.timings[stage] ?? { average_cycle_seconds: null, average_needs_more_data_seconds: null, average_dispatch_seconds: null, handoffs: 0 }; const flow = activity.throughput[stage] ?? { evaluated: 0, promising: 0, needs_more_data: 0, inconclusive: 0, known_match: 0, handoffs: 0 }; return <article className="timing-card" key={stage}><div className="timing-card-heading"><strong>{stageName(stage)}</strong><span>{flow.evaluated.toLocaleString()} assessed</span></div><div className="timing-stat-row"><span><small>Avg stage time</small><strong>{durationLabel(timing.average_cycle_seconds)}</strong></span><span><small>Needs data time</small><strong>{durationLabel(timing.average_needs_more_data_seconds)}</strong></span></div><div className="timing-stat-row"><span><small>Promising</small><strong>{flow.promising}</strong></span><span><small>Inconclusive</small><strong>{flow.inconclusive}</strong></span></div><div className="timing-stat-row"><span><small>Needs more data</small><strong>{flow.needs_more_data}</strong></span><span><small>Handoffs</small><strong>{flow.handoffs}</strong></span></div>{stage === "stage2" && <p>Needs More Data reassessment time: <strong>{durationLabel(timing.average_needs_more_data_seconds)}</strong>.</p>}{stage === "stage3" && <p>Stage 2 handoff processing time: <strong>{durationLabel(timing.average_dispatch_seconds)}</strong> · {timing.handoffs} handoffs.</p>}</article>; })}</div>
+      <div className="flow-monitor-grid"><section className="flow-panel"><div className="ops-section-heading"><div><p className="eyebrow">Queue shape</p><h5>Active candidates over the last hour</h5></div><span className="section-note">Each group is one completed cycle</span></div>{activity.queue.series.length ? <div className="queue-trend" aria-label="Active candidate queue trend">{activity.queue.series.map((point) => <div className="queue-trend-group" key={point.finished_at} title={formatDate(point.finished_at) + " · Stage 1 " + point.stage1 + ", Stage 2 " + point.stage2 + ", Stage 3 " + point.stage3}><span className="queue-bar stage1" style={{ height: Math.max(5, point.stage1 / queueMax * 100) + "%" }} /><span className="queue-bar stage2" style={{ height: Math.max(5, point.stage2 / queueMax * 100) + "%" }} /><span className="queue-bar stage3" style={{ height: Math.max(5, point.stage3 / queueMax * 100) + "%" }} /></div>)}</div> : <div className="ops-empty">Queue history will appear after the next cycle.</div>}<div className="queue-legend"><span><i className="queue-key stage1" />Stage 1</span><span><i className="queue-key stage2" />Stage 2</span><span><i className="queue-key stage3" />Stage 3</span></div></section><section className="flow-panel"><div className="ops-section-heading"><div><p className="eyebrow">Current backlog</p><h5>Where candidates are waiting now</h5></div></div><div className="backlog-list">{stages.map((stage) => { const counts = countsFor(stage); const total = Object.values(counts).reduce((sum, count) => sum + Number(count || 0), 0); return <div className="backlog-row" key={stage}><strong>{stageName(stage)}</strong><span>{total.toLocaleString()} total</span><small>{counts["Promising"] ?? 0} promising · {counts["Needs More Data"] ?? 0} needs data · {counts["Inconclusive"] ?? 0} inconclusive</small></div>; })}</div></section></div>
+    </>}
+  </section>;
+}
+
 export function MonitoringPanel({ refreshKey }: { refreshKey: number }) {
   const [overview, setOverview] = useState<MonitoringOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [pollKey, setPollKey] = useState(0);
+  const [controlBusy, setControlBusy] = useState(false);
+  const [controlMessage, setControlMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -708,6 +801,25 @@ export function MonitoringPanel({ refreshKey }: { refreshKey: number }) {
     };
   }, []);
 
+  const changeWorkerControl = async (action: "pause" | "resume") => {
+    setControlBusy(true);
+    setControlMessage(null);
+    try {
+      const response = await fetchJson<{ control: MonitoringOverview["control"] }>("/api/monitoring/control", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      setControlMessage(action === "pause" ? "Pause requested; the current cycle will finish before new work stops." : "Resume requested; the worker will start on its next heartbeat.");
+      setPollKey((current) => current + 1);
+      if (overview) setOverview({ ...overview, control: response.control });
+    } catch (cause) {
+      setControlMessage(cause instanceof Error ? cause.message : "Worker control request failed.");
+    } finally {
+      setControlBusy(false);
+    }
+  };
+
   const stages = overview ? Object.values(overview.stages) : [];
   const catalogHealth = overview?.worker.catalog_health;
   const catalogBusy = overview?.worker.state === "matching_catalog";
@@ -734,8 +846,8 @@ export function MonitoringPanel({ refreshKey }: { refreshKey: number }) {
 
   return <section className="operations-panel" aria-labelledby="operations-title">
     <header className="operations-header">
-      <div><p className="eyebrow accent">ML engineer view · read-only control plane</p><h3 id="operations-title">Pipeline operations</h3><p>Monitor the 126,000-target search, its evidence models, data health, and Stage 3-driven waterfall dispatch.</p></div>
-      <div className={`operations-gate ${overview.control.pipeline_paused ? "paused" : "armed"}`}><span className="status-dot" />{overview.control.pipeline_paused ? "Processing paused" : "Worker armed"}<small>{overview.control.reason}</small></div>
+      <div><p className="eyebrow accent">ML engineer view · authenticated control plane</p><h3 id="operations-title">Pipeline operations</h3><p>Monitor the 126,000-target search, control worker execution, and inspect Stage 3-driven waterfall dispatch.</p></div>
+      <div className="operations-control"><div className={`operations-gate ${overview.control.pipeline_paused ? "paused" : "armed"}`}><span className="status-dot" />{overview.control.pipeline_paused ? "Processing paused" : "Worker armed"}<small>{overview.control.reason}</small></div><div className="operations-control-actions"><button className="button button-outline" type="button" onClick={() => void changeWorkerControl("pause")} disabled={controlBusy || overview.control.pipeline_paused}>Pause worker</button><button className="button button-quiet" type="button" onClick={() => void changeWorkerControl("resume")} disabled={controlBusy || !overview.control.pipeline_paused || !overview.control.autostart_enabled}>Resume worker</button></div>{controlMessage && <p className="operations-control-message" role="status">{controlMessage}</p>}{!overview.control.autostart_enabled && <p className="operations-control-note">Resume is disabled because RUN_LIVE_PIPELINE is off in the deployment configuration.</p>}</div>
     </header>
     <div className="operations-grid operations-grid-primary">
       <article className="ops-card ops-card-wide"><span className="metric-label">Universe progress</span><div className="ops-big-number"><strong>{overview.universe.processed_count.toLocaleString()}</strong><span> / {overview.universe.configured_count.toLocaleString()} processed</span></div><div className="progress-track"><span style={{ width: `${Math.max(0, Math.min(100, overview.universe.progress_percent))}%` }} /></div><div className="ops-inline-stats"><span><strong>{overview.universe.remaining_count.toLocaleString()}</strong> remaining</span><span><strong>{overview.universe.manifest_count.toLocaleString()}</strong> manifested</span><span><strong>{overview.universe.initial_stage1_pool.toLocaleString()}</strong> Stage 1 pool</span></div></article>
@@ -743,6 +855,7 @@ export function MonitoringPanel({ refreshKey }: { refreshKey: number }) {
       <article className="ops-card"><span className="metric-label">Coverage health</span><strong className="ops-card-value">{overview.data_health.coverage.product_count.toLocaleString()}</strong><span className="metric-detail">products across {overview.data_health.coverage.candidate_count.toLocaleString()} candidates</span><span className="ops-card-note">{overview.data_health.coverage.window_count.toLocaleString()} windows observed</span></article>
       <article className="ops-card"><span className="metric-label">Prime-candidate catalog check</span><strong className="ops-card-value">{catalogSummary}</strong><span className="metric-detail">{catalogDetail}</span><span className="ops-card-note">{catalogHealth?.fetched_at ? `Last scan ${formatDate(catalogHealth.fetched_at)} · ` : ""}Only Stage 3 Prime Candidates are checked against the complete archive projection.</span></article>
     </div>
+    <MonitoringCycleActivityPanel activity={overview.cycle_activity} />
     <section className="ops-section"><div className="ops-section-heading"><div><p className="eyebrow">Stage prioritization</p><h4>Queue policy and classifications</h4></div><span className="section-note">Stage 1 and 2 use ranking windows; Stage 3 works its Needs More Data queue in rank order.</span></div><div className="stage-ops-grid">{stages.map((stage) => <article className="stage-ops-card" key={stage.stage}><div className="stage-ops-card-heading"><strong>{stageName(stage.stage)}</strong><span>{stage.priority_label}</span></div><div className="stage-ops-inline-note">{stage.priority_candidates.toLocaleString()} currently prioritized · {stage.total_candidates.toLocaleString()} candidate signals retained</div><div className="stage-counts">{["Promising", "Needs More Data", "Inconclusive", "Known Match"].map((status) => <span key={status}><strong>{stage.counts[status] ?? 0}</strong>{monitoringStatusLabel(status)}</span>)}</div><small>Last evaluation: {formatDate(stage.last_evaluated_at)}</small></article>)}</div></section>
     <section className="ops-section"><div className="ops-section-heading"><div><p className="eyebrow">Model registry</p><h4>Algorithms and evidence quality</h4></div><span className="section-note">Metrics are aggregates of persisted evaluations, not new runs.</span></div>{overview.models.length ? <div className="model-registry">{overview.models.map((model) => <article className="model-card" key={`${model.stage}-${model.model_version}`}><div className="model-card-heading"><span className="stage-badge">{stageName(model.stage)}</span><strong>{stageName(model.stage)} model</strong></div><div className="model-stat-grid"><span><small>Evaluations</small><strong>{model.evaluation_count}</strong></span><span><small>Evidence</small><strong>{numberLabel(model.mean_evidence_score, 3)}</strong></span><span><small>Holdout F1</small><strong>{numberLabel(model.mean_holdout_f1, 2)}</strong></span><span><small>Model lift</small><strong>{numberLabel(model.mean_model_lift, 2)}</strong></span></div><p>{Object.entries(model.status_counts).map(([status, count]) => `${status}: ${count}`).join(" · ") || "No classifications recorded"}</p><small>Last evaluated {formatDate(model.last_evaluated_at)}</small></article>)}</div> : <div className="ops-empty">No model evaluations are persisted yet.</div>}</section>
     <div className="operations-grid operations-grid-secondary"><section className="ops-section ops-section-half"><div className="ops-section-heading"><div><p className="eyebrow">Adaptive sampling</p><h4>Replacement-target intelligence</h4></div></div><p className="ops-explanation">{overview.sampling.explanation}</p><div className="sampling-summary"><span><strong>{overview.sampling.cursor.toLocaleString()}</strong> cursor</span><span><strong>{overview.sampling.remaining_count.toLocaleString()}</strong> remaining</span><span><strong>{overview.sampling.adaptive_enabled ? "On" : "Observed only"}</strong> adaptive policy</span></div>{overview.sampling.buckets.length ? <div className="sampling-list">{overview.sampling.buckets.slice(0, 8).map((bucket) => <div className="sampling-row" key={bucket.bucket}><div><strong>{bucket.bucket}</strong><small>{bucket.observed} observed · {bucket.processed} processed</small></div><span>{bucket.promising} promising · {bucket.needs_more_data} needs data · {bucket.known_match} known</span><em>{bucket.recommendation}</em></div>)}</div> : <div className="ops-empty">No selection buckets have been observed yet.</div>}</section><section className="ops-section ops-section-half"><div className="ops-section-heading"><div><p className="eyebrow">Sky-cell outcomes</p><h4>Where to explore next</h4></div></div><p className="ops-explanation">Ten-degree RA/Dec cells summarize observed outcomes. They are guidance for the sampler, not a scientific claim about neighboring stars.</p>{overview.sampling.spatial_clusters.length ? <div className="sampling-list">{overview.sampling.spatial_clusters.slice(0, 8).map((cluster) => <div className="sampling-row" key={`${cluster.ra_min_deg}-${cluster.dec_min_deg}`}><div><strong>RA {cluster.ra_min_deg.toFixed(0)}° · Dec {cluster.dec_min_deg.toFixed(0)}°</strong><small>{cluster.observed} observed · {cluster.promising} promising</small></div><span>{cluster.needs_more_data} needs data · {cluster.inconclusive} inconclusive · {cluster.known_match} known</span><em>{cluster.recommendation}</em></div>)}</div> : <div className="ops-empty">Spatial signals will appear after targets with coordinates are assessed.</div>}</section></div>
@@ -759,6 +872,7 @@ export default function HomePage() {
   const [opsAccessOpen, setOpsAccessOpen] = useState(false);
   const [opsPassword, setOpsPassword] = useState("");
   const [opsPasswordError, setOpsPasswordError] = useState(false);
+  const [opsAccessLoading, setOpsAccessLoading] = useState(false);
   const [status, setStatus] = useState<DashboardStatus | null>(null);
   const [ranking, setRanking] = useState<RankingResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -937,6 +1051,6 @@ export default function HomePage() {
     </> : <IdentifiedPanel onOpenCandidate={(candidateId) => void openCandidate(candidateId)} refreshKey={identifiedRefreshKey} />}
     <footer className="footer-note"><span className="footer-pulse" aria-hidden="true" /><span>Data source: MAST / TESS · {footerState} · Evidence is provisional</span></footer>
     {modal}
-    {opsAccessOpen && <div className="modal-backdrop" role="presentation" onClick={() => setOpsAccessOpen(false)}><section className="candidate-modal access-modal" role="dialog" aria-modal="true" aria-labelledby="ops-access-title" onClick={(event) => event.stopPropagation()}><header className="modal-header"><div><p className="eyebrow accent">Portfolio monitoring view</p><h3 id="ops-access-title">Open ML Ops</h3><p className="modal-subtitle">Enter the monitor password to open the operations dashboard.</p></div><button className="modal-close" type="button" aria-label="Close ML Ops access dialog" onClick={() => setOpsAccessOpen(false)}>×</button></header><form className="access-form" onSubmit={(event) => { event.preventDefault(); if (opsPassword === "monitor") { window.location.assign("/ops"); return; } setOpsPasswordError(true); }}><label className="access-label" htmlFor="ops-password">Password</label><input className="access-input" id="ops-password" type="password" autoFocus value={opsPassword} onChange={(event) => { setOpsPassword(event.target.value); setOpsPasswordError(false); }} /><p className={`access-error ${opsPasswordError ? "" : "access-error-hidden"}`} role={opsPasswordError ? "alert" : undefined}>Incorrect password.</p><div className="access-actions"><button className="button button-outline" type="button" onClick={() => setOpsAccessOpen(false)}>Cancel</button><button className="button button-quiet" type="submit">Open dashboard</button></div></form></section></div>}
+    {opsAccessOpen && <div className="modal-backdrop" role="presentation" onClick={() => setOpsAccessOpen(false)}><section className="candidate-modal access-modal" role="dialog" aria-modal="true" aria-labelledby="ops-access-title" onClick={(event) => event.stopPropagation()}><header className="modal-header"><div><p className="eyebrow accent">Private monitoring view</p><h3 id="ops-access-title">Open ML Ops</h3><p className="modal-subtitle">Enter the monitor password to open worker controls and pipeline telemetry.</p></div><button className="modal-close" type="button" aria-label="Close ML Ops access dialog" onClick={() => setOpsAccessOpen(false)}>×</button></header><form className="access-form" onSubmit={async (event) => { event.preventDefault(); setOpsAccessLoading(true); setOpsPasswordError(false); try { const response = await fetch("/ops/session", { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ password: opsPassword }) }); if (!response.ok) { setOpsPasswordError(true); return; } window.location.assign("/ops"); } catch { setOpsPasswordError(true); } finally { setOpsAccessLoading(false); } }}><label className="access-label" htmlFor="ops-password">Password</label><input className="access-input" id="ops-password" type="password" autoFocus value={opsPassword} onChange={(event) => { setOpsPassword(event.target.value); setOpsPasswordError(false); }} /><p className={`access-error ${opsPasswordError ? "" : "access-error-hidden"}`} role={opsPasswordError ? "alert" : undefined}>Incorrect password.</p><div className="access-actions"><button className="button button-outline" type="button" onClick={() => setOpsAccessOpen(false)}>Cancel</button><button className="button button-quiet" type="submit" disabled={opsAccessLoading}>{opsAccessLoading ? "Checking…" : "Open dashboard"}</button></div></form></section></div>}
   </main>;
 }

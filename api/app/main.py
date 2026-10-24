@@ -1,9 +1,10 @@
 import json
 import os
+import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .store import ReadOnlyStore
@@ -12,7 +13,7 @@ from .store import ReadOnlyStore
 app = FastAPI(
     title="TransitScope API",
     version="0.1.0",
-    description="Read-only API foundation for the TransitScope observatory.",
+    description="TransitScope observatory API with authenticated ML Ops control.",
 )
 
 app.add_middleware(
@@ -43,6 +44,58 @@ def worker_status() -> dict:
         return {"state": "unknown", "last_heartbeat": None}
 
 
+def _env_flag(name: str, *, default: bool = False) -> bool:
+    return os.getenv(name, "true" if default else "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _ops_token_matches(request: Request) -> bool:
+    expected = os.getenv("OPS_CONTROL_TOKEN") or os.getenv("OPS_PASSWORD") or "monitor"
+    provided = request.headers.get("x-transitscope-ops-token", "")
+    return bool(provided) and secrets.compare_digest(provided, expected)
+
+
+def _require_ops_token(request: Request) -> None:
+    if not _ops_token_matches(request):
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "ops_auth_required", "message": "ML Ops access requires an authenticated session."},
+        )
+
+
+def _pipeline_control_path() -> Path:
+    return Path(os.getenv("DATA_DIR", "/app/data")) / "pipeline-control.json"
+
+
+def _read_pipeline_control() -> dict:
+    path = _pipeline_control_path()
+    if not path.exists():
+        return {"pipeline_paused": False}
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"pipeline_paused": False}
+    return payload if isinstance(payload, dict) else {"pipeline_paused": False}
+
+
+def _write_pipeline_control(paused: bool) -> dict:
+    path = _pipeline_control_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "pipeline_paused": paused,
+        "updated_at": utc_now(),
+        "updated_by": "ops-dashboard",
+    }
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, indent=2) + "\n")
+    temporary.replace(path)
+    return payload
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok", "service": "api", "version": app.version}
@@ -56,15 +109,35 @@ def status() -> dict:
 
 
 @app.get("/api/monitoring/overview")
-def monitoring_overview() -> dict:
-    """Return the read-only ML operations/control-plane projection.
+def monitoring_overview(request: Request) -> dict:
+    """Return the authenticated ML operations/control-plane projection.
 
     This endpoint never starts a job. It reports the worker's explicit pause
     gate, durable pipeline counts, model evidence, provider health, and the
     sampling signals that will guide future replacement-target selection.
     """
 
+    _require_ops_token(request)
     return ReadOnlyStore().monitoring(worker_status())
+
+
+@app.post("/api/monitoring/control")
+def monitoring_control(request: Request, payload: dict) -> dict:
+    """Set the durable operator pause gate read by the live worker."""
+
+    _require_ops_token(request)
+    action = payload.get("action") if isinstance(payload, dict) else None
+    if action not in {"pause", "resume"}:
+        raise HTTPException(status_code=400, detail={"code": "invalid_action", "message": "Action must be pause or resume."})
+
+    if action == "resume":
+        if not _env_flag("RUN_LIVE_PIPELINE"):
+            raise HTTPException(status_code=409, detail={"code": "deployment_gate_closed", "message": "RUN_LIVE_PIPELINE is false; enable the deployment gate before resuming the worker."})
+        if _env_flag("PIPELINE_PAUSED", default=True):
+            raise HTTPException(status_code=409, detail={"code": "deployment_gate_closed", "message": "PIPELINE_PAUSED is true; clear the deployment pause before resuming the worker."})
+
+    control = _write_pipeline_control(action == "pause")
+    return {"action": action, "control": ReadOnlyStore().monitoring(worker_status())["control"], "updated_at": control["updated_at"]}
 
 
 def not_found(code: str, message: str) -> HTTPException:

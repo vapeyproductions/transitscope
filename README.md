@@ -19,11 +19,11 @@ The compose worker is intentionally paused by default with `RUN_LIVE_PIPELINE=fa
 
 ## ML operations and eventual deployment
 
-The `ML Ops` tab is a read-only control-plane view for the system that will run the long-lived search. It reports the configured 500-target Stage 1 pool, progress through the 126,000-target manifest, occupied Stage 1/2/3 slots, status counts, model versions and aggregate metrics, MAST/catalog provider health, archive coverage watermarks, recent batches/events, selection buckets, and 10-degree sky-cell outcome signals. Sampling signals are descriptive until adaptive replacement sampling is explicitly enabled.
+The `ML Ops` tab is a password-protected operations view for the system that runs the long-lived search. It reports the configured 500-target Stage 1 pool, progress through the 126,000-target manifest, occupied Stage 1/2/3 slots, status counts, model versions and aggregate metrics, MAST/catalog provider health, archive coverage watermarks, recent batches/events, selection buckets, and 10-degree sky-cell outcome signals. Authorized operators can pause or resume the worker between cycles. Sampling signals are descriptive until adaptive replacement sampling is explicitly enabled.
 
 For a public always-updating launch, keep the responsibilities separate even if they are deployed from one repository:
 
-- The web/API layer serves the dashboard and read-only monitoring endpoints.
+- The web/API layer serves the dashboard and authenticated monitoring/control endpoints.
 - A durable database stores manifests, candidates, evaluations, ranking snapshots, events, checkpoints, and health metrics.
 - A persistent Python worker performs rate-limited MAST ingestion and CPU model jobs. A queue or scheduler dispatches bounded jobs; it is not a request handler.
 - Raw FITS and normalized artifacts live in durable object storage or a mounted volume, not an ephemeral serverless filesystem.

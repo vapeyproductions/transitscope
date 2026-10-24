@@ -124,6 +124,30 @@ class DuckDBStore:
                 """
             )
 
+    def record_pipeline_cycle(self, cycle: Mapping[str, object]) -> None:
+        """Persist one completed live-worker cycle for the ML Ops timeline."""
+
+        columns = (
+            "cycle_id",
+            "started_at",
+            "finished_at",
+            "status",
+            "duration_seconds",
+            "payload_json",
+        )
+        with self.connect() as connection:
+            connection.execute(
+                f"INSERT INTO pipeline_cycles ({', '.join(columns)}) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (cycle_id) DO UPDATE SET finished_at = excluded.finished_at, status = excluded.status, duration_seconds = excluded.duration_seconds, payload_json = excluded.payload_json",
+                [
+                    cycle.get("cycle_id"),
+                    cycle.get("started_at"),
+                    cycle.get("finished_at"),
+                    cycle.get("status"),
+                    cycle.get("duration_seconds", 0.0),
+                    _json_value(cycle.get("payload", {})),
+                ],
+            )
+
     def publish_batch(
         self,
         *,

@@ -1,12 +1,12 @@
 # Live operations plan
 
-TransitScope is a continuously updating assessment service. The API remains read-only; the worker owns execution and publishes durable state.
+TransitScope is a continuously updating assessment service. The worker owns execution and publishes durable state; the authenticated ML Ops control endpoint can update only the durable operator pause gate.
 
 ## Current safe state
 
 `RUN_LIVE_PIPELINE=false` is the default in `docker-compose.yml`. When the worker is started in `WORKER_MODE=live` with that value, it only writes a `paused_by_config` heartbeat. It does not call MAST, download a FITS product, run a model, mutate DuckDB, or advance the Stage 1 cursor.
 
-The dashboard and `GET /api/monitoring/overview` are read-only. Refreshing them reads the latest published state and never triggers processing.
+Refreshing the dashboard reads the latest published state and never triggers processing. The monitoring overview and pause/resume endpoint require the authenticated ML Ops session; pause/resume only updates the durable operator gate and never runs a model directly.
 
 ## What the operations view monitors
 
@@ -23,7 +23,7 @@ The dashboard and `GET /api/monitoring/overview` are read-only. Refreshing them 
 2. Move durable state from local DuckDB to a managed Postgres-compatible store and raw/normalized artifacts to durable object storage. The worker can continue to use Python and the existing model adapters.
 3. Add a scheduler/queue with bounded concurrency, provider rate limits, retries, and idempotency keys. A multi-hour run is expected for the first 500-target pool; the dashboard should show queued, running, succeeded, deferred, failed, and paused work separately.
 4. Seed and validate the Stage 1 manifest for the first 500 targets without dispatching jobs. Confirm that replacements are drawn only when a slot is released and that only Promising candidates can advance.
-5. Enable execution deliberately by changing the worker environment to `RUN_LIVE_PIPELINE=true`. Keep the API read-only; the control-plane change should happen through the worker deployment or an authenticated operator workflow, not a public dashboard button. After the initial Stage 1 baseline, Stage 3 reassesses unresolved candidates and its durable resolution ledger calls the highest-ranked eligible Promising Stage 2 candidate. That Stage 2 handoff can cascade to a Stage 1 replacement; no stage advances from an independent timer.
+5. Enable execution deliberately by changing the worker environment to `RUN_LIVE_PIPELINE=true`. The authenticated ML Ops page can then pause or resume the operator gate without redeploying; deployment gates still take precedence. After the initial Stage 1 baseline, Stage 3 reassesses unresolved candidates and its durable resolution ledger calls the highest-ranked eligible Promising Stage 2 candidate. That Stage 2 handoff can cascade to a Stage 1 replacement; no stage advances from an independent timer.
 6. Watch the ML Ops view for the first several cycles before increasing concurrency or enabling adaptive sampling. The current worker uses bounded Stage 3 reassessment/dispatch budgets and a 300-second poll interval; reduce those budgets if provider health or CPU pressure becomes unstable.
 
 ## Why this is not a Vercel-only workload

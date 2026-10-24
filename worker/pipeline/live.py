@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -490,7 +491,7 @@ def _evaluate_stage3(
     candidate_id = str(candidate["candidate_id"])
     stage2_input = load_stage2_input(store, candidate_id)
     if stage2_input is None:
-        return {"candidate_id": candidate_id, "status": "missing_stage2_input"}
+        return {"candidate_id": candidate_id, "status": "missing_stage2_input", "dispatch_source_candidate_id": dispatch_source_candidate_id}
     previous_signature = _latest_evaluation_signature(store, candidate_id, "stage3")
     previous_product_count = len(previous_signature[1]) if previous_signature else 0
     paths, history = _history_for_candidate(
@@ -508,6 +509,7 @@ def _evaluate_stage3(
             "status": "unchanged",
             "history_products": len(paths),
             "discovered_sectors": history.get("sectors", []),
+            "dispatch_source_candidate_id": dispatch_source_candidate_id,
         }
     processor = Stage3Processor(
         Stage3Config(
@@ -553,6 +555,7 @@ def _evaluate_stage3(
         "publish_version": version,
         "history_products": len(paths),
         "discovered_sectors": history.get("sectors", []),
+        "dispatch_source_candidate_id": dispatch_source_candidate_id,
     }
 
 
@@ -773,6 +776,21 @@ def run_live_cycle(
     if stage3_reassessment_concurrency < 1:
         raise ValueError("stage3_reassessment_concurrency must be positive")
 
+    timings: dict[str, float] = {
+        "stage1_seconds": 0.0,
+        "stage2_seconds": 0.0,
+        "stage2_needs_more_data_seconds": 0.0,
+        "stage3_seconds": 0.0,
+        "stage3_needs_more_data_seconds": 0.0,
+        "stage3_dispatch_seconds": 0.0,
+        "catalog_seconds": 0.0,
+    }
+
+    def add_timing(key: str, started: float) -> float:
+        elapsed = max(0.0, time.perf_counter() - started)
+        timings[key] += elapsed
+        return elapsed
+
     def occupied_stage1_target_ids() -> set[str]:
         """Return source stars with active Stage 1 work.
 
@@ -828,21 +846,25 @@ def run_live_cycle(
                     "replacement_reason": replacement_reason,
                 },
             )
-        return run_batch(
-            data_dir=data_dir,
-            manifest_path=manifest_path,
-            config=BatchConfig(
-                # A released source-star slot should be replenished in the
-                # same cycle. The worker pool still bounds parallelism via
-                # max_workers; batch_size here controls how many replacements
-                # are requested, not how many candidates are shown.
-                batch_size=replacement_needed,
-                max_workers=max_workers,
-                top_n=top_n,
-                stage_capacity=stage1_threshold,
-                target_pool_size=stage1_pool_size,
-            ),
-        )
+        stage1_started = time.perf_counter()
+        try:
+            return run_batch(
+                data_dir=data_dir,
+                manifest_path=manifest_path,
+                config=BatchConfig(
+                    # A released source-star slot should be replenished in the
+                    # same cycle. The worker pool still bounds parallelism via
+                    # max_workers; batch_size here controls how many replacements
+                    # are requested, not how many candidates are shown.
+                    batch_size=replacement_needed,
+                    max_workers=max_workers,
+                    top_n=top_n,
+                    stage_capacity=stage1_threshold,
+                    target_pool_size=stage1_pool_size,
+                ),
+            )
+        finally:
+            add_timing("stage1_seconds", stage1_started)
 
     # The only unconditional Stage 1 work is the initial baseline bootstrap.
     # Once that baseline exists, Stage 3 must request every downstream
@@ -865,6 +887,7 @@ def run_live_cycle(
 
     def check_catalog(stage: str) -> dict[str, Any]:
         nonlocal catalog_context
+        catalog_started = time.perf_counter()
         if status_callback:
             status_callback("matching_catalog", {"stage": stage})
         if catalog_context is None and any(
@@ -880,6 +903,7 @@ def run_live_cycle(
             catalog_context=catalog_context,
         )
         catalog_checks.append(result)
+        add_timing("catalog_seconds", catalog_started)
         return result
 
     # Stage 1 known matches are checked before any Stage 3 dispatch. The
@@ -923,18 +947,22 @@ def run_live_cycle(
             return {"status": "idle", "refresh_count": 0, "message": "No Stage 1 Needs More Data refresh is available"}
         if status_callback:
             status_callback("processing_stage1", {"reason": "stage3_waterfall_request"})
-        result = run_stage1_refresh(
-            data_dir=data_dir,
-            manifest_path=manifest_path,
-            targets=targets,
-            config=BatchConfig(
-                batch_size=len(targets),
-                max_workers=max_workers,
-                top_n=top_n,
-                stage_capacity=stage1_threshold,
-                target_pool_size=stage1_pool_size,
-            ),
-        )
+        stage1_started = time.perf_counter()
+        try:
+            result = run_stage1_refresh(
+                data_dir=data_dir,
+                manifest_path=manifest_path,
+                targets=targets,
+                config=BatchConfig(
+                    batch_size=len(targets),
+                    max_workers=max_workers,
+                    top_n=top_n,
+                    stage_capacity=stage1_threshold,
+                    target_pool_size=stage1_pool_size,
+                ),
+            )
+        finally:
+            add_timing("stage1_seconds", stage1_started)
         return result
 
     def request_stage2_replacement() -> dict[str, Any] | None:
@@ -973,12 +1001,16 @@ def run_live_cycle(
                 "processing_stage2",
                 {"candidate_id": candidate_id, "reason": "stage3_waterfall_request"},
             )
+        stage2_started = time.perf_counter()
         result = _evaluate_stage2(
             store,
             candidate,
             data_dir=data_dir,
             max_history_sectors=max_history_sectors,
         )
+        elapsed = add_timing("stage2_seconds", stage2_started)
+        if result.get("status") == "Needs More Data":
+            timings["stage2_needs_more_data_seconds"] += elapsed
         stage2_results.append(result)
         released = len(before_targets - occupied_stage1_target_ids())
         if released:
@@ -1033,12 +1065,16 @@ def run_live_cycle(
                         "processing_stage2",
                         {"candidate_id": candidate_id, "reason": "stage3_waterfall_reassessment"},
                     )
+                stage2_started = time.perf_counter()
                 result = _evaluate_stage2(
                     store,
                     candidate,
                     data_dir=data_dir,
                     max_history_sectors=max_history_sectors,
                 )
+                elapsed = add_timing("stage2_seconds", stage2_started)
+                if result.get("status") == "Needs More Data":
+                    timings["stage2_needs_more_data_seconds"] += elapsed
                 stage2_results.append(result)
                 continue
 
@@ -1089,6 +1125,7 @@ def run_live_cycle(
                         "rank_at_enqueue": queued_candidate["rank_at_enqueue"],
                     },
                 )
+            stage3_started = time.perf_counter()
             result = _evaluate_stage3(
                 store,
                 candidate,
@@ -1096,6 +1133,7 @@ def run_live_cycle(
                 max_history_sectors=max_history_sectors,
                 publish_lock=stage3_publish_lock,
             )
+            add_timing("stage3_seconds", stage3_started)
             stage3_results.append(result)
             check_catalog("stage3")
         stage3_intake = _stage3_initial_intake_queue(
@@ -1109,6 +1147,7 @@ def run_live_cycle(
             if candidate["candidate_id"] not in attempted_stage3
         ][:reassessment_budget]
         attempted_stage3.update(str(candidate["candidate_id"]) for candidate in reassessment_candidates)
+        stage3_reassessment_started = time.perf_counter()
         reassessment_results = _run_stage3_reassessment_batch(
             store,
             reassessment_candidates,
@@ -1118,8 +1157,11 @@ def run_live_cycle(
             status_callback=status_callback,
             publish_lock=stage3_publish_lock,
         )
+        reassessment_elapsed = add_timing("stage3_seconds", stage3_reassessment_started)
         for result in reassessment_results:
             stage3_results.append(result)
+            if result.get("status") == "Needs More Data":
+                timings["stage3_needs_more_data_seconds"] += reassessment_elapsed / max(1, len(reassessment_results))
             if result.get("status") != "error":
                 check_catalog("stage3")
             if result.get("status") in {"Promising", "Inconclusive"}:
@@ -1156,6 +1198,7 @@ def run_live_cycle(
                         "source_candidate_id": source_candidate_id,
                     },
                 )
+            stage3_started = time.perf_counter()
             result = _evaluate_stage3(
                 store,
                 candidate,
@@ -1164,10 +1207,20 @@ def run_live_cycle(
                 dispatch_source_candidate_id=source_candidate_id,
                 publish_lock=stage3_publish_lock,
             )
+            dispatch_elapsed = add_timing("stage3_seconds", stage3_started)
+            timings["stage3_dispatch_seconds"] += dispatch_elapsed
+            if result.get("status") == "Needs More Data":
+                timings["stage3_needs_more_data_seconds"] += dispatch_elapsed
             stage3_results.append(result)
             check_catalog("stage3")
             if result.get("status") in {"Promising", "Inconclusive"}:
                 enqueue_sources([candidate_id])
+                # This Stage 2 candidate has now resolved in Stage 3, so the
+                # waterfall must immediately refill the Stage 2 queue from
+                # Stage 1. Previously this only happened after Stage 2 had no
+                # eligible Promising rows left, which allowed the existing
+                # Stage 2 backlog to starve Stage 1 indefinitely.
+                request_stage2_replacement()
 
     # Stage 3 is the final assessment stage, so a catalog match here is a
     # legitimate Stage 3 removal and is retained in the identified/replay
@@ -1217,6 +1270,7 @@ def run_live_cycle(
                 and result.get("candidate_id") in attempted_stage3
             ),
         },
+        "timings": {key: round(value, 3) for key, value in timings.items()},
         "catalog": catalog,
     }
 

@@ -148,3 +148,12 @@ CREATE TABLE IF NOT EXISTS coverage_watermarks (
     PRIMARY KEY (candidate_id, stage)
 );
 
+CREATE TABLE IF NOT EXISTS pipeline_cycles (
+    cycle_id VARCHAR PRIMARY KEY,
+    started_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    finished_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    status VARCHAR NOT NULL,
+    duration_seconds DOUBLE NOT NULL,
+    payload_json VARCHAR NOT NULL
+);
+
