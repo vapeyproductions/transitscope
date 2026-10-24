@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable
 
 from ingestion.exoplanet_archive import ExoplanetArchiveAdapter, ExoplanetArchiveConfig
@@ -479,6 +481,7 @@ def _evaluate_stage3(
     data_dir: Path,
     max_history_sectors: int,
     dispatch_source_candidate_id: str | None = None,
+    publish_lock: Any | None = None,
 ) -> dict[str, Any]:
     candidate_id = str(candidate["candidate_id"])
     stage2_input = load_stage2_input(store, candidate_id)
@@ -522,14 +525,24 @@ def _evaluate_stage3(
             target_id=stage2_input["target_id"],
             stage2_features=stage2_input["features"],
         )
-    version = publish_stage3_result(
-        store,
-        result,
-        stage1_score=stage2_input["stage1_score"],
-        stage2_score=stage2_input["stage2_score"],
-        input_product_ids=list(product_ids),
-        dispatch_source_candidate_id=dispatch_source_candidate_id,
-    )
+    def publish() -> int:
+        return publish_stage3_result(
+            store,
+            result,
+            stage1_score=stage2_input["stage1_score"],
+            stage2_score=stage2_input["stage2_score"],
+            input_product_ids=list(product_ids),
+            dispatch_source_candidate_id=dispatch_source_candidate_id,
+        )
+
+    # Historical downloads and model fitting may run concurrently, but the
+    # ranking/state write must be serialized. This protects publish versions,
+    # snapshots, and replacement-debt events from racing one another.
+    if publish_lock is None:
+        version = publish()
+    else:
+        with publish_lock:
+            version = publish()
     return {
         "candidate_id": candidate_id,
         "status": result["status"],
@@ -537,6 +550,83 @@ def _evaluate_stage3(
         "history_products": len(paths),
         "discovered_sectors": history.get("sectors", []),
     }
+
+
+def _run_stage3_reassessment_batch(
+    store: DuckDBStore,
+    candidates: list[dict[str, Any]],
+    *,
+    data_dir: Path,
+    max_history_sectors: int,
+    concurrency: int,
+    status_callback: Callable[[str, dict[str, Any]], None] | None,
+    publish_lock: Any,
+) -> list[dict[str, Any]]:
+    """Reassess a bounded Stage 3 batch concurrently.
+
+    Candidate selection is made once, in ranking order, before work starts.
+    Each task owns its MAST/history fetch and CPU model evaluation. The
+    publish lock is passed into ``_evaluate_stage3`` so only the durable
+    ranking/state commit is serialized. Failed candidates remain in their
+    current state and are returned as inspectable per-candidate errors rather
+    than stopping all other reassessments in the batch.
+    """
+
+    if not candidates:
+        return []
+    worker_count = max(1, min(int(concurrency), len(candidates)))
+    candidate_ids = [str(candidate["candidate_id"]) for candidate in candidates]
+    if status_callback:
+        status_callback(
+            "processing_stage3",
+            {
+                "reason": "ranked_needs_more_data_batch",
+                "candidate_id": candidate_ids[0],
+                "candidate_ids": candidate_ids,
+                "batch_size": len(candidates),
+                "concurrency": worker_count,
+            },
+        )
+
+    results_by_id: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="stage3-reassessment",
+    ) as executor:
+        futures = {
+            executor.submit(
+                _evaluate_stage3,
+                store,
+                candidate,
+                data_dir=data_dir,
+                max_history_sectors=max_history_sectors,
+                publish_lock=publish_lock,
+            ): str(candidate["candidate_id"])
+            for candidate in candidates
+        }
+        for future in as_completed(futures):
+            candidate_id = futures[future]
+            try:
+                results_by_id[candidate_id] = future.result()
+            except Exception as exc:  # keep other candidates moving
+                results_by_id[candidate_id] = {
+                    "candidate_id": candidate_id,
+                    "status": "error",
+                    "error": repr(exc),
+                }
+                if status_callback:
+                    status_callback(
+                        "processing_stage3",
+                        {
+                            "reason": "stage3_reassessment_error",
+                            "candidate_id": candidate_id,
+                            "error": repr(exc),
+                        },
+                    )
+
+    # Preserve the rank order chosen at dispatch time for downstream waterfall
+    # decisions and readable cycle output, regardless of completion timing.
+    return [results_by_id[candidate_id] for candidate_id in candidate_ids]
 
 
 def _load_catalog_context(data_dir: Path) -> dict[str, Any]:
@@ -648,6 +738,7 @@ def run_live_cycle(
     stage1_pool_size: int = 500,
     stage2_capacity: int | None = None,
     stage3_initial_intake_size: int = 100,
+    stage3_reassessment_concurrency: int = 4,
     status_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run one bounded archive poll and publish only changed pipeline state.
@@ -675,6 +766,8 @@ def run_live_cycle(
         stage2_reassessment_threshold = stage2_capacity
     if min(stage1_threshold, stage2_reassessment_threshold) < 1:
         raise ValueError("stage priority thresholds must be positive")
+    if stage3_reassessment_concurrency < 1:
+        raise ValueError("stage3_reassessment_concurrency must be positive")
 
     def occupied_stage1_target_ids() -> set[str]:
         """Return source stars with active Stage 1 work.
@@ -803,6 +896,7 @@ def run_live_cycle(
     stage2_results: list[dict[str, Any]] = []
     stage3_results: list[dict[str, Any]] = []
     stage1_requests: list[dict[str, Any]] = []
+    stage3_publish_lock = Lock()
     attempted_stage1: set[str] = set()
     attempted_stage2: set[str] = set()
     def request_stage1_reassessment() -> dict[str, Any]:
@@ -959,6 +1053,8 @@ def run_live_cycle(
         "queued_count": 0,
         "pending": [],
     }
+    reassessment_budget = max(1, int(os.getenv("STAGE3_REASSESSMENTS_PER_CYCLE", "4")))
+    attempted_stage3: set[str] = set()
     if waterfall_ready:
         stage3_intake = _stage3_initial_intake_queue(
             store,
@@ -994,6 +1090,7 @@ def run_live_cycle(
                 candidate,
                 data_dir=data_dir,
                 max_history_sectors=max_history_sectors,
+                publish_lock=stage3_publish_lock,
             )
             stage3_results.append(result)
             check_catalog("stage3")
@@ -1001,35 +1098,28 @@ def run_live_cycle(
             store,
             size=stage3_initial_intake_size,
         )
-        reassessment_budget = max(1, int(os.getenv("STAGE3_REASSESSMENTS_PER_CYCLE", "4")))
-        attempted_stage3: set[str] = set()
         resolved_sources: list[str] = []
-        for _ in range(reassessment_budget):
-            candidates_now = [
-                candidate
-                for candidate in _stage3_needs_data_queue(active_candidates(store))
-                if candidate["candidate_id"] not in attempted_stage3
-            ]
-            if not candidates_now:
-                break
-            candidate = candidates_now[0]
-            candidate_id = str(candidate["candidate_id"])
-            attempted_stage3.add(candidate_id)
-            if status_callback:
-                status_callback(
-                    "processing_stage3",
-                    {"candidate_id": candidate_id, "reason": "ranked_needs_more_data_queue"},
-                )
-            result = _evaluate_stage3(
-                store,
-                candidate,
-                data_dir=data_dir,
-                max_history_sectors=max_history_sectors,
-            )
+        reassessment_candidates = [
+            candidate
+            for candidate in _stage3_needs_data_queue(active_candidates(store))
+            if candidate["candidate_id"] not in attempted_stage3
+        ][:reassessment_budget]
+        attempted_stage3.update(str(candidate["candidate_id"]) for candidate in reassessment_candidates)
+        reassessment_results = _run_stage3_reassessment_batch(
+            store,
+            reassessment_candidates,
+            data_dir=data_dir,
+            max_history_sectors=max_history_sectors,
+            concurrency=stage3_reassessment_concurrency,
+            status_callback=status_callback,
+            publish_lock=stage3_publish_lock,
+        )
+        for result in reassessment_results:
             stage3_results.append(result)
-            check_catalog("stage3")
+            if result.get("status") != "error":
+                check_catalog("stage3")
             if result.get("status") in {"Promising", "Inconclusive"}:
-                resolved_sources.append(candidate_id)
+                resolved_sources.append(str(result["candidate_id"]))
 
         dispatch_sources: list[str] = []
         dispatch_seen: set[str] = set()
@@ -1068,6 +1158,7 @@ def run_live_cycle(
                 data_dir=data_dir,
                 max_history_sectors=max_history_sectors,
                 dispatch_source_candidate_id=source_candidate_id,
+                publish_lock=stage3_publish_lock,
             )
             stage3_results.append(result)
             check_catalog("stage3")
@@ -1111,6 +1202,16 @@ def run_live_cycle(
             "queued_count": stage3_intake["queued_count"],
             "pending_count": len(stage3_intake["pending"]),
             "selection_size": stage3_initial_intake_size,
+        },
+        "stage3_reassessment": {
+            "concurrency": stage3_reassessment_concurrency,
+            "requested_count": reassessment_budget if waterfall_ready else 0,
+            "evaluated_count": sum(
+                1
+                for result in stage3_results
+                if result.get("status") != "error"
+                and result.get("candidate_id") in attempted_stage3
+            ),
         },
         "catalog": catalog,
     }
