@@ -86,6 +86,7 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .tab-note { color: var(--faint); display: block; font-size: 9px; letter-spacing: 0.08em; margin-top: 4px; text-transform: uppercase; }
 .identified-context { align-items: center; color: var(--muted); display: inline-flex; font-size: 12px; gap: 8px; }
 .stage-heading { align-items: end; gap: 24px; margin-bottom: 24px; }
+.stage-actions { align-items: center; display: flex; flex: 0 0 auto; gap: 8px; margin-left: auto; }
 .stage-heading p { color: var(--muted); font-size: 13px; margin-bottom: 0; }
 .stage-kicker { color: var(--cyan); font-size: 11px; font-weight: 700; letter-spacing: 0.12em; margin-bottom: 14px; text-transform: uppercase; }
 .stage-number { border: 1px solid rgba(118, 228, 237, 0.35); border-radius: 5px; color: var(--cyan); margin-right: 8px; padding: 4px 6px; }
@@ -295,6 +296,7 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 
 @media (max-width: 800px) {
   .topbar, .stage-heading { align-items: flex-start; flex-direction: column; }
+  .stage-actions { margin-left: 0; }
   .identified-header { align-items: flex-start; flex-direction: column; }
   .operations-header { flex-direction: column; }
   .operations-gate { flex-basis: auto; width: 100%; }
