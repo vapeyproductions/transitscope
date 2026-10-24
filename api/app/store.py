@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import fcntl
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,38 @@ def ranking_rationale(status: str, evidence_score: object) -> str:
     return f"Ranked by the current pipeline policy; {score}."
 
 
+class _LockedReadConnection:
+    """DuckDB connection proxy that releases the shared sidecar lock on close."""
+
+    def __init__(self, connection: duckdb.DuckDBPyConnection, lock_file: Any) -> None:
+        self._connection = connection
+        self._lock_file = lock_file
+        self._closed = False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+    def __enter__(self) -> "_LockedReadConnection":
+        self._connection.__enter__()
+        return self
+
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        try:
+            self._connection.__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._connection.close()
+        finally:
+            fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+            self._lock_file.close()
+
+
 class ReadOnlyStore:
     """Read-only projection of the worker's published DuckDB state."""
 
@@ -48,10 +81,22 @@ class ReadOnlyStore:
         self.data_dir = data_dir or Path(os.getenv("DATA_DIR", "/app/data"))
         self.database = self.data_dir / "transitscope.duckdb"
 
-    def connect(self) -> duckdb.DuckDBPyConnection | None:
+    def connect(self) -> Any | None:
         if not self.database.exists():
             return None
-        return duckdb.connect(str(self.database), read_only=True)
+        # DuckDB uses a process-level file lock even for a read-only connection.
+        # Coordinate with the worker through a sidecar lock so an API poll
+        # cannot interrupt a publish transaction.
+        lock_path = self.database.with_suffix(self.database.suffix + ".lock")
+        lock_file = lock_path.open("a+")
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH)
+            connection = duckdb.connect(str(self.database), read_only=True)
+        except Exception:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            lock_file.close()
+            raise
+        return _LockedReadConnection(connection, lock_file)
 
     def latest_version(self, connection: duckdb.DuckDBPyConnection) -> int | None:
         row = connection.execute(

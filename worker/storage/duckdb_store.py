@@ -1,7 +1,8 @@
 import json
+import fcntl
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import duckdb
 
@@ -19,15 +20,56 @@ def _json_value(value: object) -> str:
     return json.dumps(value, sort_keys=True)
 
 
+class _LockedWriteConnection:
+    """DuckDB connection proxy that holds the worker's exclusive sidecar lock."""
+
+    def __init__(self, connection: duckdb.DuckDBPyConnection, lock_file: Any) -> None:
+        self._connection = connection
+        self._lock_file = lock_file
+        self._closed = False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+    def __enter__(self) -> "_LockedWriteConnection":
+        self._connection.__enter__()
+        return self
+
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        try:
+            self._connection.__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._connection.close()
+        finally:
+            fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+            self._lock_file.close()
+
+
 class DuckDBStore:
     """Single-writer store for durable pipeline state and replay history."""
 
     def __init__(self, database: Path) -> None:
         self.database = Path(database)
 
-    def connect(self) -> duckdb.DuckDBPyConnection:
+    def connect(self) -> Any:
         self.database.parent.mkdir(parents=True, exist_ok=True)
-        return duckdb.connect(str(self.database))
+        lock_path = self.database.with_suffix(self.database.suffix + ".lock")
+        lock_file = lock_path.open("a+")
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            connection = duckdb.connect(str(self.database))
+        except Exception:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            lock_file.close()
+            raise
+        return _LockedWriteConnection(connection, lock_file)
 
     def initialize(self) -> None:
         schema = SCHEMA_PATH.read_text()
