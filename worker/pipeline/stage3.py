@@ -674,6 +674,42 @@ def publish_stage3_result(
     version = (store.latest_published_version() or 0) + 1
     evaluated_at = result["evaluated_at"]
     suffix = re.sub(r"[^a-zA-Z0-9]+", "", candidate_id)[-12:]
+    prime_rank_events: list[dict[str, Any]] = []
+    for item in stage3_pool:
+        moved_candidate_id = str(item["candidate_id"])
+        if moved_candidate_id == candidate_id:
+            # The candidate being evaluated has already received its Stage 3
+            # test in this publication. Other Prime Candidates whose rank was
+            # displaced by this result must be explicitly re-tested later.
+            continue
+        previous = previous_by_id[moved_candidate_id]
+        old_rank = previous.get("rank_stage")
+        new_rank = stage3_ranks.get(moved_candidate_id)
+        if (
+            previous.get("current_stage") == "stage3"
+            and previous.get("status") == "Promising"
+            and old_rank is not None
+            and new_rank is not None
+            and int(old_rank) != int(new_rank)
+        ):
+            prime_rank_events.append(
+                {
+                    "event_id": f"stage3-prime-rank-moved-{moved_candidate_id}-{version}",
+                    "sequence_number": version,
+                    "candidate_id": moved_candidate_id,
+                    "stage": "stage3",
+                    "event_type": "stage3_prime_rank_moved",
+                    "payload_json": {
+                        "old_rank": int(old_rank),
+                        "new_rank": int(new_rank),
+                        "direction": "up" if int(new_rank) < int(old_rank) else "down",
+                        "reason": "prime_candidate_rank_changed",
+                        "retest_policy": "expanded_stage3_history",
+                    },
+                    "occurred_at": evaluated_at,
+                    "model_run_id": f"stage3-run-{candidate_id}-{version}",
+                }
+            )
     store.publish_batch(
         version=version,
         note=f"Stage 3 chronological holdout evaluation for {result['target_id']}",
@@ -740,7 +776,7 @@ def publish_stage3_result(
                 "updated_at": evaluated_at,
             }
         ],
-        events=(
+        events=prime_rank_events + (
             [
                 {
                     "event_id": f"stage2-released-{candidate_id}-{version}",

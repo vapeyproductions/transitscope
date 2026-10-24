@@ -113,7 +113,12 @@ def _history_for_candidate(
     return _history_paths(history, data_dir), history
 
 
-def _history_limit(max_history_sectors: int, previous_product_count: int) -> int:
+def _history_limit(
+    max_history_sectors: int,
+    previous_product_count: int,
+    *,
+    expansion_sectors: int | None = None,
+) -> int:
     """Expand archive coverage only when the prior window has been consumed."""
 
     if max_history_sectors <= 0:
@@ -123,7 +128,14 @@ def _history_limit(max_history_sectors: int, previous_product_count: int) -> int
     # additional sectors usually moves the candidate from a short probe to a
     # useful multi-window comparison, while max_history_sectors remains the
     # hard upper bound for one candidate.
-    expansion = max(1, int(os.getenv("HISTORY_EXPANSION_SECTORS", "4")))
+    expansion = max(
+        1,
+        int(
+            expansion_sectors
+            if expansion_sectors is not None
+            else os.getenv("HISTORY_EXPANSION_SECTORS", "4")
+        ),
+    )
     if previous_product_count:
         return min(max_history_sectors, previous_product_count + expansion)
     return min(max_history_sectors, initial)
@@ -143,6 +155,121 @@ def _stage3_needs_data_queue(candidates: list[dict[str, Any]]) -> list[dict[str,
         ),
         key=lambda candidate: (int(candidate["rank_stage"]), str(candidate["candidate_id"])),
     )
+
+
+def _stage3_prime_rank_reassessment_queue(
+    store: DuckDBStore,
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return Prime Candidates whose Stage 3 rank moved since their last test.
+
+    Rank movement is persisted as a pipeline event by Stage 3 publication. A
+    later Stage 3 evaluation or a durable no-new-coverage attempt consumes the
+    movement event, so a worker restart cannot lose the re-test and an
+    unchanged archive window cannot cause an infinite retry loop.
+    """
+
+    store.initialize()
+    with store.connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT candidate_id, stage, event_type, sequence_number, payload_json
+            FROM pipeline_events
+            WHERE candidate_id IS NOT NULL
+              AND event_type IN (
+                'stage3_prime_rank_moved',
+                'stage3_evaluated',
+                'known_match',
+                'stage3_prime_reassessment_attempted'
+              )
+            ORDER BY sequence_number ASC
+            """
+        ).fetchall()
+
+    movement_sequences: dict[str, int] = {}
+    consumed_sequences: dict[str, int] = {}
+    for candidate_id, stage, event_type, sequence_number, payload_json in rows:
+        if str(stage or "") != "stage3":
+            continue
+        candidate_key = str(candidate_id)
+        sequence = int(sequence_number or 0)
+        try:
+            payload = json.loads(payload_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        if event_type == "stage3_prime_rank_moved":
+            movement_sequences[candidate_key] = max(
+                movement_sequences.get(candidate_key, 0),
+                sequence,
+            )
+        elif event_type == "stage3_prime_reassessment_attempted":
+            consumed_sequences[candidate_key] = max(
+                consumed_sequences.get(candidate_key, 0),
+                int(payload.get("movement_sequence") or sequence),
+            )
+        else:
+            consumed_sequences[candidate_key] = max(
+                consumed_sequences.get(candidate_key, 0),
+                sequence,
+            )
+
+    pending_sequences = {
+        candidate_id: movement_sequence
+        for candidate_id, movement_sequence in movement_sequences.items()
+        if movement_sequence > consumed_sequences.get(candidate_id, 0)
+    }
+    return sorted(
+        [
+            {
+                **candidate,
+                "_stage3_prime_rank_movement_sequence": pending_sequences[
+                    str(candidate["candidate_id"])
+                ],
+            }
+            for candidate in candidates
+            if str(candidate["candidate_id"]) in pending_sequences
+            and candidate["current_stage"] == "stage3"
+            and candidate["active"]
+            and candidate["status"] == "Promising"
+            and candidate.get("rank_stage") is not None
+        ],
+        key=lambda candidate: (
+            int(candidate["rank_stage"]),
+            str(candidate["candidate_id"]),
+        ),
+    )
+
+
+def _record_stage3_prime_reassessment_attempt(
+    store: DuckDBStore,
+    *,
+    candidate_id: str,
+    movement_sequence: int,
+) -> int:
+    """Durably consume a Prime rank-movement job when coverage is unchanged."""
+
+    version = (store.latest_published_version() or 0) + 1
+    occurred_at = datetime.now(timezone.utc)
+    store.publish_batch(
+        version=version,
+        note=f"Deferred Stage 3 Prime re-test for {candidate_id}; no expanded coverage available",
+        events=[
+            {
+                "event_id": f"stage3-prime-reassessment-attempted-{candidate_id}-{version}",
+                "sequence_number": version,
+                "candidate_id": candidate_id,
+                "stage": "stage3",
+                "event_type": "stage3_prime_reassessment_attempted",
+                "payload_json": {
+                    "movement_sequence": movement_sequence,
+                    "reason": "no_expanded_coverage_available",
+                },
+                "occurred_at": occurred_at,
+                "model_run_id": f"stage3-prime-reassessment-{candidate_id}-{version}",
+            }
+        ],
+    )
+    return version
 
 
 def _stage2_needs_data_queue(
@@ -513,6 +640,7 @@ def _evaluate_stage3(
     data_dir: Path,
     max_history_sectors: int,
     dispatch_source_candidate_id: str | None = None,
+    force_expanded_history: bool = False,
     publish_lock: Any | None = None,
 ) -> dict[str, Any]:
     candidate_id = str(candidate["candidate_id"])
@@ -521,10 +649,22 @@ def _evaluate_stage3(
         return {"candidate_id": candidate_id, "status": "missing_stage2_input", "dispatch_source_candidate_id": dispatch_source_candidate_id}
     previous_signature = _latest_evaluation_signature(store, candidate_id, "stage3")
     previous_product_count = len(previous_signature[1]) if previous_signature else 0
+    history_expansion = None
+    if force_expanded_history:
+        history_expansion = int(
+            os.getenv(
+                "STAGE3_PRIME_HISTORY_EXPANSION_SECTORS",
+                os.getenv("HISTORY_EXPANSION_SECTORS", "4"),
+            )
+        )
     paths, history = _history_for_candidate(
         target_id=stage2_input["target_id"],
         data_dir=data_dir,
-        max_sectors=_history_limit(max_history_sectors, previous_product_count),
+        max_sectors=_history_limit(
+            max_history_sectors,
+            previous_product_count,
+            expansion_sectors=history_expansion,
+        ),
     )
     product_ids = tuple(str(path) for path in paths)
     if previous_signature == (
@@ -614,11 +754,15 @@ def _run_stage3_reassessment_batch(
         status_callback(
             "processing_stage3",
             {
-                "reason": "ranked_needs_more_data_batch",
+                "reason": "ranked_stage3_reassessment_batch",
                 "candidate_id": candidate_ids[0],
                 "candidate_ids": candidate_ids,
                 "batch_size": len(candidates),
                 "concurrency": worker_count,
+                "prime_rank_movement_count": sum(
+                    bool(candidate.get("_stage3_prime_rank_movement_sequence"))
+                    for candidate in candidates
+                ),
             },
         )
 
@@ -634,6 +778,9 @@ def _run_stage3_reassessment_batch(
                 candidate,
                 data_dir=data_dir,
                 max_history_sectors=max_history_sectors,
+                force_expanded_history=bool(
+                    candidate.get("_stage3_prime_rank_movement_sequence")
+                ),
                 publish_lock=publish_lock,
             ): str(candidate["candidate_id"])
             for candidate in candidates
@@ -1241,11 +1388,38 @@ def run_live_cycle(
             size=stage3_initial_intake_size,
         )
         resolved_sources: list[str] = []
-        reassessment_candidates = [
-            candidate
-            for candidate in _stage3_needs_data_queue(active_candidates(store))
-            if candidate["candidate_id"] not in attempted_stage3
-        ][:reassessment_budget]
+        current_stage3_candidates = active_candidates(store)
+        needs_data_queue = _stage3_needs_data_queue(current_stage3_candidates)
+        prime_rank_queue = _stage3_prime_rank_reassessment_queue(
+            store,
+            current_stage3_candidates,
+        )
+        reassessment_candidates: list[dict[str, Any]] = []
+        reassessment_kinds: dict[str, str] = {}
+        seen_reassessment_ids: set[str] = set()
+        for candidate in sorted(
+            [
+                *needs_data_queue,
+                *prime_rank_queue,
+            ],
+            key=lambda item: (
+                int(item["rank_stage"]),
+                0 if item.get("_stage3_prime_rank_movement_sequence") else 1,
+                str(item["candidate_id"]),
+            ),
+        ):
+            candidate_id = str(candidate["candidate_id"])
+            if candidate_id in attempted_stage3 or candidate_id in seen_reassessment_ids:
+                continue
+            seen_reassessment_ids.add(candidate_id)
+            reassessment_candidates.append(candidate)
+            reassessment_kinds[candidate_id] = (
+                "prime_rank_movement"
+                if candidate.get("_stage3_prime_rank_movement_sequence")
+                else "needs_more_data"
+            )
+            if len(reassessment_candidates) >= reassessment_budget:
+                break
         attempted_stage3.update(str(candidate["candidate_id"]) for candidate in reassessment_candidates)
         stage3_reassessment_started = time.perf_counter()
         reassessment_results = _run_stage3_reassessment_batch(
@@ -1259,11 +1433,33 @@ def run_live_cycle(
         )
         reassessment_elapsed = add_timing("stage3_seconds", stage3_reassessment_started)
         for result in reassessment_results:
+            candidate_id = str(result["candidate_id"])
+            reassessment_kind = reassessment_kinds.get(candidate_id, "needs_more_data")
+            if (
+                reassessment_kind == "prime_rank_movement"
+                and result.get("status") == "unchanged"
+            ):
+                movement_sequence = next(
+                    int(candidate["_stage3_prime_rank_movement_sequence"])
+                    for candidate in reassessment_candidates
+                    if str(candidate["candidate_id"]) == candidate_id
+                )
+                result["reassessment_attempted_version"] = _record_stage3_prime_reassessment_attempt(
+                    store,
+                    candidate_id=candidate_id,
+                    movement_sequence=movement_sequence,
+                )
+            if reassessment_kind == "prime_rank_movement":
+                queue_status = "Prime Candidate"
+                queue_reason = "stage3_prime_rank_movement_reassessment"
+            else:
+                queue_status = "Needs More Data"
+                queue_reason = "stage3_ranked_needs_more_data_reassessment"
             result.update(
                 {
                     "queue_kind": "reassessment",
-                    "queue_status": "Needs More Data",
-                    "queue_reason": "stage3_ranked_needs_more_data_reassessment",
+                    "queue_status": queue_status,
+                    "queue_reason": queue_reason,
                 }
             )
             stage3_results.append(result)
@@ -1400,6 +1596,11 @@ def run_live_cycle(
         "stage3_reassessment": {
             "concurrency": stage3_reassessment_concurrency,
             "requested_count": reassessment_budget if waterfall_ready else 0,
+            "prime_rank_movement_requested_count": sum(
+                1
+                for candidate in reassessment_candidates
+                if candidate.get("_stage3_prime_rank_movement_sequence")
+            ),
             "evaluated_count": sum(
                 1
                 for result in stage3_results
