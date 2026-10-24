@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cross-reference active candidates with a cached NASA Exoplanet Archive projection."""
+"""Cross-reference Stage 3 Prime Candidates with a complete archive projection."""
 
 from __future__ import annotations
 

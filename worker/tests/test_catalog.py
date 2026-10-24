@@ -41,7 +41,7 @@ class FakeArchiveAdapter(ExoplanetArchiveAdapter):
 
 
 class CatalogTests(unittest.TestCase):
-    def test_catalog_inputs_are_limited_to_primary_signals(self) -> None:
+    def test_catalog_inputs_are_limited_to_prime_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             paths = DataPaths(Path(temp_dir))
             paths.ensure()
@@ -66,7 +66,7 @@ class CatalogTests(unittest.TestCase):
                     {
                         "candidate_id": "primary",
                         "target_id": "TIC 123",
-                        "current_stage": "stage1",
+                        "current_stage": "stage3",
                         "status": "Promising",
                         "overall_score": 90.0,
                         "stage_score": 90.0,
@@ -78,7 +78,7 @@ class CatalogTests(unittest.TestCase):
                         "last_evaluated_at": now,
                         "known_match_id": None,
                         "active": True,
-                        "signal_resolution": "primary",
+                        "signal_resolution": "independent",
                     },
                     {
                         "candidate_id": "sibling",
@@ -102,7 +102,7 @@ class CatalogTests(unittest.TestCase):
 
             self.assertEqual([item["candidate_id"] for item in candidate_match_inputs(store)], ["primary"])
             self.assertEqual(
-                {item["candidate_id"] for item in candidate_match_inputs(store, primary_only=False)},
+                {item["candidate_id"] for item in candidate_match_inputs(store, prime_only=False)},
                 {"primary", "sibling"},
             )
 

@@ -376,7 +376,7 @@ def _evaluate_stage3(
 
 
 def _load_catalog_context(data_dir: Path) -> dict[str, Any]:
-    """Load one catalog snapshot for all stage-local checks in a cycle."""
+    """Load one complete catalog snapshot for Stage 3 Prime Candidates."""
 
     config = ExoplanetArchiveConfig(
         data_dir=data_dir,
@@ -405,16 +405,16 @@ def _match_known_candidates(
     catalog_context: dict[str, Any] | None = None,
     return_match_ids: bool = False,
 ) -> dict[str, Any]:
-    """Cross-reference only canonical Primary candidates in one stage.
+    """Cross-reference only Stage 3 Prime Candidates.
 
-    Sibling signals are intentionally excluded. A match in Stage 1 is therefore
-    shown as a Stage 1 removal in replay; non-primary signals remain governed by
-    the independence policy rather than consuming catalog matching work.
+    Stage 1/2 candidates and sibling signals are intentionally excluded. A
+    match is therefore shown as a Stage 3 removal in replay, exactly when the
+    candidate has reached Prime Candidate status.
     """
 
-    candidates = candidate_match_inputs(store, candidate_ids, primary_only=True)
-    if stage is not None:
-        candidates = [candidate for candidate in candidates if candidate["current_stage"] == stage]
+    candidates = candidate_match_inputs(store, candidate_ids, prime_only=True)
+    if stage is not None and stage != "stage3":
+        candidates = []
     if not candidates:
         return {"status": "no_active_candidates", "matches": 0, "stage": stage}
     context = catalog_context or _load_catalog_context(data_dir)
@@ -591,10 +591,9 @@ def run_live_cycle(
         "selected_count": 0,
     }
 
-    # Keep one immutable catalog snapshot for the entire cycle. Each gate
-    # below sees only canonical Primary candidates in that stage, so a known
-    # match is recorded at the earliest stage that had enough evidence to
-    # identify the primary signal.
+    # Keep one immutable catalog snapshot for the entire cycle. The only gate
+    # is Stage 3 Prime Candidate status; no earlier-stage or sibling signal
+    # can trigger a catalog lookup.
     # The snapshot is loaded lazily so an empty stage does not make an
     # unnecessary external catalog request.
     catalog_context: dict[str, Any] | None = None
@@ -605,8 +604,8 @@ def run_live_cycle(
         if status_callback:
             status_callback("matching_catalog", {"stage": stage})
         if catalog_context is None and any(
-            candidate["current_stage"] == stage
-            and candidate.get("signal_resolution") == "primary"
+            candidate["current_stage"] == "stage3"
+            and candidate.get("status") == "Promising"
             for candidate in active_candidates(store)
         ):
             catalog_context = _load_catalog_context(data_dir)
@@ -622,10 +621,9 @@ def run_live_cycle(
     # Stage 1 known matches are checked before any Stage 3 dispatch. The
     # replacement itself is deliberately deferred: Stage 3 owns the waterfall
     # and will request the replacement when it calls the next downstream job.
-    check_catalog("stage1")
     stage1_catalog_replacement: dict[str, Any] = {
         "status": "idle",
-        "message": "Stage 1 catalog removals wait for a Stage 3 waterfall request",
+        "message": "Catalog matching is reserved for Stage 3 Prime Candidates",
         "selected_count": 0,
     }
     signal_independence: dict[str, Any] = {
@@ -650,8 +648,6 @@ def run_live_cycle(
             threshold=stage1_threshold,
             processed_target_count=processed_target_count(store),
         )
-        if signal_independence.get("status") == "complete":
-            check_catalog("stage1")
         targets = _stage1_refresh_targets(
             store,
             data_dir=data_dir,
@@ -674,8 +670,6 @@ def run_live_cycle(
                 target_pool_size=stage1_pool_size,
             ),
         )
-        if result.get("status") != "idle":
-            check_catalog("stage1")
         return result
 
     def request_stage2_replacement() -> dict[str, Any] | None:
@@ -721,13 +715,11 @@ def run_live_cycle(
             max_history_sectors=max_history_sectors,
         )
         stage2_results.append(result)
-        check_catalog("stage2")
         released = len(before_targets - occupied_stage1_target_ids())
         if released:
             replacement = fill_stage1(released)
             if replacement.get("status") != "idle":
                 stage1_requests.append(replacement)
-                check_catalog("stage1")
         return result
 
     def select_stage2_candidate() -> dict[str, Any] | None:
@@ -783,7 +775,6 @@ def run_live_cycle(
                     max_history_sectors=max_history_sectors,
                 )
                 stage2_results.append(result)
-                check_catalog("stage2")
                 continue
 
             if request_stage2_replacement() is None:

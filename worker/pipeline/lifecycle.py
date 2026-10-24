@@ -83,12 +83,12 @@ def candidate_match_inputs(
     store: DuckDBStore,
     candidate_ids: Sequence[str] | None = None,
     *,
-    primary_only: bool = True,
+    prime_only: bool = True,
 ) -> list[dict[str, Any]]:
     """Return matchable candidates with coordinates and latest period evidence.
 
-    Known-object matching is deliberately limited to the canonical primary
-    signal for each star. Sibling signals are retained for independence
+    Known-object matching is deliberately limited to Stage 3 Prime Candidates.
+    Earlier-stage candidates and sibling signals are retained for pipeline
     analysis, but they must never independently trigger a catalog lookup.
     """
 
@@ -96,8 +96,8 @@ def candidate_match_inputs(
     with store.connect() as connection:
         params: list[Any] = []
         where = "WHERE c.active = true"
-        if primary_only:
-            where += " AND c.signal_resolution = 'primary'"
+        if prime_only:
+            where += " AND c.current_stage = 'stage3' AND c.status = 'Promising'"
         if candidate_ids:
             placeholders = ", ".join("?" for _ in candidate_ids)
             where += f" AND c.candidate_id IN ({placeholders})"
