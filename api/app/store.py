@@ -1048,7 +1048,7 @@ class ReadOnlyStore:
             # These are ranking windows, not runtime compute capacities. A
             # stage may retain and display candidates beyond its threshold.
             "stage1": int(os.getenv("STAGE1_PROMOTION_THRESHOLD", "100")),
-            "stage2": int(os.getenv("STAGE2_PROMOTION_THRESHOLD", "25")),
+            "stage2": int(os.getenv("STAGE2_REASSESSMENT_THRESHOLD", "100")),
             # Stage 3 is a ranked Needs More Data queue, not a top-X window.
             "stage3": None,
         }
@@ -1137,7 +1137,11 @@ class ReadOnlyStore:
                         """,
                         [stage, threshold],
                     ).fetchone()[0]
-                    priority_label = f"Top {threshold} priority threshold"
+                    priority_label = (
+                        f"Top {threshold} reassessment window"
+                        if stage == "stage2"
+                        else f"Top {threshold} priority threshold"
+                    )
                 latest = connection.execute(
                     """
                     SELECT MAX(last_evaluated_at), COUNT(*)
@@ -1271,7 +1275,11 @@ class ReadOnlyStore:
                 "priority_label": (
                     "Needs More Data reassessment queue"
                     if threshold is None
-                    else f"Top {threshold} priority threshold"
+                    else (
+                        f"Top {threshold} reassessment window"
+                        if stage == "stage2"
+                        else f"Top {threshold} priority threshold"
+                    )
                 ),
                 "priority_candidates": 0,
                 "total_candidates": 0,

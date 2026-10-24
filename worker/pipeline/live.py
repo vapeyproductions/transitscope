@@ -464,7 +464,10 @@ def run_live_cycle(
     max_workers: int,
     top_n: int,
     stage1_threshold: int = 100,
-    stage2_threshold: int = 25,
+    stage2_reassessment_threshold: int = 100,
+    # Legacy keyword compatibility. This now aliases the Stage 2
+    # reassessment window; Stage 3 promotion is no longer threshold-gated.
+    stage2_threshold: int | None = None,
     # Legacy keyword compatibility for Stage 1 and Stage 2 callers.
     stage_capacity: int | None = None,
     max_history_sectors: int,
@@ -474,12 +477,12 @@ def run_live_cycle(
 ) -> dict[str, Any]:
     """Run one bounded archive poll and publish only changed pipeline state.
 
-    Stage 1 and Stage 2 thresholds are ranking windows. They decide which
-    candidates are eligible for a Stage 3 request; they never cap the number
-    of candidates retained in a stage. After the initial Stage 1 baseline,
-    Stage 3 is the durable waterfall dispatcher: it reassesses its ranked
-    Needs More Data queue, calls Stage 2 when a resolution creates an
-    opportunity, and asks Stage 2 to request Stage 1 replacements.
+    Stage 1 has a ranking window for its own reassessment/promotion policy.
+    Stage 2 has a separate top-X reassessment window for ``Needs More Data``;
+    it is not a promotion cutoff. After the initial Stage 1 baseline, Stage 3
+    is the durable waterfall dispatcher: it reassesses its ranked Needs More
+    Data queue, calls the highest-ranked eligible Promising Stage 2 candidate
+    without a rank cutoff, and asks Stage 2 to request Stage 1 replacements.
     """
 
     from batching import BatchConfig, run_batch, run_stage1_refresh
@@ -489,9 +492,11 @@ def run_live_cycle(
     store.initialize()
     if stage_capacity is not None:
         stage1_threshold = stage_capacity
+    if stage2_threshold is not None:
+        stage2_reassessment_threshold = stage2_threshold
     if stage2_capacity is not None:
-        stage2_threshold = stage2_capacity
-    if min(stage1_threshold, stage2_threshold) < 1:
+        stage2_reassessment_threshold = stage2_capacity
+    if min(stage1_threshold, stage2_reassessment_threshold) < 1:
         raise ValueError("stage priority thresholds must be positive")
 
     def occupied_stage1_target_ids() -> set[str]:
@@ -714,7 +719,7 @@ def run_live_cycle(
         return result
 
     def select_stage2_candidate() -> dict[str, Any] | None:
-        """Return the next Stage 2 Promising candidate for Stage 3.
+        """Return the highest-ranked Stage 2 Promising candidate for Stage 3.
 
         If Stage 2 has no eligible Promising row, this is the point where the
         Stage 3 request is allowed to reassess Stage 2 Needs More Data and,
@@ -724,13 +729,16 @@ def run_live_cycle(
         for _ in range(3):
             candidates_now = [
                 candidate
-                for candidate in promotable_candidates(
-                    store,
-                    stage="stage2",
-                    threshold=stage2_threshold,
-                )
+                for candidate in active_candidates(store)
+                if candidate["current_stage"] == "stage2"
+                and candidate["status"] == "Promising"
+                and candidate["promotion_eligible"]
+                and candidate["rank_stage"] is not None
                 if candidate["candidate_id"] not in attempted_stage2
             ]
+            candidates_now.sort(
+                key=lambda item: (int(item["rank_stage"]), str(item["candidate_id"]))
+            )
             if candidates_now:
                 return candidates_now[0]
 
@@ -741,7 +749,7 @@ def run_live_cycle(
                 and candidate["status"] == "Needs More Data"
                 and candidate["promotion_eligible"]
                 and candidate["rank_stage"] is not None
-                and int(candidate["rank_stage"]) <= stage2_threshold
+                and int(candidate["rank_stage"]) <= stage2_reassessment_threshold
                 and candidate["candidate_id"] not in attempted_stage2
             ]
             if retry_candidates:
