@@ -346,10 +346,9 @@ def _evaluate_stage3(
     }
 
 
-def _match_known_candidates(store: DuckDBStore, data_dir: Path) -> dict[str, Any]:
-    candidates = candidate_match_inputs(store)
-    if not candidates:
-        return {"status": "no_active_candidates", "matches": 0}
+def _load_catalog_context(data_dir: Path) -> dict[str, Any]:
+    """Load one catalog snapshot for all stage-local checks in a cycle."""
+
     config = ExoplanetArchiveConfig(
         data_dir=data_dir,
         tables=("pscomppars", "toi"),
@@ -359,7 +358,36 @@ def _match_known_candidates(store: DuckDBStore, data_dir: Path) -> dict[str, Any
     )
     adapter = ExoplanetArchiveAdapter(config)
     payload = adapter.fetch(force=False)
-    records = [adapter._record_from_cache(record) for record in payload.get("records", [])]
+    return {
+        "adapter": adapter,
+        "payload": payload,
+        "records": [adapter._record_from_cache(record) for record in payload.get("records", [])],
+    }
+
+
+def _match_known_candidates(
+    store: DuckDBStore,
+    data_dir: Path,
+    *,
+    stage: str | None = None,
+    catalog_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Cross-reference only the candidates currently waiting in one stage.
+
+    A stage-local check is intentionally performed before promotion. A match in
+    Stage 1 is therefore shown as a Stage 1 removal in replay; unresolved
+    candidates are the only ones allowed to consume the next stage's capacity.
+    """
+
+    candidates = candidate_match_inputs(store)
+    if stage is not None:
+        candidates = [candidate for candidate in candidates if candidate["current_stage"] == stage]
+    if not candidates:
+        return {"status": "no_active_candidates", "matches": 0, "stage": stage}
+    context = catalog_context or _load_catalog_context(data_dir)
+    adapter = context["adapter"]
+    payload = context["payload"]
+    records = context["records"]
     matches: list[dict[str, Any]] = []
     for candidate in candidates:
         match = adapter.match_candidate(
@@ -372,7 +400,12 @@ def _match_known_candidates(store: DuckDBStore, data_dir: Path) -> dict[str, Any
         if match:
             matches.append({"candidate_id": candidate["candidate_id"], **match})
     if not matches:
-        return {"status": "no_matches", "matches": 0, "catalog_status": payload.get("status")}
+        return {
+            "status": "no_matches",
+            "matches": 0,
+            "stage": stage,
+            "catalog_status": payload.get("status"),
+        }
     version = publish_known_matches(
         store,
         matches,
@@ -382,6 +415,7 @@ def _match_known_candidates(store: DuckDBStore, data_dir: Path) -> dict[str, Any
     return {
         "status": "matched",
         "matches": len(matches),
+        "stage": stage,
         "publish_version": version,
         "catalog_status": payload.get("status"),
     }
@@ -464,6 +498,39 @@ def run_live_cycle(
 
     batch = fill_stage1()
 
+    # Keep one immutable catalog snapshot for the entire cycle. Each gate
+    # below sees only the candidates in that stage, so a known match is
+    # recorded at the earliest stage that had enough evidence to identify it.
+    # The snapshot is loaded lazily so an empty stage does not make an
+    # unnecessary external catalog request.
+    catalog_context: dict[str, Any] | None = None
+    catalog_checks: list[dict[str, Any]] = []
+
+    def check_catalog(stage: str) -> dict[str, Any]:
+        nonlocal catalog_context
+        if status_callback:
+            status_callback("matching_catalog", {"stage": stage})
+        if catalog_context is None and any(
+            candidate["current_stage"] == stage for candidate in active_candidates(store)
+        ):
+            catalog_context = _load_catalog_context(data_dir)
+        result = _match_known_candidates(
+            store,
+            data_dir,
+            stage=stage,
+            catalog_context=catalog_context,
+        )
+        catalog_checks.append(result)
+        return result
+
+    # Stage 1 known matches must be removed before the first Stage 2 queue is
+    # selected. Fill any slots they released, then check those fresh targets as
+    # well before allowing them to advance in a later part of this cycle.
+    check_catalog("stage1")
+    stage1_catalog_replacement = fill_stage1()
+    if stage1_catalog_replacement.get("status") != "idle":
+        check_catalog("stage1")
+
     # The first Stage 2 handoff is intentionally gated on a complete initial
     # Stage 1 exploration pool.  This prevents a handful of early Promising
     # results from draining the queue before the comparative baseline exists.
@@ -498,10 +565,17 @@ def run_live_cycle(
             )
         )
 
+    # A Stage 2 evaluation can reveal a catalog match before Stage 3 work is
+    # selected. Remove those matches now so they never consume Stage 3
+    # capacity or appear as a Stage 3 known match in replay.
+    check_catalog("stage2")
+
     # Promotion and an inconclusive result both release a Stage 1 slot. Fill
     # those openings in the same live cycle so the next poll starts with a
     # fresh exploration frontier rather than waiting for another heartbeat.
     replacement_batch = fill_stage1()
+    if replacement_batch.get("status") != "idle":
+        check_catalog("stage1")
 
     stage3_results: list[dict[str, Any]] = []
     stage2_queue_ready = initial_stage1_ready and sum(
@@ -571,12 +645,28 @@ def run_live_cycle(
             )
         )
 
-    if status_callback:
-        status_callback("matching_catalog", {})
-    catalog = _match_known_candidates(store, data_dir)
+    # Stage 3 is the final assessment stage, so a catalog match here is a
+    # legitimate Stage 3 removal and is retained in the identified/replay
+    # history at that stage.
+    check_catalog("stage3")
+    matched_count = sum(int(check.get("matches") or 0) for check in catalog_checks)
+    catalog = {
+        "status": "matched" if matched_count else "no_matches",
+        "matches": matched_count,
+        "catalog_status": next(
+            (
+                check.get("catalog_status")
+                for check in reversed(catalog_checks)
+                if check.get("catalog_status") is not None
+            ),
+            None,
+        ),
+        "stages": catalog_checks,
+    }
     return {
         "batch": batch,
         "stage1_refresh": refresh_batch,
+        "stage1_catalog_replacement": stage1_catalog_replacement,
         "replacement_batch": replacement_batch,
         "stage2": stage2_results,
         "stage3": stage3_results,
