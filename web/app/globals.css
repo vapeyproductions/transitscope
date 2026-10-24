@@ -69,7 +69,7 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .button-outline { background: transparent; border-color: var(--border-bright); color: var(--text); }
 .button-replay-active { background: rgba(118, 228, 237, 0.12); border-color: rgba(118, 228, 237, 0.38); color: var(--cyan); }
 .button-note { color: var(--faint); font-size: 10px; font-weight: 400; }
-.intro-row { align-items: end; gap: 28px; padding: clamp(48px, 8vw, 100px) 0 48px; }
+.intro-row { display: none; }
 .intro-copy { color: var(--muted); font-size: 14px; line-height: 1.65; margin-bottom: 0; max-width: 560px; }
 .mode-toggle { background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); border-radius: 11px; display: flex; padding: 4px; }
 .mode-button { background: transparent; border: 0; border-radius: 7px; color: var(--faint); font-size: 12px; padding: 9px 12px; }
