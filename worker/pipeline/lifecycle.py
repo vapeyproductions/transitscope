@@ -137,6 +137,77 @@ def candidate_match_inputs(
     return inputs
 
 
+def stage3_replacement_debt(store: DuckDBStore) -> list[dict[str, Any]]:
+    """Return Stage 3 resolutions that have not yet called the next candidate.
+
+    This is the durable waterfall ledger.  It intentionally derives the
+    backlog from pipeline events instead of an in-memory counter, so a worker
+    restart cannot forget that a Prime Candidate, Inconclusive result, or
+    Stage 3 catalog match still needs to trigger the next Stage 2 handoff.
+    """
+
+    store.initialize()
+    with store.connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT candidate_id, stage, event_type, sequence_number, payload_json, occurred_at
+            FROM pipeline_events
+            WHERE event_type IN (
+                'stage3_evaluated',
+                'known_match',
+                'stage3_replacement_called'
+            )
+            ORDER BY sequence_number ASC, occurred_at ASC
+            """
+        ).fetchall()
+
+    resolutions: dict[str, dict[str, Any]] = {}
+    dispatched_at: dict[str, int] = {}
+    for candidate_id, stage, event_type, sequence_number, payload_json, occurred_at in rows:
+        candidate_key = str(candidate_id or "")
+        if not candidate_key:
+            continue
+        try:
+            payload = json.loads(payload_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        sequence = int(sequence_number or 0)
+        if event_type == "stage3_replacement_called":
+            dispatched_at[candidate_key] = max(dispatched_at.get(candidate_key, 0), sequence)
+            continue
+        if event_type == "stage3_evaluated":
+            status = str(payload.get("classification") or "")
+            if status not in {"Promising", "Inconclusive"}:
+                resolutions.pop(candidate_key, None)
+                continue
+            resolutions[candidate_key] = {
+                "candidate_id": candidate_key,
+                "status": status,
+                "sequence_number": sequence,
+                "occurred_at": occurred_at,
+            }
+        elif (
+            event_type == "known_match"
+            and str(stage or "") == "stage3"
+            and str(payload.get("active", True)).lower() == "false"
+        ):
+            resolutions[candidate_key] = {
+                "candidate_id": candidate_key,
+                "status": "Known Match",
+                "sequence_number": sequence,
+                "occurred_at": occurred_at,
+            }
+
+    return sorted(
+        (
+            resolution
+            for candidate_id, resolution in resolutions.items()
+            if int(resolution["sequence_number"]) > dispatched_at.get(candidate_id, 0)
+        ),
+        key=lambda item: (int(item["sequence_number"]), str(item["candidate_id"])),
+    )
+
+
 def promotable_candidates(
     store: DuckDBStore,
     *,
@@ -911,6 +982,7 @@ __all__ = [
     "all_candidates",
     "active_candidates",
     "candidate_match_inputs",
+    "stage3_replacement_debt",
     "movement_for_ranks",
     "overall_sort_key",
     "processed_target_count",

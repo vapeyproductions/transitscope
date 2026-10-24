@@ -556,6 +556,7 @@ def publish_stage3_result(
     stage1_score: float,
     stage2_score: float,
     input_product_ids: Sequence[str],
+    dispatch_source_candidate_id: str | None = None,
     ranking_version: str = RANKING_VERSION,
 ) -> int:
     """Publish Stage 3 evidence and update Stage 3 plus Overall snapshots."""
@@ -758,6 +759,23 @@ def publish_stage3_result(
             if existing["current_stage"] == "stage2"
             else []
         )
+        + ([
+            {
+                "event_id": f"stage3-replacement-called-{dispatch_source_candidate_id}-{candidate_id}-{version}",
+                "sequence_number": version,
+                "candidate_id": dispatch_source_candidate_id,
+                "stage": "stage3",
+                "event_type": "stage3_replacement_called",
+                "payload_json": {
+                    "source_candidate_id": dispatch_source_candidate_id,
+                    "replacement_candidate_id": candidate_id,
+                    "reason": "stage3_waterfall_dispatch",
+                    "classification": result["status"],
+                },
+                "occurred_at": evaluated_at,
+                "model_run_id": f"stage3-run-{candidate_id}-{version}",
+            }
+        ] if dispatch_source_candidate_id else [])
         + [
             {
                 "event_id": f"signal-alias-released-{released_id}-{version}",

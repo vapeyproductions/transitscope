@@ -147,6 +147,9 @@ def main() -> None:
                     "status": catalog.get("status") if isinstance(catalog, dict) else "unknown",
                     "provider_status": catalog.get("catalog_status") if isinstance(catalog, dict) else None,
                     "matches": int(catalog.get("matches") or 0) if isinstance(catalog, dict) else 0,
+                    "record_count": int(catalog.get("catalog_record_count") or 0) if isinstance(catalog, dict) else 0,
+                    "fetched_at": catalog.get("catalog_fetched_at") if isinstance(catalog, dict) else None,
+                    "complete_projection": bool(catalog.get("catalog_complete_projection")) if isinstance(catalog, dict) else False,
                     "stages": catalog.get("stages", []) if isinstance(catalog, dict) else [],
                 }
                 write_status(

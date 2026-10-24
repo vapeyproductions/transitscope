@@ -16,7 +16,7 @@ from urllib.request import Request, urlopen
 
 DEFAULT_TAP_ENDPOINT = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync"
 CATALOG_CACHE_SCHEMA_VERSION = "exoplanet-archive-cache.v2"
-CATALOG_PROJECTION_VERSION = "pscomppars-tic-id-v2"
+CATALOG_PROJECTION_VERSION = "pscomppars-tic-id-v3-full"
 
 
 def utc_now() -> str:
@@ -27,7 +27,11 @@ def utc_now() -> str:
 class ExoplanetArchiveConfig:
     data_dir: Path
     tables: tuple[str, ...] = ("pscomppars", "toi")
-    max_rows: int = 5000
+    # A value of 0 means fetch the complete narrow projection.  A positive
+    # value remains available for bounded local probes, but production uses
+    # the complete projection so arbitrary TOP-N truncation cannot hide a
+    # known object.
+    max_rows: int = 0
     request_timeout_seconds: int = 60
     cache_ttl_hours: float = 168.0
     coordinate_tolerance_deg: float = 0.02
@@ -49,15 +53,15 @@ class ExoplanetArchiveConfig:
         config = cls(
             data_dir=data_dir_override or Path(str(values.get("data_dir", "data"))),
             tables=tables or cls.tables,
-            max_rows=int(values.get("max_rows", 5000)),
+            max_rows=int(values.get("max_rows", 0)),
             request_timeout_seconds=int(values.get("request_timeout_seconds", 60)),
             cache_ttl_hours=float(values.get("cache_ttl_hours", 168.0)),
             coordinate_tolerance_deg=float(values.get("coordinate_tolerance_deg", 0.02)),
             period_tolerance_fraction=float(values.get("period_tolerance_fraction", 0.02)),
             tap_endpoint=str(values.get("tap_endpoint", DEFAULT_TAP_ENDPOINT)),
         )
-        if config.max_rows < 1:
-            raise ValueError("max_rows must be positive")
+        if config.max_rows < 0:
+            raise ValueError("max_rows cannot be negative")
         if config.request_timeout_seconds < 1:
             raise ValueError("request_timeout_seconds must be positive")
         if config.cache_ttl_hours < 0:
@@ -100,11 +104,11 @@ class ExoplanetArchiveError(RuntimeError):
 
 
 class ExoplanetArchiveAdapter:
-    """Fetch a narrow cached catalog projection and match it conservatively."""
+    """Fetch a complete cached matching projection and match it conservatively."""
 
     TABLE_COLUMNS = {
         "pscomppars": (
-            "pl_name,hostname,tic_id,ra,dec,pl_orbper"
+            "pl_name,hostname,tic_id,ra,dec,pl_orbper,default_flag"
         ),
         "toi": "toi,tid,ra,dec,pl_orbper,tfopwg_disp",
     }
@@ -152,6 +156,8 @@ class ExoplanetArchiveAdapter:
             "cache_path": str(cache_path),
             "queries": queries,
             "errors": errors,
+            "record_count": len(records),
+            "complete_projection": self.config.max_rows == 0,
             "match_config": {
                 "coordinate_tolerance_deg": self.config.coordinate_tolerance_deg,
                 "period_tolerance_fraction": self.config.period_tolerance_fraction,
@@ -168,7 +174,8 @@ class ExoplanetArchiveAdapter:
         columns = self.TABLE_COLUMNS.get(table)
         if columns is None:
             raise ExoplanetArchiveError(f"unsupported archive table: {table}")
-        query = f"select top {self.config.max_rows} {columns} from {table}"
+        limit = f"top {self.config.max_rows} " if self.config.max_rows else ""
+        query = f"select {limit}{columns} from {table}"
         params = urlencode({"request": "doQuery", "lang": "ADQL", "format": "json", "query": query})
         request = Request(
             f"{self.config.tap_endpoint}?{params}",
@@ -288,6 +295,8 @@ class ExoplanetArchiveAdapter:
         if payload.get("status") not in {"success", "partial"}:
             return False
         if not payload.get("records"):
+            return False
+        if self.config.max_rows == 0 and payload.get("complete_projection") is not True:
             return False
         age_seconds = datetime.now(timezone.utc).timestamp() - path.stat().st_mtime
         return age_seconds <= self.config.cache_ttl_hours * 3600.0

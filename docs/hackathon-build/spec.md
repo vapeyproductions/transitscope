@@ -330,7 +330,7 @@ Stage 1 and Stage 2 have configurable priority thresholds, for example `stage1_p
 - the previous stage has published a completed evaluation;
 - the next-stage worker calls for another candidate.
 
-If `Needs More Data` enters a Stage 1 or Stage 2 top-X threshold, the worker backfills the most useful missing historical windows and re-evaluates it. Stage 3 does this systematically for every unresolved candidate in rank order, without a top-X cutoff. Status is part of the ranking policy, not an automatic promotion bypass: `Promising` ranks above `Needs More Data`, which ranks above `Inconclusive`, and evidence score breaks ties within each status. When Stage 2 calls for a Stage 3 candidate, it selects the highest-ranked eligible `Promising` signal from Stage 2. When a Stage 3 candidate resolves as a Prime Candidate, Inconclusive, or Known Match, Stage 3 immediately calls the next eligible Stage 2 candidate. Known matches leave active rankings, allowing lower-ranked candidates to move upward and become eligible; unresolved candidates remain visible until later evidence changes their status.
+If `Needs More Data` enters a Stage 1 or Stage 2 top-X threshold, the worker backfills the most useful missing historical windows and re-evaluates it only when that work is requested by the Stage 3 waterfall. Stage 3 does this systematically for every unresolved candidate in rank order, without a top-X cutoff. Status is part of the ranking policy, not an automatic promotion bypass: `Promising` ranks above `Needs More Data`, which ranks above `Inconclusive`, and evidence score breaks ties within each status. When Stage 3 calls for a new candidate, it selects the highest-ranked eligible `Promising` signal from Stage 2; if none is available, the same request can reassess Stage 2 or ask Stage 1 for a replacement. When a Stage 3 candidate resolves as a Prime Candidate, Inconclusive, or Known Match, a durable replacement-debt event records the downstream call. Known matches leave active rankings, allowing lower-ranked candidates to move upward and become eligible; unresolved candidates remain visible until later evidence changes their status. After the initial Stage 1 baseline, no stage advances from an independent timer.
 
 ### 7.3 Overall ranking
 
@@ -576,7 +576,8 @@ TARGET_UNIVERSE_SIZE=126000
 DISPLAY_TOP_N=100
 STAGE1_PROMOTION_THRESHOLD=100
 STAGE2_PROMOTION_THRESHOLD=25
-STAGE3_EVALUATIONS_PER_CYCLE=4
+STAGE3_REASSESSMENTS_PER_CYCLE=4
+STAGE3_DISPATCHES_PER_CYCLE=4
 BATCH_SIZE=<measured>
 MAST_PRODUCT_FAMILY=<probe-selected product family>
 STAGE2_LOOKBACK_DAYS=730

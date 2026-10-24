@@ -18,6 +18,7 @@ from pipeline.lifecycle import (
     promotable_candidates,
     publish_known_matches,
     resolve_priority_aliases,
+    stage3_replacement_debt,
 )
 from pipeline.stage1 import resolve_artifact_path
 from pipeline.stage2 import (
@@ -163,6 +164,7 @@ def _stage1_refresh_targets(
             FROM candidates c
             LEFT JOIN target_manifest tm ON tm.target_id = c.target_id
             WHERE c.active = true AND c.current_stage = 'stage1'
+              AND c.status = 'Needs More Data'
               AND c.rank_stage IS NOT NULL AND c.rank_stage <= ?
             ORDER BY c.rank_stage NULLS LAST, c.last_evaluated_at ASC, c.candidate_id
             LIMIT ?
@@ -312,6 +314,7 @@ def _evaluate_stage3(
     *,
     data_dir: Path,
     max_history_sectors: int,
+    dispatch_source_candidate_id: str | None = None,
 ) -> dict[str, Any]:
     candidate_id = str(candidate["candidate_id"])
     stage2_input = load_stage2_input(store, candidate_id)
@@ -361,6 +364,7 @@ def _evaluate_stage3(
         stage1_score=stage2_input["stage1_score"],
         stage2_score=stage2_input["stage2_score"],
         input_product_ids=list(product_ids),
+        dispatch_source_candidate_id=dispatch_source_candidate_id,
     )
     return {
         "candidate_id": candidate_id,
@@ -377,7 +381,7 @@ def _load_catalog_context(data_dir: Path) -> dict[str, Any]:
     config = ExoplanetArchiveConfig(
         data_dir=data_dir,
         tables=("pscomppars", "toi"),
-        max_rows=int(os.getenv("CATALOG_MAX_ROWS", "10000")),
+        max_rows=int(os.getenv("CATALOG_MAX_ROWS", "0")),
         request_timeout_seconds=int(os.getenv("CATALOG_REQUEST_TIMEOUT_SECONDS", "60")),
         cache_ttl_hours=float(os.getenv("CATALOG_CACHE_TTL_HOURS", "168")),
     )
@@ -413,6 +417,12 @@ def _match_known_candidates(
     adapter = context["adapter"]
     payload = context["payload"]
     records = context["records"]
+    catalog_metadata = {
+        "catalog_status": payload.get("status"),
+        "catalog_record_count": int(payload.get("record_count") or len(records)),
+        "catalog_fetched_at": payload.get("fetched_at"),
+        "catalog_complete_projection": bool(payload.get("complete_projection", False)),
+    }
     matches: list[dict[str, Any]] = []
     for candidate in candidates:
         match = adapter.match_candidate(
@@ -429,7 +439,7 @@ def _match_known_candidates(
             "status": "no_matches",
             "matches": 0,
             "stage": stage,
-            "catalog_status": payload.get("status"),
+            **catalog_metadata,
         }
     version = publish_known_matches(
         store,
@@ -442,7 +452,7 @@ def _match_known_candidates(
         "matches": len(matches),
         "stage": stage,
         "publish_version": version,
-        "catalog_status": payload.get("status"),
+        **catalog_metadata,
     }
 
 
@@ -465,9 +475,11 @@ def run_live_cycle(
     """Run one bounded archive poll and publish only changed pipeline state.
 
     Stage 1 and Stage 2 thresholds are ranking windows. They decide which
-    candidates are eligible for prioritization; they never cap the number of
-    candidates retained in a stage. Stage 3 is driven by its ranked Needs More
-    Data queue and has no rank cutoff.
+    candidates are eligible for a Stage 3 request; they never cap the number
+    of candidates retained in a stage. After the initial Stage 1 baseline,
+    Stage 3 is the durable waterfall dispatcher: it reassesses its ranked
+    Needs More Data queue, calls Stage 2 when a resolution creates an
+    opportunity, and asks Stage 2 to request Stage 1 replacements.
     """
 
     from batching import BatchConfig, run_batch, run_stage1_refresh
@@ -553,35 +565,16 @@ def run_live_cycle(
             ),
         )
 
-    stage1_targets_before_refresh = occupied_stage1_target_ids()
-    refresh_targets = _stage1_refresh_targets(
-        store,
-        data_dir=data_dir,
-        max_targets=int(os.getenv("STAGE1_REFRESH_TARGETS", "8")),
-        priority_threshold=stage1_threshold,
-    )
-    if refresh_targets:
-        refresh_batch = run_stage1_refresh(
-            data_dir=data_dir,
-            manifest_path=manifest_path,
-            targets=refresh_targets,
-            config=BatchConfig(
-                batch_size=len(refresh_targets),
-                max_workers=max_workers,
-                top_n=top_n,
-                stage_capacity=stage1_threshold,
-                target_pool_size=stage1_pool_size,
-            ),
-        )
-    else:
-        refresh_batch = {"status": "idle", "refresh_count": 0}
-
-    if processed_target_count(store) < stage1_pool_size:
-        batch = fill_stage1()
-    else:
-        batch = fill_stage1(
-            len(stage1_targets_before_refresh - occupied_stage1_target_ids())
-        )
+    # The only unconditional Stage 1 work is the initial baseline bootstrap.
+    # Once that baseline exists, Stage 3 must request every downstream
+    # assessment and replacement; the worker must not continuously churn Stage
+    # 1/2 in the background just because a ranking window exists.
+    refresh_batch: dict[str, Any] = {"status": "idle", "refresh_count": 0}
+    batch = fill_stage1() if processed_target_count(store) < stage1_pool_size else {
+        "status": "idle",
+        "message": "Initial Stage 1 baseline is complete; waiting for Stage 3 dispatch",
+        "selected_count": 0,
+    }
 
     # Keep one immutable catalog snapshot for the entire cycle. Each gate
     # below sees only the candidates in that stage, so a known match is
@@ -608,167 +601,200 @@ def run_live_cycle(
         catalog_checks.append(result)
         return result
 
-    # Stage 1 known matches must be removed before the first Stage 2 queue is
-    # selected. Replenish only source stars that actually left active Stage 1
-    # work; the number shown in the UI is irrelevant to this decision.
-    stage1_targets_before_catalog = occupied_stage1_target_ids()
+    # Stage 1 known matches are checked before any Stage 3 dispatch. The
+    # replacement itself is deliberately deferred: Stage 3 owns the waterfall
+    # and will request the replacement when it calls the next downstream job.
     check_catalog("stage1")
-    stage1_catalog_replacement = fill_stage1(
-        len(stage1_targets_before_catalog - occupied_stage1_target_ids())
-        if processed_target_count(store) >= stage1_pool_size
-        else None
-    )
-    if stage1_catalog_replacement.get("status") != "idle":
-        check_catalog("stage1")
-
-    # A sibling that reaches the Stage 1 priority window leaves the active
-    # ranking for an explicit independence assessment. It is not promoted or
-    # discarded solely because its primary signal advanced; the residual and
-    # chronological holdout result decides whether it returns as an eligible
-    # Stage 1 candidate or remains historical duplicate evidence.
-    signal_independence = resolve_priority_aliases(
-        store,
-        data_dir=data_dir,
-        threshold=stage1_threshold,
-        processed_target_count=processed_target_count(store),
-    )
-    if signal_independence.get("status") == "complete":
-        check_catalog("stage1")
-
-    # The first Stage 2 handoff is intentionally gated on a complete initial
-    # Stage 1 exploration pool. This prevents a handful of early Promising
-    # results from draining the queue before the comparative baseline exists.
-    # Once the baseline exists, the Stage 1 top-X value is only a priority
-    # threshold; it is not a cap on the retained ranking.
-    initial_stage1_ready = processed_target_count(store) >= stage1_pool_size
-    stage1_targets_before_stage2 = occupied_stage1_target_ids()
-    stage2_results: list[dict[str, Any]] = []
-    stage1_candidates = (
-        promotable_candidates(store, stage="stage1", threshold=stage1_threshold)
-        if initial_stage1_ready
-        else []
-    )
-    stage2_retry_candidates = (
-        [
-            candidate
-            for candidate in active_candidates(store)
-            if candidate["current_stage"] == "stage2"
-            and candidate["status"] == "Needs More Data"
-            and candidate["rank_stage"] is not None
-            and int(candidate["rank_stage"]) <= stage2_threshold
-        ]
-        if initial_stage1_ready
-        else []
-    )
-    for candidate in stage1_candidates + stage2_retry_candidates:
-        if status_callback:
-            status_callback("processing_stage2", {"candidate_id": candidate["candidate_id"]})
-        stage2_results.append(
-            _evaluate_stage2(
-                store,
-                candidate,
-                data_dir=data_dir,
-                max_history_sectors=max_history_sectors,
-            )
-        )
-
-    # A Stage 2 evaluation can reveal a catalog match before Stage 3 work is
-    # selected. Remove those matches now so they never enter the Stage 3
-    # priority queue or appear as a Stage 3 known match in replay.
-    check_catalog("stage2")
-
-    # Promotion and an inconclusive result release Stage 1 source-star work.
-    # Fill those openings in the same live cycle. This is deliberately based
-    # on the before/after active target set, never on the presentational top-N
-    # display cap.
-    replacement_batch = fill_stage1(
-        len(stage1_targets_before_stage2 - occupied_stage1_target_ids())
-        if initial_stage1_ready
-        else None
-    )
-    if replacement_batch.get("status") != "idle":
-        check_catalog("stage1")
-
-    # Keep exploring the unprocessed manifest after the initial baseline is
-    # complete. Replacement sampling protects the active Stage 1 queue, but
-    # it must not become the only way the 126,000-target universe advances:
-    # otherwise throughput is limited by however many candidates happen to
-    # leave Stage 1 in one cycle. The configured batch size is the total fresh
-    # target budget for this cycle, so replacements use part of that budget
-    # and the exploration batch consumes the remainder.
-    exploration_batch: dict[str, Any] = {
+    stage1_catalog_replacement: dict[str, Any] = {
         "status": "idle",
-        "message": (
-            "Waiting for the initial Stage 1 baseline"
-            if not initial_stage1_ready
-            else "No fresh exploration budget available"
-        ),
+        "message": "Stage 1 catalog removals wait for a Stage 3 waterfall request",
         "selected_count": 0,
     }
-    if initial_stage1_ready:
-        replacement_count = int(replacement_batch.get("selected_count") or 0)
-        exploration_count = max(0, int(batch_size) - replacement_count)
-        if exploration_count:
+    signal_independence: dict[str, Any] = {
+        "status": "idle",
+        "message": "Sibling independence is requested by Stage 3 when it needs a Stage 2 handoff",
+        "assessed": 0,
+    }
+
+    initial_stage1_ready = processed_target_count(store) >= stage1_pool_size
+    stage2_results: list[dict[str, Any]] = []
+    stage3_results: list[dict[str, Any]] = []
+    stage1_requests: list[dict[str, Any]] = []
+    attempted_stage1: set[str] = set()
+    attempted_stage2: set[str] = set()
+
+    def request_stage1_reassessment() -> dict[str, Any]:
+        """Ask Stage 1 for more data only after Stage 3 requests a handoff."""
+
+        nonlocal signal_independence
+        signal_independence = resolve_priority_aliases(
+            store,
+            data_dir=data_dir,
+            threshold=stage1_threshold,
+            processed_target_count=processed_target_count(store),
+        )
+        if signal_independence.get("status") == "complete":
+            check_catalog("stage1")
+        targets = _stage1_refresh_targets(
+            store,
+            data_dir=data_dir,
+            max_targets=1,
+            priority_threshold=stage1_threshold,
+        )
+        if not targets:
+            return {"status": "idle", "refresh_count": 0, "message": "No Stage 1 Needs More Data refresh is available"}
+        if status_callback:
+            status_callback("processing_stage1", {"reason": "stage3_waterfall_request"})
+        result = run_stage1_refresh(
+            data_dir=data_dir,
+            manifest_path=manifest_path,
+            targets=targets,
+            config=BatchConfig(
+                batch_size=len(targets),
+                max_workers=max_workers,
+                top_n=top_n,
+                stage_capacity=stage1_threshold,
+                target_pool_size=stage1_pool_size,
+            ),
+        )
+        if result.get("status") != "idle":
+            check_catalog("stage1")
+        return result
+
+    def request_stage2_replacement() -> dict[str, Any] | None:
+        """Have a Stage 3 call cascade into one Stage 1 -> Stage 2 request."""
+
+        before_targets = occupied_stage1_target_ids()
+        candidates_now = [
+            candidate
+            for candidate in promotable_candidates(
+                store,
+                stage="stage1",
+                threshold=stage1_threshold,
+            )
+            if candidate["candidate_id"] not in attempted_stage1
+        ]
+        if not candidates_now:
+            refresh_result = request_stage1_reassessment()
+            if refresh_result.get("status") != "idle":
+                stage1_requests.append(refresh_result)
+            candidates_now = [
+                candidate
+                for candidate in promotable_candidates(
+                    store,
+                    stage="stage1",
+                    threshold=stage1_threshold,
+                )
+                if candidate["candidate_id"] not in attempted_stage1
+            ]
+        if not candidates_now:
+            return None
+        candidate = candidates_now[0]
+        candidate_id = str(candidate["candidate_id"])
+        attempted_stage1.add(candidate_id)
+        if status_callback:
+            status_callback(
+                "processing_stage2",
+                {"candidate_id": candidate_id, "reason": "stage3_waterfall_request"},
+            )
+        result = _evaluate_stage2(
+            store,
+            candidate,
+            data_dir=data_dir,
+            max_history_sectors=max_history_sectors,
+        )
+        stage2_results.append(result)
+        check_catalog("stage2")
+        released = len(before_targets - occupied_stage1_target_ids())
+        if released:
+            replacement = fill_stage1(released)
+            if replacement.get("status") != "idle":
+                stage1_requests.append(replacement)
+                check_catalog("stage1")
+        return result
+
+    def select_stage2_candidate() -> dict[str, Any] | None:
+        """Return the next Stage 2 Promising candidate for Stage 3.
+
+        If Stage 2 has no eligible Promising row, this is the point where the
+        Stage 3 request is allowed to reassess Stage 2 Needs More Data and,
+        if necessary, request a replacement from Stage 1.
+        """
+
+        for _ in range(3):
+            candidates_now = [
+                candidate
+                for candidate in promotable_candidates(
+                    store,
+                    stage="stage2",
+                    threshold=stage2_threshold,
+                )
+                if candidate["candidate_id"] not in attempted_stage2
+            ]
+            if candidates_now:
+                return candidates_now[0]
+
+            retry_candidates = [
+                candidate
+                for candidate in active_candidates(store)
+                if candidate["current_stage"] == "stage2"
+                and candidate["status"] == "Needs More Data"
+                and candidate["promotion_eligible"]
+                and candidate["rank_stage"] is not None
+                and int(candidate["rank_stage"]) <= stage2_threshold
+                and candidate["candidate_id"] not in attempted_stage2
+            ]
+            if retry_candidates:
+                candidate = sorted(
+                    retry_candidates,
+                    key=lambda item: (int(item["rank_stage"]), str(item["candidate_id"])),
+                )[0]
+                candidate_id = str(candidate["candidate_id"])
+                attempted_stage2.add(candidate_id)
+                if status_callback:
+                    status_callback(
+                        "processing_stage2",
+                        {"candidate_id": candidate_id, "reason": "stage3_waterfall_reassessment"},
+                    )
+                result = _evaluate_stage2(
+                    store,
+                    candidate,
+                    data_dir=data_dir,
+                    max_history_sectors=max_history_sectors,
+                )
+                stage2_results.append(result)
+                check_catalog("stage2")
+                continue
+
+            if request_stage2_replacement() is None:
+                return None
+        return None
+
+    # Stage 3 is the dispatcher. It first walks the ranked Needs More Data
+    # queue without allowing one unchanged candidate to block the rest. Then
+    # it spends durable replacement debt: every legacy/current Prime,
+    # Inconclusive, or Stage 3 catalog match gets one downstream call.
+    waterfall_ready = initial_stage1_ready
+    if waterfall_ready:
+        reassessment_budget = max(1, int(os.getenv("STAGE3_REASSESSMENTS_PER_CYCLE", "4")))
+        attempted_stage3: set[str] = set()
+        resolved_sources: list[str] = []
+        for _ in range(reassessment_budget):
+            candidates_now = [
+                candidate
+                for candidate in _stage3_needs_data_queue(active_candidates(store))
+                if candidate["candidate_id"] not in attempted_stage3
+            ]
+            if not candidates_now:
+                break
+            candidate = candidates_now[0]
+            candidate_id = str(candidate["candidate_id"])
+            attempted_stage3.add(candidate_id)
             if status_callback:
                 status_callback(
-                    "processing_stage1",
-                    {
-                        "replacement_slots": 0,
-                        "replacement_reason": "continuous_exploration",
-                        "requested_count": exploration_count,
-                    },
+                    "processing_stage3",
+                    {"candidate_id": candidate_id, "reason": "ranked_needs_more_data_queue"},
                 )
-            exploration_batch = run_batch(
-                data_dir=data_dir,
-                manifest_path=manifest_path,
-                config=BatchConfig(
-                    batch_size=exploration_count,
-                    max_workers=max_workers,
-                    top_n=top_n,
-                    stage_capacity=stage1_threshold,
-                    target_pool_size=stage1_pool_size,
-                ),
-            )
-            if exploration_batch.get("status") != "idle":
-                check_catalog("stage1")
-
-    stage3_results: list[dict[str, Any]] = []
-    # Stage 3 is a queue, not a top-X threshold. Work the highest-ranked
-    # unresolved candidate first. Once it resolves to a Prime Candidate or
-    # Inconclusive, immediately call the highest-ranked eligible Promising
-    # candidate from Stage 2. A small execution budget protects the worker
-    # from an unexpectedly large cascade without changing ranking policy.
-    stage3_queue_ready = initial_stage1_ready
-    stage3_budget = max(1, int(os.getenv("STAGE3_EVALUATIONS_PER_CYCLE", "4")))
-    stage3_seen: set[str] = set()
-    if stage3_queue_ready:
-        for _ in range(stage3_budget):
-            candidates_now = active_candidates(store)
-            unresolved = [
-                candidate
-                for candidate in _stage3_needs_data_queue(candidates_now)
-                if candidate["candidate_id"] not in stage3_seen
-            ]
-            if unresolved:
-                candidate = unresolved[0]
-            else:
-                stage2_candidates = [
-                    candidate
-                    for candidate in promotable_candidates(
-                        store,
-                        stage="stage2",
-                        threshold=stage2_threshold,
-                    )
-                    if candidate["candidate_id"] not in stage3_seen
-                ]
-                if not stage2_candidates:
-                    break
-                candidate = stage2_candidates[0]
-
-            candidate_id = str(candidate["candidate_id"])
-            stage3_seen.add(candidate_id)
-            if status_callback:
-                status_callback("processing_stage3", {"candidate_id": candidate_id})
             result = _evaluate_stage3(
                 store,
                 candidate,
@@ -776,10 +802,52 @@ def run_live_cycle(
                 max_history_sectors=max_history_sectors,
             )
             stage3_results.append(result)
-            # No new evidence was available, so retrying the same unresolved
-            # candidate in this cycle would only repeat the signature check.
-            if result.get("status") in {"unchanged", "missing_stage2_input", "Needs More Data"}:
+            check_catalog("stage3")
+            if result.get("status") in {"Promising", "Inconclusive"}:
+                resolved_sources.append(candidate_id)
+
+        dispatch_sources: list[str] = []
+        dispatch_seen: set[str] = set()
+
+        def enqueue_sources(values: list[str]) -> None:
+            for value in values:
+                if value not in dispatch_seen and value not in dispatch_sources:
+                    dispatch_sources.append(value)
+
+        enqueue_sources([str(item["candidate_id"]) for item in stage3_replacement_debt(store)])
+        enqueue_sources(resolved_sources)
+        dispatch_budget = max(1, int(os.getenv("STAGE3_DISPATCHES_PER_CYCLE", "4")))
+        for _ in range(dispatch_budget):
+            enqueue_sources([str(item["candidate_id"]) for item in stage3_replacement_debt(store)])
+            if not dispatch_sources:
                 break
+            source_candidate_id = dispatch_sources.pop(0)
+            dispatch_seen.add(source_candidate_id)
+            candidate = select_stage2_candidate()
+            if candidate is None:
+                break
+            candidate_id = str(candidate["candidate_id"])
+            attempted_stage2.add(candidate_id)
+            if status_callback:
+                status_callback(
+                    "processing_stage3",
+                    {
+                        "candidate_id": candidate_id,
+                        "reason": "stage3_called_stage2",
+                        "source_candidate_id": source_candidate_id,
+                    },
+                )
+            result = _evaluate_stage3(
+                store,
+                candidate,
+                data_dir=data_dir,
+                max_history_sectors=max_history_sectors,
+                dispatch_source_candidate_id=source_candidate_id,
+            )
+            stage3_results.append(result)
+            check_catalog("stage3")
+            if result.get("status") in {"Promising", "Inconclusive"}:
+                enqueue_sources([candidate_id])
 
     # Stage 3 is the final assessment stage, so a catalog match here is a
     # legitimate Stage 3 removal and is retained in the identified/replay
@@ -804,8 +872,12 @@ def run_live_cycle(
         "stage1_refresh": refresh_batch,
         "stage1_catalog_replacement": stage1_catalog_replacement,
         "signal_independence": signal_independence,
-        "replacement_batch": replacement_batch,
-        "exploration_batch": exploration_batch,
+        "replacement_batch": stage1_requests[-1] if stage1_requests else {"status": "idle", "selected_count": 0},
+        "exploration_batch": {
+            "status": "idle",
+            "message": "Continuous exploration is paused until Stage 3 requests a downstream replacement",
+            "selected_count": 0,
+        },
         "stage2": stage2_results,
         "stage3": stage3_results,
         "catalog": catalog,

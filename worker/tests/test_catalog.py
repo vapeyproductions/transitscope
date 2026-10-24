@@ -10,7 +10,12 @@ from ingestion.exoplanet_archive import (
     ExoplanetArchiveAdapter,
     ExoplanetArchiveConfig,
 )
-from pipeline.lifecycle import overall_sort_key, promotable_candidates, publish_known_matches
+from pipeline.lifecycle import (
+    overall_sort_key,
+    promotable_candidates,
+    publish_known_matches,
+    stage3_replacement_debt,
+)
 from storage.duckdb_store import DuckDBStore
 from storage.paths import DataPaths
 
@@ -82,6 +87,8 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(payload["status"], "success")
             self.assertTrue(Path(payload["cache_path"]).exists())
             self.assertEqual(len(payload["records"]), 1)
+            self.assertEqual(payload["record_count"], 1)
+            self.assertTrue(payload["complete_projection"])
 
             records = [adapter._record_from_cache(row) for row in payload["records"]]
             match = adapter.match_candidate(
@@ -102,6 +109,75 @@ class CatalogTests(unittest.TestCase):
                 records=records,
             )
             self.assertIsNone(different_period)
+
+    def test_stage3_replacement_debt_is_durable_and_stage_local(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = DataPaths(Path(temp_dir))
+            paths.ensure()
+            store = DuckDBStore(paths.database)
+            now = datetime.now(timezone.utc)
+            store.publish_batch(
+                version=1,
+                events=[
+                    {
+                        "event_id": "stage3-inconclusive",
+                        "sequence_number": 1,
+                        "candidate_id": "stage3-inconclusive",
+                        "stage": "stage3",
+                        "event_type": "stage3_evaluated",
+                        "payload_json": {"classification": "Inconclusive"},
+                        "occurred_at": now,
+                        "model_run_id": "fixture",
+                    },
+                    {
+                        "event_id": "stage3-promising",
+                        "sequence_number": 2,
+                        "candidate_id": "stage3-promising",
+                        "stage": "stage3",
+                        "event_type": "stage3_evaluated",
+                        "payload_json": {"classification": "Promising"},
+                        "occurred_at": now,
+                        "model_run_id": "fixture",
+                    },
+                    {
+                        "event_id": "stage3-promising-dispatched",
+                        "sequence_number": 3,
+                        "candidate_id": "stage3-promising",
+                        "stage": "stage3",
+                        "event_type": "stage3_replacement_called",
+                        "payload_json": {"source_candidate_id": "stage3-promising"},
+                        "occurred_at": now,
+                        "model_run_id": "fixture",
+                    },
+                    {
+                        "event_id": "stage1-known",
+                        "sequence_number": 4,
+                        "candidate_id": "stage1-known",
+                        "stage": "stage1",
+                        "event_type": "known_match",
+                        "payload_json": {"active": False},
+                        "occurred_at": now,
+                        "model_run_id": "catalog",
+                    },
+                    {
+                        "event_id": "stage3-known",
+                        "sequence_number": 5,
+                        "candidate_id": "stage3-known",
+                        "stage": "stage3",
+                        "event_type": "known_match",
+                        "payload_json": {"active": False},
+                        "occurred_at": now,
+                        "model_run_id": "catalog",
+                    },
+                ],
+            )
+
+            debt = stage3_replacement_debt(store)
+
+            self.assertEqual(
+                [item["candidate_id"] for item in debt],
+                ["stage3-inconclusive", "stage3-known"],
+            )
 
     def test_known_match_tombstones_candidate_and_reorders_all_views(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
