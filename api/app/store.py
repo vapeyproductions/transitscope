@@ -174,6 +174,7 @@ class ReadOnlyStore:
             "page_size": limit,
             "display_cap": display_cap,
             "total_ranked_count": 0,
+            "total_star_count": 0,
             "page_count": 0,
             "rows": [],
             "removed": [],
@@ -207,6 +208,19 @@ class ReadOnlyStore:
                 total_ranked_count = int(
                     connection.execute(
                         "SELECT COUNT(*) FROM candidates WHERE active = true"
+                    ).fetchone()[0]
+                )
+            if stage_filter:
+                total_star_count = int(
+                    connection.execute(
+                        "SELECT COUNT(DISTINCT target_id) FROM candidates WHERE active = true AND current_stage = ?",
+                        [stage_filter],
+                    ).fetchone()[0]
+                )
+            else:
+                total_star_count = int(
+                    connection.execute(
+                        "SELECT COUNT(DISTINCT target_id) FROM candidates WHERE active = true"
                     ).fetchone()[0]
                 )
             if stage_filter:
@@ -301,6 +315,7 @@ class ReadOnlyStore:
                 "page_size": limit,
                 "display_cap": display_cap,
                 "total_ranked_count": total_ranked_count,
+                "total_star_count": total_star_count,
                 "page_count": (min(total_ranked_count, display_cap) + limit - 1) // limit,
                 "rows": projected_rows,
                 "removed": [],
@@ -499,6 +514,7 @@ class ReadOnlyStore:
             "page_size": limit,
             "display_cap": 500,
             "total_ranked_count": 0,
+            "total_star_count": 0,
             "page_count": 0,
             "rows": [],
             "removed": [],
@@ -525,6 +541,15 @@ class ReadOnlyStore:
             candidate_ids = json.loads(snapshot[4])
             if not isinstance(candidate_ids, list):
                 candidate_ids = []
+            total_star_count = 0
+            if candidate_ids:
+                placeholders = ", ".join("?" for _ in candidate_ids)
+                total_star_count = int(
+                    connection.execute(
+                        f"SELECT COUNT(DISTINCT target_id) FROM candidates WHERE candidate_id IN ({placeholders})",
+                        [str(candidate_id) for candidate_id in candidate_ids],
+                    ).fetchone()[0]
+                )
             display_cap = 500
             offset = max(0, (page - 1) * limit)
             rows = self._replay_rows(
@@ -557,6 +582,7 @@ class ReadOnlyStore:
                 "page_size": limit,
                 "display_cap": display_cap,
                 "total_ranked_count": int(snapshot[2]),
+                "total_star_count": total_star_count,
                 "page_count": (min(int(snapshot[2]), display_cap) + limit - 1) // limit,
                 "rows": rows,
                 "removed": removed,

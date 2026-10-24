@@ -46,6 +46,7 @@ type RankingResponse = {
   page_size?: number;
   display_cap?: number;
   total_ranked_count?: number;
+  total_star_count?: number;
   page_count?: number;
   rows: RankingRow[];
   removed?: ReplayRemoval[];
@@ -796,10 +797,11 @@ export default function HomePage() {
   const dataState = status?.data_version ? `Published v${status.data_version}` : "Awaiting data";
   const pipelineState = status?.data_version ? "Published" : status?.worker?.state === "idle" ? "Standby" : "Starting";
   const copy = stageCopy(activeTab);
-  const totalStars = displayRanking?.total_ranked_count ?? rows.length;
+  const totalCandidates = displayRanking?.total_ranked_count ?? rows.length;
   const processedCount = activeReplay.active ? displayRanking?.processed_target_count ?? 0 : status?.processed_target_count ?? ranking?.processed_target_count ?? 0;
   const targetCount = status?.total_target_count ?? ranking?.total_target_count ?? 126000;
-  const panelTitle = loading && !ranking && !activeReplay.active ? "Loading published state" : totalStars ? `Total candidates ${totalStars.toLocaleString()} · Total stars ${targetCount.toLocaleString()}` : "No candidates published yet";
+  const totalStars = displayRanking?.total_star_count ?? new Set(rows.map((row) => row.target_id)).size;
+  const panelTitle = loading && !ranking && !activeReplay.active ? "Loading published state" : totalCandidates ? `Total candidates ${totalCandidates.toLocaleString()} · Total stars ${totalStars.toLocaleString()}` : "No candidates published yet";
   const remainingCount = Math.max(0, targetCount - processedCount);
   const activeCandidateCount = status?.active_candidate_count ?? rows.length;
   const footerState = status?.last_ingest_at ? `Last published: ${formatDate(status.last_ingest_at)}` : "Awaiting first publication";
