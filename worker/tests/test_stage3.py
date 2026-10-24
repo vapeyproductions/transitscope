@@ -39,22 +39,26 @@ class Stage3Tests(unittest.TestCase):
         self.assertIsNotNone(result["features"]["holdout_window"]["start"])
         self.assertIn("precision", result["features"]["holdout_metrics"])
         self.assertIn("f1", result["features"]["baseline_metrics"])
-        self.assertEqual(result["model_version"], "stage3-logreg-phase-v1")
+        self.assertEqual(result["model_version"], "stage3-logreg-phase-v2")
         self.assertGreaterEqual(result["features"]["holdout_metrics"]["event_recovery_rate"], 0.5)
 
     def test_short_or_non_periodic_history_stays_needs_more_data(self) -> None:
         time = np.arange(0.0, 10.0, 0.02)
         flux = np.ones_like(time)
-        result = Stage3Processor().evaluate_series(
-            time,
-            flux,
-            candidate_id="stage2-candidate",
-            target_id="TIC 1",
-            stage2_features={"stage1_period_days": 10.0, "stage1_transit_time": 2.0},
-        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = Stage3Processor().evaluate_series(
+                time,
+                flux,
+                candidate_id="stage2-candidate",
+                target_id="TIC 1",
+                stage2_features={"stage1_period_days": 10.0, "stage1_transit_time": 2.0},
+                normalized_dir=Path(temp_dir),
+            )
 
-        self.assertEqual(result["status"], "Needs More Data")
-        self.assertEqual(result["data_sufficiency"], "insufficient")
+            self.assertEqual(result["status"], "Needs More Data")
+            self.assertEqual(result["data_sufficiency"], "insufficient")
+            self.assertTrue(result["normalized_path"])
+            self.assertTrue(Path(result["normalized_path"]).exists())
 
     def test_stage3_publish_persists_metrics_and_replay_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

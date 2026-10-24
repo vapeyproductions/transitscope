@@ -20,7 +20,7 @@ from pipeline.stage2 import _candidate_rows
 from storage.duckdb_store import DuckDBStore
 
 
-MODEL_VERSION = "stage3-logreg-phase-v1"
+MODEL_VERSION = "stage3-logreg-phase-v2"
 BASELINE_MODEL_VERSION = "stage3-phase-window-v1"
 RANKING_VERSION = "stage3-overall-v2-score-first"
 
@@ -299,9 +299,16 @@ class Stage3Processor:
         target_id: str,
         stage2_features: Mapping[str, Any],
         normalized_dir: Path | None = None,
+        normalized_path: Path | None = None,
         product_count: int = 1,
     ) -> dict[str, Any]:
         time_values, flux_values = self._clean_arrays(time_values, flux_values)
+        if normalized_path is None and normalized_dir is not None:
+            normalized_dir.mkdir(parents=True, exist_ok=True)
+            normalized_path = normalized_dir / f"stage3-{self._slug(candidate_id)}.npz"
+        if normalized_path is not None:
+            normalized_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(normalized_path, time=time_values, normalized_flux=flux_values)
         period = self._finite_float(
             stage2_features.get("stage1_period_days", stage2_features.get("period_days"))
         )
@@ -426,11 +433,6 @@ class Stage3Processor:
             "model_vs_baseline_f1_delta": float(holdout_metrics["f1"])
             - float(baseline_metrics["f1"]),
         }
-        normalized_path: Path | None = None
-        if normalized_dir is not None:
-            normalized_dir.mkdir(parents=True, exist_ok=True)
-            normalized_path = normalized_dir / f"stage3-{self._slug(candidate_id)}.npz"
-            np.savez_compressed(normalized_path, time=time_values, normalized_flux=flux_values)
         return self._result(
             candidate_id,
             target_id,

@@ -107,10 +107,14 @@ type CandidateDetail = {
     source_product_family: string | null;
   } | null;
   evaluation: {
+    evaluation_id?: string;
     model_version: string;
+    input_product_ids: string[];
     features: Record<string, unknown>;
     metrics: Record<string, unknown>;
+    classification?: CandidateStatus;
     data_sufficiency: string;
+    created_at?: string | null;
   } | null;
 };
 
@@ -387,8 +391,8 @@ function identifiedPerformanceStats(performance: IdentifiedPerformance): string 
   return stats.join(" · ") || "No secondary stats";
 }
 
-function LightCurveChart({ points }: { points: LightCurveResponse["points"] }) {
-  if (!points.length) return <div className="chart-empty">Normalized series is not available yet.</div>;
+function LightCurveChart({ points, emptyMessage }: { points: LightCurveResponse["points"]; emptyMessage: string }) {
+  if (!points.length) return <div className="chart-empty">{emptyMessage}</div>;
   const width = 760;
   const height = 220;
   const padding = 18;
@@ -416,6 +420,13 @@ function CandidateModal({ candidate, curve, history, replaySequence, onClose }: 
   const metrics = candidate.evaluation?.metrics ?? {};
   const holdout = objectValue(features.holdout_metrics ?? metrics.holdout_metrics);
   const baseline = objectValue(features.baseline_metrics ?? metrics.baseline_metrics);
+  const inputProducts = candidate.evaluation?.input_product_ids ?? [];
+  const productCount = typeof features.product_count === "number" ? features.product_count : inputProducts.length;
+  const windowCount = Array.isArray(features.windows) ? features.windows.length : 0;
+  const insufficientStage3 = candidate.stage === "stage3" && candidate.evaluation?.data_sufficiency === "insufficient";
+  const emptyCurveMessage = candidate.stage === "stage3" && productCount > 0
+    ? "Stage 3 input data was examined, but no normalized curve was published for this insufficient-data evaluation."
+    : "Normalized series is not available yet.";
   const numberFeature = (key: string, digits = 2) => {
     const value = features[key];
     return typeof value === "number" ? value.toFixed(digits) : "—";
@@ -437,12 +448,16 @@ function CandidateModal({ candidate, curve, history, replaySequence, onClose }: 
     ["Shape consistency", numberFeature("shape_consistency")],
     ["Data sufficiency", candidate.evaluation?.data_sufficiency ?? "—"],
   ] : candidate.stage === "stage3" ? [
-    ["Holdout F1", nestedNumber(holdout, "f1")],
-    ["Precision", nestedNumber(holdout, "precision")],
-    ["Recall", nestedNumber(holdout, "recall")],
-    ["Event recovery", nestedNumber(holdout, "event_recovery_rate")],
-    ["Baseline F1", nestedNumber(baseline, "f1")],
-    ["Model lift", numberFeature("model_vs_baseline_f1_delta")],
+    ["Stage 1 evidence", nestedNumber(metrics, "stage1_score", 3)],
+    ["Stage 2 evidence", nestedNumber(metrics, "stage2_score", 3)],
+    ["Products analyzed", productCount ? String(productCount) : "—"],
+    ["Samples examined", numberFeature("total_samples", 0)],
+    ["Holdout F1", insufficientStage3 ? "Not computed" : nestedNumber(holdout, "f1")],
+    ["Precision", insufficientStage3 ? "Not computed" : nestedNumber(holdout, "precision")],
+    ["Recall", insufficientStage3 ? "Not computed" : nestedNumber(holdout, "recall")],
+    ["Event recovery", insufficientStage3 ? "Not computed" : nestedNumber(holdout, "event_recovery_rate")],
+    ["Baseline F1", insufficientStage3 ? "Not computed" : nestedNumber(baseline, "f1")],
+    ["Model lift", insufficientStage3 ? "Not computed" : numberFeature("model_vs_baseline_f1_delta")],
   ] : [
     ["Best period", `${numberFeature("period_days")} days`],
     ["Transit depth", `${(Number(features.depth ?? 0) * 100).toFixed(3)}%`],
@@ -468,8 +483,9 @@ function CandidateModal({ candidate, curve, history, replaySequence, onClose }: 
       <div className="modal-summary"><span className={`status-pill status-${statusClass(displayStatus(candidate.status, candidate.stage))}`}>{displayStatus(candidate.status, candidate.stage)}</span><span className="evidence-chip">Evidence score <strong>{candidate.evidence_score?.toFixed(3) ?? "—"}</strong></span><span className="modal-summary-note">{candidate.ranking_rationale ?? candidate.activity}</span>{replaySequence !== null && <span className="replay-chip">Replay through v{replaySequence}</span>}</div>
       <div className="modal-content-grid">
         <div className="modal-main-column">
-          <div className="modal-section"><div className="section-heading"><div><p className="eyebrow">Normalized observation</p><h4>Light curve</h4></div><span className="section-note">{curve?.points.length ?? 0} plotted points</span></div><LightCurveChart points={curve?.points ?? []} /></div>
+          <div className="modal-section"><div className="section-heading"><div><p className="eyebrow">Normalized observation</p><h4>Light curve</h4></div><span className="section-note">{curve?.points.length ?? 0} plotted points</span></div><LightCurveChart points={curve?.points ?? []} emptyMessage={emptyCurveMessage} /></div>
           <div className="modal-section"><div className="section-heading"><div><p className="eyebrow">Interpretable evidence</p><h4>Assessment metrics</h4></div></div><div className="detail-metrics">{displayMetrics.map(([label, value]) => <Metric key={label} label={label} value={value} />)}</div></div>
+          {candidate.stage === "stage3" && <div className="next-action stage3-context"><span>Stage 3 context</span><p>{insufficientStage3 ? "This candidate was admitted after its Stage 2 result was eligible for Stage 3. The Stage 3 test did not have a recoverable event in every chronological holdout, so no predictive metrics were produced yet." : "This candidate has a completed chronological holdout assessment."}</p><p>{productCount ? `${productCount} MAST / TESS products · ${numberFeature("total_samples", 0)} samples · ${windowCount || "—"} chronological windows.` : "No Stage 3 products are attached to this evaluation yet."}</p></div>}
         </div>
         <aside className="modal-side-column">
           <div className="detail-card"><p className="eyebrow">Current assessment</p><dl className="detail-list"><div><dt>Overall rank</dt><dd>#{candidate.rank_overall ?? "—"}</dd></div><div><dt>Stage rank</dt><dd>#{candidate.rank_stage ?? "—"}</dd></div><div><dt>Last evaluation</dt><dd>{formatDate(candidate.last_evaluated_at)}</dd></div><div><dt>Data sufficiency</dt><dd>{candidate.evaluation?.data_sufficiency ?? "—"}</dd></div><div><dt>Sector</dt><dd>{candidate.target?.sector ?? "—"}</dd></div></dl><div className="next-action"><span>Next evidence</span><p>{candidate.next_action}</p></div></div>
