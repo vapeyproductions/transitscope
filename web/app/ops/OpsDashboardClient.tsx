@@ -11,7 +11,6 @@ export default function OpsDashboardClient() {
       <div className="brand-lockup"><div className="brand-mark" aria-hidden="true">✦</div><div><p className="eyebrow">TransitScope // portfolio monitoring</p><h1>ML Ops dashboard</h1></div></div>
       <div className="topbar-actions"><a className="button button-quiet" href="/">← Observatory</a><button className="button button-quiet" type="button" onClick={() => setRefreshKey((current) => current + 1)}>↻ Refresh</button></div>
     </header>
-    <section className="ops-page-heading"><p className="eyebrow accent">Private monitoring view · authenticated access</p><p className="ops-page-note">Control worker execution and inspect model performance, data health, worker state, and adaptive sampling.</p></section>
     <MonitoringPanel refreshKey={refreshKey} />
     <footer className="footer-note"><span className="footer-pulse" aria-hidden="true" /><span>ML Ops telemetry · operator access</span></footer>
   </main>;
