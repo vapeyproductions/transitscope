@@ -797,9 +797,9 @@ export default function HomePage() {
   const pipelineState = status?.data_version ? "Published" : status?.worker?.state === "idle" ? "Standby" : "Starting";
   const copy = stageCopy(activeTab);
   const totalStars = displayRanking?.total_ranked_count ?? rows.length;
-  const panelTitle = loading && !ranking && !activeReplay.active ? "Loading published state" : totalStars ? `Total stars ${totalStars.toLocaleString()}` : "No candidates published yet";
   const processedCount = activeReplay.active ? displayRanking?.processed_target_count ?? 0 : status?.processed_target_count ?? ranking?.processed_target_count ?? 0;
   const targetCount = status?.total_target_count ?? ranking?.total_target_count ?? 126000;
+  const panelTitle = loading && !ranking && !activeReplay.active ? "Loading published state" : totalStars ? `Total candidates ${totalStars.toLocaleString()} · Total stars ${targetCount.toLocaleString()}` : "No candidates published yet";
   const remainingCount = Math.max(0, targetCount - processedCount);
   const activeCandidateCount = status?.active_candidate_count ?? rows.length;
   const footerState = status?.last_ingest_at ? `Last published: ${formatDate(status.last_ingest_at)}` : "Awaiting first publication";
