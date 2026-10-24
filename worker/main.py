@@ -23,6 +23,17 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def env_flag(name: str, *, default: bool = False) -> bool:
+    """Read a boolean environment setting without making truthiness surprising."""
+
+    return os.getenv(name, "true" if default else "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def write_status(data_dir: Path, state: str, details: dict | None = None) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     status_path = data_dir / "worker-status.json"
@@ -79,12 +90,7 @@ def main() -> None:
 
     mode = os.getenv("WORKER_MODE", "bootstrap").lower()
     if mode == "live":
-        autostart = os.getenv("RUN_LIVE_PIPELINE", "false").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+        autostart = env_flag("RUN_LIVE_PIPELINE")
         if not autostart:
             while running:
                 write_status(
@@ -109,6 +115,17 @@ def main() -> None:
         while running:
             if not manifest_path.exists():
                 write_status(data_dir, "waiting_for_population", {"manifest": str(manifest_path)})
+                time.sleep(heartbeat_seconds)
+                continue
+            if env_flag("PIPELINE_PAUSED", default=True):
+                write_status(
+                    data_dir,
+                    "paused_by_config",
+                    {
+                        "pipeline_paused": True,
+                        "reason": "PIPELINE_PAUSED is true; no MAST downloads or model jobs will start.",
+                    },
+                )
                 time.sleep(heartbeat_seconds)
                 continue
             try:

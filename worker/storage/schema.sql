@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS ingest_runs (
 
 CREATE TABLE IF NOT EXISTS candidates (
     candidate_id VARCHAR PRIMARY KEY,
+    signal_id VARCHAR,
     target_id VARCHAR NOT NULL,
     current_stage VARCHAR NOT NULL,
     status VARCHAR NOT NULL,
@@ -48,6 +49,23 @@ CREATE TABLE IF NOT EXISTS candidates (
     known_match_id VARCHAR,
     active BOOLEAN NOT NULL DEFAULT true,
     processing_slot_occupied BOOLEAN NOT NULL DEFAULT true
+);
+
+CREATE TABLE IF NOT EXISTS candidate_signals (
+    signal_id VARCHAR PRIMARY KEY,
+    candidate_id VARCHAR NOT NULL,
+    target_id VARCHAR NOT NULL,
+    signal_index INTEGER,
+    signal_key VARCHAR NOT NULL,
+    period_days DOUBLE,
+    transit_time DOUBLE,
+    duration_hours DOUBLE,
+    depth DOUBLE,
+    snr DOUBLE,
+    extraction_model_version VARCHAR NOT NULL,
+    first_seen_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    last_seen_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT true
 );
 
 CREATE TABLE IF NOT EXISTS evaluations (

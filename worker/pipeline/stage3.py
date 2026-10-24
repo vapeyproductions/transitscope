@@ -20,7 +20,7 @@ from pipeline.stage2 import _candidate_rows
 from storage.duckdb_store import DuckDBStore
 
 
-MODEL_VERSION = "stage3-logreg-phase-v4"
+MODEL_VERSION = "stage3-logreg-phase-v5-signal-isolated"
 BASELINE_MODEL_VERSION = "stage3-phase-window-v1"
 RANKING_VERSION = "stage3-overall-v2-score-first"
 
@@ -303,6 +303,11 @@ class Stage3Processor:
         product_count: int = 1,
     ) -> dict[str, Any]:
         time_values, flux_values = self._clean_arrays(time_values, flux_values)
+        flux_values = Stage1Processor.isolate_signal(
+            time_values,
+            flux_values,
+            stage2_features,
+        )
         if normalized_path is None and normalized_dir is not None:
             normalized_dir.mkdir(parents=True, exist_ok=True)
             normalized_path = normalized_dir / f"stage3-{self._slug(candidate_id)}.npz"
@@ -329,6 +334,11 @@ class Stage3Processor:
             "period_days": period,
             "transit_time": transit_time,
             "duration_days": duration_days,
+            "signal_isolation": (
+                "remove_sibling_transit_windows"
+                if isinstance(stage2_features.get("signal_family"), (list, tuple))
+                else "legacy_full_series"
+            ),
         }
         if period is None or transit_time is None or len(time_values) < self.config.minimum_total_samples:
             return self._result(

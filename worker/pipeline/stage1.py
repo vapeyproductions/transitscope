@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from pipeline.lifecycle import STATUS_PRIORITY, active_candidates, movement_for_
 from storage.duckdb_store import DuckDBStore
 
 
-MODEL_VERSION = "stage1-bls-v1"
+MODEL_VERSION = "stage1-bls-multisignal-v2"
 
 
 class Stage1ProcessingError(RuntimeError):
@@ -33,6 +34,8 @@ class Stage1Config:
     period_grid_size: int = 2400
     promising_score: float = 45.0
     promising_snr: float = 7.0
+    max_signals_per_target: int = 3
+    additional_signal_snr: float = 7.0
 
 
 @dataclass(frozen=True)
@@ -58,49 +61,176 @@ class Stage1Processor:
         product_id: str,
         normalized_dir: Path,
     ) -> dict[str, Any]:
+        """Return the strongest signal for CLI/backwards-compatible callers.
+
+        Batch processing uses :meth:`process_signals` so a target can contribute
+        more than one independent periodic signal.
+        """
+
+        return self.process_signals(
+            fits_path,
+            target_manifest=target_manifest,
+            product_id=product_id,
+            normalized_dir=normalized_dir,
+        )[0]
+
+    def process_signals(
+        self,
+        fits_path: Path,
+        *,
+        target_manifest: Mapping[str, Any],
+        product_id: str,
+        normalized_dir: Path,
+    ) -> list[dict[str, Any]]:
+        """Find up to ``max_signals_per_target`` transit-like signals.
+
+        After finding the strongest BLS signal, its transit windows are
+        approximately corrected in the working flux before searching again.
+        This is a lightweight iterative multi-signal search: it lets one star
+        produce separate candidates for multiple periodic dimmings without
+        rerunning the entire ingestion pipeline.
+        """
+
         light_curve = self.read_fits(fits_path)
         cleaned = self.clean(light_curve)
-        candidate_id = self._candidate_id(str(target_manifest["target_id"]))
-        normalized_path = normalized_dir / f"{candidate_id}.npz"
         normalized_dir.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(
-            normalized_path,
-            time=cleaned["time"],
-            normalized_flux=cleaned["flux"],
-        )
-
-        features = dict(cleaned["features"])
-        if cleaned["sufficient"]:
-            features.update(self._bls_features(cleaned["time"], cleaned["flux"]))
-            score = self._evidence_score(features)
-            classification = self._classification(features, score)
-            data_sufficiency = "sufficient"
-            activity = "No current activity"
-        else:
-            score = 0.0
-            classification = "Needs More Data"
-            data_sufficiency = "insufficient"
-            activity = "Awaiting more data"
-
+        target_id = str(target_manifest["target_id"])
         now = datetime.now(timezone.utc)
-        result = {
+        window_start = float(cleaned["time"][0]) if len(cleaned["time"]) else None
+        window_end = float(cleaned["time"][-1]) if len(cleaned["time"]) else None
+
+        if not cleaned["sufficient"]:
+            return [
+                self._build_result(
+                    target_id=target_id,
+                    signal_index=1,
+                    features=dict(cleaned["features"]),
+                    score=0.0,
+                    classification="Needs More Data",
+                    data_sufficiency="insufficient",
+                    activity="Awaiting more data",
+                    normalized_dir=normalized_dir,
+                    time=cleaned["time"],
+                    flux=cleaned["flux"],
+                    product_id=product_id,
+                    evaluated_at=now,
+                    window_start=window_start,
+                    window_end=window_end,
+                    header_metadata=light_curve.header_metadata,
+                )
+            ]
+
+        working_flux = np.asarray(cleaned["flux"], dtype=float).copy()
+        results: list[dict[str, Any]] = []
+        max_signals = max(1, int(self.config.max_signals_per_target))
+        for signal_index in range(1, max_signals + 1):
+            features = dict(cleaned["features"])
+            features.update(self._bls_features(cleaned["time"], working_flux))
+            features["signal_index"] = signal_index
+            features["signal_extraction"] = "iterative_bls_residual_search"
+            score = self._evidence_score(features)
+            results.append(
+                self._build_result(
+                    target_id=target_id,
+                    signal_index=signal_index,
+                    features=features,
+                    score=score,
+                    classification=self._classification(features, score),
+                    data_sufficiency="sufficient",
+                    activity="No current activity",
+                    normalized_dir=normalized_dir,
+                    time=cleaned["time"],
+                    # Every candidate keeps the original normalized
+                    # observation for the UI; only the search state uses the
+                    # residual flux after prior signals are removed.
+                    flux=cleaned["flux"],
+                    product_id=product_id,
+                    evaluated_at=now,
+                    window_start=window_start,
+                    window_end=window_end,
+                    header_metadata=light_curve.header_metadata,
+                )
+            )
+
+            # A weak first peak is generally noise or a non-periodic artifact;
+            # extracting more peaks would create a ranked list of noise.
+            if float(features.get("bls_snr", 0.0)) < self.config.additional_signal_snr:
+                break
+            if signal_index >= max_signals:
+                break
+            working_flux = self._remove_signal(
+                cleaned["time"],
+                working_flux,
+                features,
+            )
+
+        # Preserve the complete signal family with every child. Downstream
+        # stages use this context to remove sibling signals before evaluating
+        # the selected child, so A1 is not treated as noisy A1+A2 data.
+        signal_family = [
+            {
+                key: result["features"].get(key)
+                for key in (
+                    "signal_index",
+                    "signal_id",
+                    "signal_key",
+                    "period_days",
+                    "transit_time",
+                    "duration_hours",
+                    "depth",
+                    "bls_snr",
+                )
+            }
+            for result in results
+        ]
+        for result in results:
+            result["features"]["signal_family"] = signal_family
+        return results
+
+    def _build_result(
+        self,
+        *,
+        target_id: str,
+        signal_index: int,
+        features: Mapping[str, Any],
+        score: float,
+        classification: str,
+        data_sufficiency: str,
+        activity: str,
+        normalized_dir: Path,
+        time: np.ndarray,
+        flux: np.ndarray,
+        product_id: str,
+        evaluated_at: datetime,
+        window_start: float | None,
+        window_end: float | None,
+        header_metadata: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        signal_id, signal_key = self.signal_identity(target_id, features, signal_index)
+        candidate_id = self._candidate_id(target_id, signal_index, features)
+        enriched_features = dict(features)
+        enriched_features["signal_id"] = signal_id
+        enriched_features["signal_key"] = signal_key
+        normalized_path = normalized_dir / f"{candidate_id}.npz"
+        np.savez_compressed(normalized_path, time=time, normalized_flux=flux)
+        return {
             "candidate_id": candidate_id,
-            "target_id": str(target_manifest["target_id"]),
+            "signal_id": signal_id,
+            "target_id": target_id,
             "stage": "stage1",
             "model_version": self.config.model_version,
             "status": classification,
             "activity": activity,
             "evidence_score": round(float(score), 4),
             "data_sufficiency": data_sufficiency,
-            "features": self._json_safe(features),
+            "features": self._json_safe(enriched_features),
             "normalized_path": str(normalized_path),
             "product_id": product_id,
-            "evaluated_at": now,
-            "window_start": float(cleaned["time"][0]) if len(cleaned["time"]) else None,
-            "window_end": float(cleaned["time"][-1]) if len(cleaned["time"]) else None,
-            "header_metadata": light_curve.header_metadata,
+            "evaluated_at": evaluated_at,
+            "window_start": window_start,
+            "window_end": window_end,
+            "header_metadata": dict(header_metadata),
         }
-        return result
 
     @staticmethod
     def read_fits(path: Path) -> LightCurve:
@@ -296,6 +426,38 @@ class Stage1Processor:
         return "Inconclusive"
 
     @staticmethod
+    def _remove_signal(
+        time: np.ndarray,
+        flux: np.ndarray,
+        features: Mapping[str, Any],
+    ) -> np.ndarray:
+        """Approximately flatten one transit signal before the next search."""
+
+        period = float(features.get("period_days", 0.0) or 0.0)
+        duration_hours = float(features.get("duration_hours", 0.0) or 0.0)
+        transit_time = float(features.get("transit_time", 0.0) or 0.0)
+        if period <= 0.0 or duration_hours <= 0.0 or not np.isfinite(transit_time):
+            return flux.copy()
+
+        duration = duration_hours / 24.0
+        phase = ((time - transit_time + 0.5 * period) % period) - 0.5 * period
+        mask = np.abs(phase) <= 0.5 * duration
+        if not np.any(mask):
+            return flux.copy()
+        outside = flux[~mask] if np.any(~mask) else flux
+        outside_level = float(np.nanmedian(outside))
+        inside_level = float(np.nanmedian(flux[mask]))
+        if not np.isfinite(outside_level) or not np.isfinite(inside_level) or outside_level == 0:
+            return flux.copy()
+        relative_depth = 1.0 - inside_level / outside_level
+        if not np.isfinite(relative_depth) or relative_depth <= 0.0:
+            return flux.copy()
+        correction = max(1.0 - min(relative_depth, 0.95), 0.05)
+        residual = flux.copy()
+        residual[mask] = residual[mask] / correction
+        return residual
+
+    @staticmethod
     def _robust_normalize(flux: np.ndarray) -> np.ndarray:
         baseline = float(np.nanmedian(flux)) if len(flux) else 1.0
         if not np.isfinite(baseline) or baseline <= 0:
@@ -371,9 +533,71 @@ class Stage1Processor:
         )
 
     @staticmethod
-    def _candidate_id(target_id: str) -> str:
+    def _candidate_id(
+        target_id: str,
+        signal_index: int = 1,
+        features: Mapping[str, Any] | None = None,
+    ) -> str:
         slug = re.sub(r"[^a-z0-9]+", "-", target_id.lower()).strip("-")
-        return f"stage1-{slug}"
+        if features is not None:
+            signal_id, _ = Stage1Processor.signal_identity(target_id, features, signal_index)
+            return f"stage1-{slug}-{signal_id}"
+        return f"stage1-{slug}-signal-{int(signal_index):02d}"
+
+    @staticmethod
+    def signal_identity(
+        target_id: str,
+        features: Mapping[str, Any],
+        signal_index: int = 1,
+    ) -> tuple[str, str]:
+        """Return a deterministic identity for one target's signal.
+
+        ``signal_index`` is only a fallback for insufficient data. For usable
+        signals, period and phase define the child identity; the ordinal BLS
+        position is deliberately not part of the durable key.
+        """
+
+        def finite_float(value: Any) -> float | None:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return None
+            return number if math.isfinite(number) else None
+
+        period = finite_float(features.get("period_days"))
+        transit_time = finite_float(features.get("transit_time"))
+        duration = finite_float(features.get("duration_hours"))
+        if period is None or period <= 0 or transit_time is None:
+            key = f"{target_id}|insufficient|slot:{int(signal_index)}"
+        else:
+            phase = (transit_time % period) / period
+            key = (
+                f"{target_id}|period:{period:.5f}|phase:{phase:.5f}|"
+                f"duration:{(duration or 0.0):.3f}"
+            )
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+        return f"signal-{digest}", key
+
+    @staticmethod
+    def isolate_signal(
+        time: np.ndarray,
+        flux: np.ndarray,
+        features: Mapping[str, Any],
+    ) -> np.ndarray:
+        """Remove sibling transit windows while retaining the selected signal."""
+
+        family = features.get("signal_family")
+        if not isinstance(family, (list, tuple)):
+            return np.asarray(flux, dtype=float).copy()
+        current_index = features.get("signal_index")
+        isolated = np.asarray(flux, dtype=float).copy()
+        for sibling in family:
+            if not isinstance(sibling, Mapping):
+                continue
+            if current_index is not None and sibling.get("signal_index") == current_index:
+                continue
+            isolated = Stage1Processor._remove_signal(time, isolated, sibling)
+        return isolated
 
     @staticmethod
     def _json_safe(value: Any) -> Any:

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from pipeline.stage1 import Stage1ProcessingError, Stage1Processor, resolve_artifact_path
+from pipeline.stage1 import Stage1Config, Stage1ProcessingError, Stage1Processor, resolve_artifact_path
 from pipeline.lifecycle import STATUS_PRIORITY, movement_for_ranks, overall_sort_key
 from ingestion.mast_adapter import MastProbeError, attach_product_to_target
 from storage.duckdb_store import DuckDBStore
@@ -237,13 +237,18 @@ def _process_target(payload: Mapping[str, Any]) -> dict[str, Any]:
             "error": f"cached product is unavailable: {artifact_path}",
         }
     try:
-        result = Stage1Processor().process(
+        results = Stage1Processor(
+            Stage1Config(
+                max_signals_per_target=int(os.getenv("STAGE1_MAX_SIGNALS_PER_TARGET", "3")),
+                additional_signal_snr=float(os.getenv("STAGE1_ADDITIONAL_SIGNAL_SNR", "7.0")),
+            )
+        ).process_signals(
             artifact_path,
             target_manifest=row,
             product_id=str(row.get("product_id") or row.get("data_uri") or artifact_path.name),
             normalized_dir=data_dir / "normalized",
         )
-        return {"kind": "success", "target": row, "result": result}
+        return {"kind": "success", "target": row, "results": results}
     except (OSError, Stage1ProcessingError, ValueError) as exc:
         return {"kind": "failed", "target": row, "error": str(exc)}
 
@@ -270,7 +275,8 @@ def process_targets(
                     raw_results.append({"kind": "failed", "target": {}, "error": repr(exc)})
     for result in raw_results:
         if result.get("kind") == "success":
-            results.append(result)
+            for signal_result in result.get("results", []):
+                results.append({"target": result["target"], "result": signal_result})
         else:
             failures.append(result)
     results.sort(key=lambda item: str(item["result"]["candidate_id"]))
@@ -283,7 +289,7 @@ def _existing_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
     with store.connect() as connection:
         rows = connection.execute(
             """
-            SELECT candidate_id, target_id, current_stage, status, overall_score, stage_score,
+            SELECT candidate_id, signal_id, target_id, current_stage, status, overall_score, stage_score,
                    rank_overall, rank_stage, activity, last_evaluated_at, known_match_id, active,
                    processing_slot_occupied
             FROM candidates
@@ -292,18 +298,19 @@ def _existing_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
     return [
         {
             "candidate_id": row[0],
-            "target_id": row[1],
-            "current_stage": row[2],
-            "status": row[3],
-            "overall_score": row[4],
-            "stage_score": row[5],
-            "rank_overall": row[6],
-            "rank_stage": row[7],
-            "activity": row[8],
-            "last_evaluated_at": row[9],
-            "known_match_id": row[10],
-            "active": bool(row[11]),
-            "processing_slot_occupied": bool(row[12]),
+            "signal_id": row[1],
+            "target_id": row[2],
+            "current_stage": row[3],
+            "status": row[4],
+            "overall_score": row[5],
+            "stage_score": row[6],
+            "rank_overall": row[7],
+            "rank_stage": row[8],
+            "activity": row[9],
+            "last_evaluated_at": row[10],
+            "known_match_id": row[11],
+            "active": bool(row[12]),
+            "processing_slot_occupied": bool(row[13]),
         }
         for row in rows
     ]
@@ -311,6 +318,162 @@ def _existing_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
 
 def _stable_suffix(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and abs(number) != float("inf") else None
+
+
+def _phase(period: float | None, transit_time: float | None) -> float | None:
+    if period is None or period <= 0 or transit_time is None:
+        return None
+    return (transit_time % period) / period
+
+
+def _signal_matches(existing: Mapping[str, Any], result: Mapping[str, Any]) -> bool:
+    if str(existing.get("target_id")) != str(result.get("target_id")):
+        return False
+    existing_period = _finite_float(existing.get("period_days"))
+    result_period = _finite_float(result.get("features", {}).get("period_days"))
+    existing_time = _finite_float(existing.get("transit_time"))
+    result_time = _finite_float(result.get("features", {}).get("transit_time"))
+    if existing_period is None or result_period is None:
+        return False
+    period_tolerance = float(os.getenv("STAGE1_SIGNAL_PERIOD_TOLERANCE", "0.01"))
+    if abs(existing_period - result_period) / max(existing_period, result_period) > period_tolerance:
+        return False
+    existing_phase = _phase(existing_period, existing_time)
+    result_phase = _phase(result_period, result_time)
+    if existing_phase is None or result_phase is None:
+        return True
+    phase_delta = abs(existing_phase - result_phase)
+    phase_delta = min(phase_delta, 1.0 - phase_delta)
+    return phase_delta <= float(os.getenv("STAGE1_SIGNAL_PHASE_TOLERANCE", "0.05"))
+
+
+def _existing_stage1_signals(
+    store: DuckDBStore,
+    *,
+    include_advanced: bool = False,
+) -> list[dict[str, Any]]:
+    """Load durable signal identities, with a legacy-evaluation fallback."""
+
+    candidates = {
+        str(candidate["candidate_id"]): candidate
+        for candidate in _existing_candidates(store)
+        if candidate["active"]
+        and (include_advanced or candidate["current_stage"] == STAGE)
+    }
+    if not candidates:
+        return []
+    store.initialize()
+    with store.connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT cs.signal_id, cs.candidate_id, cs.target_id, cs.signal_index, cs.signal_key,
+                   period_days, transit_time, duration_hours, depth, snr,
+                   extraction_model_version, c.current_stage
+            FROM candidate_signals cs
+            JOIN candidates c ON c.candidate_id = cs.candidate_id
+            WHERE c.active = true
+              AND (? OR c.current_stage = 'stage1')
+            """
+            , [include_advanced]
+        ).fetchall()
+        by_candidate = {
+            str(row[1]): {
+                "signal_id": row[0],
+                "candidate_id": row[1],
+                "target_id": row[2],
+                "signal_index": row[3],
+                "signal_key": row[4],
+                "period_days": row[5],
+                "transit_time": row[6],
+                "duration_hours": row[7],
+                "depth": row[8],
+                "snr": row[9],
+                "extraction_model_version": row[10],
+                "current_stage": row[11],
+            }
+            for row in rows
+        }
+        for candidate_id, candidate in candidates.items():
+            if candidate_id in by_candidate:
+                continue
+            evaluation = connection.execute(
+                """
+                SELECT feature_json
+                FROM evaluations
+                WHERE candidate_id = ? AND stage = 'stage1'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                [candidate_id],
+            ).fetchone()
+            features = {}
+            if evaluation:
+                try:
+                    features = json.loads(evaluation[0])
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    features = {}
+            by_candidate[candidate_id] = {
+                "signal_id": candidate.get("signal_id") or f"legacy-{_stable_suffix(candidate_id)}",
+                "candidate_id": candidate_id,
+                "target_id": candidate["target_id"],
+                "signal_index": features.get("signal_index"),
+                "signal_key": features.get("signal_key"),
+                "period_days": features.get("period_days"),
+                "transit_time": features.get("transit_time"),
+                "duration_hours": features.get("duration_hours"),
+                "depth": features.get("depth"),
+                "snr": features.get("bls_snr"),
+                "extraction_model_version": features.get("model_version", "legacy"),
+                "current_stage": candidate["current_stage"],
+            }
+    return list(by_candidate.values())
+
+
+def _bind_signal_identities(
+    store: DuckDBStore,
+    results: Sequence[Mapping[str, Any]],
+    *,
+    include_advanced: bool = False,
+) -> list[dict[str, Any]]:
+    """Reuse a legacy child when its signal still matches; otherwise keep the
+    deterministic signal identity generated by Stage 1."""
+
+    existing = _existing_stage1_signals(store, include_advanced=include_advanced)
+    bound: list[dict[str, Any]] = []
+    used: set[str] = set()
+    for item in results:
+        result = dict(item["result"])
+        features = dict(result.get("features") or {})
+        match = next(
+            (
+                signal
+                for signal in existing
+                if signal["candidate_id"] not in used and _signal_matches(signal, result)
+            ),
+            None,
+        )
+        if match:
+            used.add(str(match["candidate_id"]))
+            result["candidate_id"] = match["candidate_id"]
+            result["signal_id"] = match["signal_id"]
+            features["signal_id"] = match["signal_id"]
+            features["legacy_candidate_reused"] = True
+            old_path = Path(str(result.get("normalized_path"))) if result.get("normalized_path") else None
+            new_path = old_path.with_name(f"{match['candidate_id']}.npz") if old_path else None
+            if old_path and new_path and old_path.exists() and old_path != new_path:
+                old_path.replace(new_path)
+                result["normalized_path"] = str(new_path)
+        result["features"] = features
+        bound.append({"target": dict(item["target"]), "result": result})
+    return bound
 
 
 def publish_stage1_batch(
@@ -326,20 +489,55 @@ def publish_stage1_batch(
     results: Sequence[Mapping[str, Any]],
     failures: Sequence[Mapping[str, Any]],
     retire_candidate_ids: Sequence[str] = (),
+    preserve_advanced_candidates: bool = False,
 ) -> int:
     """Publish one batch, its ranking, the checkpoint, and failure bookkeeping atomically."""
 
+    results = _bind_signal_identities(
+        store,
+        results,
+        include_advanced=preserve_advanced_candidates,
+    )
     previous = _existing_candidates(store)
     retiring = set(retire_candidate_ids)
+    selected_target_ids = {str(target["target_id"]) for target in selected}
+    previous_by_id = {candidate["candidate_id"]: candidate for candidate in previous}
+    advanced_result_ids = {
+        str(item["result"]["candidate_id"])
+        for item in results
+        if previous_by_id.get(str(item["result"]["candidate_id"]), {}).get("current_stage") not in {None, STAGE}
+    }
+    stage1_results = [
+        item for item in results if str(item["result"]["candidate_id"]) not in advanced_result_ids
+    ]
+    result_candidate_ids = {
+        str(item["result"]["candidate_id"])
+        for item in stage1_results
+    }
+    # A refreshed Stage 1 target may now emit signal-01, signal-02, etc. Remove
+    # the pre-multi-signal legacy row from the active ranking so it cannot
+    # coexist with its replacement and inflate the target's score.
+    replaced_stage1 = {
+        candidate["candidate_id"]
+        for candidate in previous
+        if candidate["active"]
+        and candidate["current_stage"] == STAGE
+        and str(candidate["target_id"]) in selected_target_ids
+        and candidate["candidate_id"] not in result_candidate_ids
+    }
     active_existing = [
         candidate
         for candidate in previous
-        if candidate["active"] and candidate["candidate_id"] not in retiring
+        if candidate["active"]
+        and candidate["candidate_id"] not in retiring
+        and candidate["candidate_id"] not in replaced_stage1
+        and candidate["candidate_id"] not in result_candidate_ids
     ]
     active_stage1 = [candidate for candidate in active_existing if candidate["current_stage"] == STAGE]
     new_candidates = [
         {
             "candidate_id": result["result"]["candidate_id"],
+            "signal_id": result["result"].get("signal_id"),
             "target_id": result["result"]["target_id"],
             "current_stage": STAGE,
             "status": result["result"]["status"],
@@ -351,7 +549,7 @@ def publish_stage1_batch(
             "known_match_id": None,
             "processing_slot_occupied": result["result"]["status"] != "Inconclusive",
         }
-        for result in results
+        for result in stage1_results
     ]
     stage1_pool = active_stage1 + new_candidates
     stage1_pool.sort(
@@ -365,7 +563,7 @@ def publish_stage1_batch(
     overall_pool = active_existing + new_candidates
     overall_pool.sort(key=overall_sort_key)
     overall_ranks = {candidate["candidate_id"]: index for index, candidate in enumerate(overall_pool, 1)}
-    prior_by_id = {candidate["candidate_id"]: candidate for candidate in previous}
+    prior_by_id = previous_by_id
 
     version = (store.latest_published_version() or 0) + 1
     evaluated_at = utc_now()
@@ -382,6 +580,7 @@ def publish_stage1_batch(
             candidate_rows.append(
                 {
                     "candidate_id": candidate_id,
+                    "signal_id": candidate.get("signal_id"),
                     "target_id": candidate["target_id"],
                     "current_stage": STAGE,
                     "status": candidate["status"],
@@ -401,6 +600,7 @@ def publish_stage1_batch(
             candidate_updates.append(
                 {
                     "candidate_id": candidate_id,
+                    "signal_id": candidate.get("signal_id"),
                     "current_stage": STAGE,
                     "rank_overall": overall_rank,
                     "rank_stage": stage_rank,
@@ -420,6 +620,7 @@ def publish_stage1_batch(
             candidate_updates.append(
                 {
                     "candidate_id": candidate_id,
+                    "signal_id": candidate.get("signal_id"),
                     "current_stage": candidate["current_stage"],
                     "rank_overall": overall_rank,
                     "rank_stage": stage_rank,
@@ -436,10 +637,10 @@ def publish_stage1_batch(
                 }
             )
 
-    refreshed_ids = {str(item["result"]["candidate_id"]) for item in results}
+    refreshed_ids = {str(item["result"]["candidate_id"]) for item in stage1_results}
     for candidate in previous:
         if (
-            candidate["candidate_id"] in retiring
+            candidate["candidate_id"] in (retiring | replaced_stage1)
             and candidate["active"]
             and candidate["candidate_id"] not in refreshed_ids
         ):
@@ -480,8 +681,30 @@ def publish_stage1_batch(
 
     evaluations = []
     events = []
+    signals = []
     for item in results:
         result = item["result"]
+        features = dict(result.get("features") or {})
+        signals.append(
+            {
+                "signal_id": result.get("signal_id")
+                or features.get("signal_id")
+                or f"legacy-{_stable_suffix(result['candidate_id'])}",
+                "candidate_id": result["candidate_id"],
+                "target_id": result["target_id"],
+                "signal_index": features.get("signal_index"),
+                "signal_key": features.get("signal_key") or result["candidate_id"],
+                "period_days": features.get("period_days"),
+                "transit_time": features.get("transit_time"),
+                "duration_hours": features.get("duration_hours"),
+                "depth": features.get("depth"),
+                "snr": features.get("bls_snr"),
+                "extraction_model_version": result["model_version"],
+                "first_seen_at": result["evaluated_at"],
+                "last_seen_at": result["evaluated_at"],
+                "active": True,
+            }
+        )
         suffix = _stable_suffix(str(result.get("product_id", result["target_id"])))
         evaluations.append(
             {
@@ -493,7 +716,7 @@ def publish_stage1_batch(
                 "data_window_end": None,
                 "input_product_ids": [result["product_id"]],
                 "feature_json": {
-                    **dict(result["features"]),
+                    **features,
                     "normalized_path": result["normalized_path"],
                     "window_start": result["window_start"],
                     "window_end": result["window_end"],
@@ -539,7 +762,7 @@ def publish_stage1_batch(
                 "model_run_id": f"stage1-run-{batch_id}",
             }
         )
-    for candidate_id in sorted(retiring):
+    for candidate_id in sorted(retiring | replaced_stage1):
         events.append(
             {
                 "event_id": f"stage1-released-{batch_id}-{candidate_id}",
@@ -547,7 +770,13 @@ def publish_stage1_batch(
                 "candidate_id": candidate_id,
                 "stage": STAGE,
                 "event_type": "stage1_released",
-                "payload_json": {"reason": "replacement_slot_opened"},
+                "payload_json": {
+                    "reason": (
+                        "multi_signal_replacement"
+                        if candidate_id in replaced_stage1
+                        else "replacement_slot_opened"
+                    )
+                },
                 "occurred_at": evaluated_at,
                 "model_run_id": f"stage1-run-{batch_id}",
             }
@@ -585,6 +814,7 @@ def publish_stage1_batch(
             }
         ],
         candidates=candidate_rows,
+        signals=signals,
         evaluations=evaluations,
         events=events,
         coverage_watermarks=[
@@ -731,6 +961,7 @@ def run_stage1_refresh(
     manifest_path: Path,
     targets: Sequence[Mapping[str, Any]],
     config: BatchConfig,
+    preserve_advanced_candidates: bool = False,
 ) -> dict[str, Any]:
     """Re-evaluate Stage 1 candidates whose MAST coverage advanced.
 
@@ -767,6 +998,7 @@ def run_stage1_refresh(
         selected=targets,
         results=results,
         failures=failures,
+        preserve_advanced_candidates=preserve_advanced_candidates,
     )
     return {
         "status": "published",

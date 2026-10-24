@@ -18,7 +18,7 @@ from pipeline.lifecycle import STATUS_PRIORITY, movement_for_ranks, overall_sort
 from storage.duckdb_store import DuckDBStore
 
 
-MODEL_VERSION = "stage2-repeatability-v2-backfill"
+MODEL_VERSION = "stage2-repeatability-v3-signal-isolated"
 RANKING_VERSION = "stage2-overall-v2-score-first"
 
 
@@ -86,7 +86,6 @@ class Stage2Processor:
 
         normalized_dir.mkdir(parents=True, exist_ok=True)
         normalized_path = normalized_dir / f"stage2-{self._slug(candidate_id)}.npz"
-        np.savez_compressed(normalized_path, time=time_values, normalized_flux=flux_values)
         return self.evaluate_series(
             time_values,
             flux_values,
@@ -141,6 +140,14 @@ class Stage2Processor:
     ) -> dict[str, Any]:
         if len(time_values) < 2:
             raise Stage2ProcessingError("historical series contains too few samples")
+        flux_values = Stage1Processor.isolate_signal(
+            time_values,
+            flux_values,
+            stage1_features,
+        )
+        if normalized_path is not None:
+            normalized_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(normalized_path, time=time_values, normalized_flux=flux_values)
         period = self._finite_float(stage1_features.get("period_days"))
         transit_time = self._finite_float(stage1_features.get("transit_time"))
         duration_hours = self._finite_float(stage1_features.get("duration_hours"))
@@ -184,6 +191,15 @@ class Stage2Processor:
             "window_policy": "recent-window-with-full-history-backfill",
             "stage1_period_days": period,
             "stage1_transit_time": transit_time,
+            "signal_index": stage1_features.get("signal_index"),
+            "signal_id": stage1_features.get("signal_id"),
+            "signal_key": stage1_features.get("signal_key"),
+            "signal_family": stage1_features.get("signal_family"),
+            "signal_isolation": (
+                "remove_sibling_transit_windows"
+                if isinstance(stage1_features.get("signal_family"), (list, tuple))
+                else "legacy_full_series"
+            ),
         }
 
         if period is None or transit_time is None:

@@ -15,7 +15,7 @@ docker compose up --build
 
 The `data/` directory is a durable local volume for provider cache, normalized data, DuckDB state, and replay history. The current stack includes the official MAST/TESS probe, bounded/checkpointed Stage 1 processing, Stage 2 historical repeatability, Stage 3 chronological holdout prediction, NASA Exoplanet Archive matching, Overall/stage ranking snapshots, replay APIs, and the candidate investigation modal. The 126,000-row universe is represented as a durable queue; the local demo downloads a bounded real seed set so it can run official data without pretending that 126,000 FITS files are already local.
 
-The compose worker is intentionally paused by default with `RUN_LIVE_PIPELINE=false`. This is a safety gate: opening the site, refreshing the dashboard, or inspecting ML Ops never starts MAST downloads or model jobs. Enable execution only after the public deployment, durable state, provider limits, and monitoring have been reviewed.
+The compose worker is intentionally paused by default with `RUN_LIVE_PIPELINE=false`. This is a safety gate: opening the site, refreshing the dashboard, or inspecting ML Ops never starts MAST downloads or model jobs. The live worker also honors `PIPELINE_PAUSED`; it defaults to `true` so a deployment cannot resume ingestion accidentally. Set `PIPELINE_PAUSED=false` only after the public deployment, durable state, provider limits, and monitoring have been reviewed.
 
 ## ML operations and eventual deployment
 
@@ -73,6 +73,16 @@ docker compose run --rm worker python run_stage1_batch.py \
 The live Docker worker uses a 500-target Stage 1 processing pool, bounded CPU parallelism, checkpointing, and an unprocessed-manifest replacement queue. It displays the top 500 rows per ranking through 100-row pages. Stage 2 and Stage 3 use independent promotion windows of 25 and 6 by default. Only `Promising` candidates advance; `Inconclusive` candidates remain visible in history but release their processing slot; `Needs More Data` holds its slot until an unexamined archive/live window is available; and known matches are removed from active views while remaining in replay history. Each published change saves ranking snapshots.
 
 The accelerated live profile evaluates up to 16 fresh Stage 1 targets per batch with four CPU workers and polls every five minutes. The live cycle can perform two Stage 1 fills when the pool has room, so the initial fill can reach roughly 32 fresh targets per five-minute cycle before provider latency, failures, and refresh work are included.
+
+Stage 1 now performs an iterative multi-signal search. It records the strongest periodic dimming signal, approximately removes that signal from the normalized light curve, and searches the residual for up to three additional signals when the preceding signal has sufficient SNR. Each child is identified by the parent target plus a durable signal fingerprint derived from period, phase, and duration; the extraction ordinal is metadata only. Existing legacy single-signal rows are matched by target/period/phase tolerance when possible, so their history can continue under the same candidate identity. Every child carries its signal family into Steps 2 and 3, where sibling transit windows are removed before repeatability and holdout evaluation.
+
+The paused migration command backfills explored targets without starting the live heartbeat:
+
+```bash
+docker compose run --rm worker python migrate_multisignal.py --max-targets 25
+```
+
+It preserves children already in Stage 2/3, creates independent children for newly detected signals, and leaves the normal worker gate unchanged. Run it only while `RUN_LIVE_PIPELINE=false` and review the published ranking before enabling live processing.
 
 ## Stage 2 historical validation
 

@@ -82,6 +82,9 @@ class DuckDBStore:
                 "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS processing_slot_occupied BOOLEAN DEFAULT true"
             )
             connection.execute(
+                "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS signal_id VARCHAR"
+            )
+            connection.execute(
                 """
                 UPDATE candidates
                 SET processing_slot_occupied = CASE
@@ -98,6 +101,7 @@ class DuckDBStore:
         targets: Sequence[Mapping[str, object]] = (),
         ingest_runs: Sequence[Mapping[str, object]] = (),
         candidates: Sequence[Mapping[str, object]] = (),
+        signals: Sequence[Mapping[str, object]] = (),
         evaluations: Sequence[Mapping[str, object]] = (),
         events: Sequence[Mapping[str, object]] = (),
         snapshots: Sequence[Mapping[str, object]] = (),
@@ -161,6 +165,7 @@ class DuckDBStore:
                     "candidates",
                     (
                         "candidate_id",
+                        "signal_id",
                         "target_id",
                         "current_stage",
                         "status",
@@ -177,6 +182,7 @@ class DuckDBStore:
                     ),
                     candidates,
                 )
+                self._upsert_signals(connection, signals)
                 self._insert_many(
                     connection,
                     "evaluations",
@@ -254,6 +260,51 @@ class DuckDBStore:
                 raise
 
     @staticmethod
+    def _upsert_signals(
+        connection: duckdb.DuckDBPyConnection,
+        signals: Sequence[Mapping[str, object]],
+    ) -> None:
+        for signal in signals:
+            connection.execute(
+                """
+                INSERT INTO candidate_signals (
+                    signal_id, candidate_id, target_id, signal_index, signal_key,
+                    period_days, transit_time, duration_hours, depth, snr,
+                    extraction_model_version, first_seen_at, last_seen_at, active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (signal_id) DO UPDATE SET
+                    candidate_id = excluded.candidate_id,
+                    target_id = excluded.target_id,
+                    signal_index = excluded.signal_index,
+                    signal_key = excluded.signal_key,
+                    period_days = excluded.period_days,
+                    transit_time = excluded.transit_time,
+                    duration_hours = excluded.duration_hours,
+                    depth = excluded.depth,
+                    snr = excluded.snr,
+                    extraction_model_version = excluded.extraction_model_version,
+                    last_seen_at = excluded.last_seen_at,
+                    active = excluded.active
+                """,
+                [
+                    signal.get("signal_id"),
+                    signal.get("candidate_id"),
+                    signal.get("target_id"),
+                    signal.get("signal_index"),
+                    signal.get("signal_key"),
+                    signal.get("period_days"),
+                    signal.get("transit_time"),
+                    signal.get("duration_hours"),
+                    signal.get("depth"),
+                    signal.get("snr"),
+                    signal.get("extraction_model_version"),
+                    signal.get("first_seen_at", _now()),
+                    signal.get("last_seen_at", _now()),
+                    signal.get("active", True),
+                ],
+            )
+
+    @staticmethod
     def _insert_batch_run(
         connection: duckdb.DuckDBPyConnection,
         batch_run: Mapping[str, object] | None,
@@ -294,7 +345,7 @@ class DuckDBStore:
             connection.execute(
                 """
                 UPDATE candidates
-                SET current_stage = COALESCE(?, current_stage), rank_overall = ?, rank_stage = ?, rank_delta = ?, movement_kind = ?,
+                SET current_stage = COALESCE(?, current_stage), signal_id = COALESCE(?, signal_id), rank_overall = ?, rank_stage = ?, rank_delta = ?, movement_kind = ?,
                     active = ?, activity = ?, status = ?, overall_score = ?, stage_score = ?,
                     last_evaluated_at = ?, known_match_id = ?,
                     processing_slot_occupied = COALESCE(?, processing_slot_occupied)
@@ -302,6 +353,7 @@ class DuckDBStore:
                 """,
                 [
                     update.get("current_stage"),
+                    update.get("signal_id"),
                     update.get("rank_overall"),
                     update.get("rank_stage"),
                     update.get("rank_delta", 0),
@@ -409,7 +461,7 @@ class DuckDBStore:
         for row in rows:
             values.append(
                 [
-                    _json_value(row[column]) if json_columns and column in json_columns else row[column]
+                    _json_value(row.get(column)) if json_columns and column in json_columns else row.get(column)
                     for column in columns
                 ]
             )

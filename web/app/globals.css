@@ -207,6 +207,7 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .chart-wrap svg { display: block; height: auto; width: 100%; }
 .chart-baseline { stroke: rgba(146, 169, 205, 0.18); stroke-dasharray: 4 5; }
 .chart-line { fill: none; stroke: var(--cyan); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.6; }
+.chart-transit-marker { stroke: rgba(255, 204, 112, 0.52); stroke-dasharray: 2 4; stroke-width: 1; }
 .chart-axis { color: var(--faint); display: flex; font-size: 9px; justify-content: space-between; padding-top: 5px; }
 .chart-empty { color: var(--muted); font-size: 12px; padding: 55px 10px; text-align: center; }
 .detail-metrics { display: grid; gap: 8px; grid-template-columns: repeat(3, 1fr); }
