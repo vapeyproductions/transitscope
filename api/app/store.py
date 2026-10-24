@@ -328,14 +328,9 @@ class ReadOnlyStore:
             projected_rows = []
             for index, row in enumerate(rows, start=1):
                 rank = row[6] if view == "overall" else row[7]
-                # A non-ranking sort creates a new presentation order. Show
-                # the position in that order instead of the persisted
-                # evidence rank; otherwise a sorted page appears broken when
-                # it displays values such as #22, #1006, #382 in sequence.
-                display_rank = offset + index if sort != "rank" else (rank or offset + index)
                 projected_rows.append(
                     {
-                        "rank": int(display_rank),
+                        "rank": int(rank or index),
                         "candidate_id": row[0],
                         "target_id": row[1],
                         "stage": row[2],
