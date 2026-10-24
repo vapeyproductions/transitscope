@@ -417,14 +417,14 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .motion-lane-title small { color: var(--muted); font-size: 8px; text-align: right; }
 .motion-lane-queue { background: rgba(255, 255, 255, 0.045); border: 1px solid rgba(146, 169, 205, 0.14); border-radius: 7px 7px 0 0; min-height: 65px; padding: 7px; }
 .motion-lane-queue > span { color: var(--faint); display: block; font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; }
-.motion-queue-stacks { align-items: end; display: flex; gap: 5px; height: 39px; justify-content: center; margin-top: 4px; }
-.motion-queue-stack { align-items: center; display: flex; flex-direction: column-reverse; gap: 3px; justify-content: flex-start; min-height: 12px; }
+.motion-queue-stacks { height: 39px; margin-top: 4px; position: relative; }
+.motion-queue-stacks > .motion-dot { position: absolute; transform: translateX(-50%); transition: left 850ms cubic-bezier(0.22, 1, 0.36, 1), bottom 850ms cubic-bezier(0.22, 1, 0.36, 1), background-color 500ms ease, box-shadow 500ms ease; }
 .motion-queue-empty { color: var(--faint); display: block; font-size: 8px; margin-top: 12px; text-align: center; }
 .motion-lane-field { background: rgba(7, 14, 27, 0.78); border: 1px solid rgba(146, 169, 205, 0.14); border-top: 0; height: 178px; overflow: hidden; position: relative; }
 .motion-lane-field::before { background: linear-gradient(90deg, transparent 49%, rgba(118, 228, 237, 0.055) 50%, transparent 51%), linear-gradient(0deg, transparent 49%, rgba(118, 228, 237, 0.045) 50%, transparent 51%); background-size: 50% 50%; content: ""; inset: 0; opacity: 0.5; pointer-events: none; position: absolute; }
 .motion-rank-guide { bottom: 8px; color: rgba(139, 155, 181, 0.7); display: flex; flex-direction: column; font-size: 7px; justify-content: space-between; left: 5px; letter-spacing: 0.04em; pointer-events: none; position: absolute; text-transform: uppercase; top: 8px; writing-mode: vertical-rl; z-index: 1; }
-.motion-ranked-dots { align-content: start; display: grid; gap: 6px 8px; grid-auto-rows: 10px; grid-template-columns: repeat(7, minmax(7px, 1fr)); height: 100%; padding: 12px 12px 10px 25px; position: relative; }
-.motion-ranked-dots > .motion-dot { animation: none; justify-self: center; }
+.motion-ranked-dots { height: 100%; inset: 0; position: absolute; }
+.motion-ranked-dots > .motion-dot { animation: none; position: absolute; transform: translate(-50%, -50%); transition: left 900ms cubic-bezier(0.22, 1, 0.36, 1), top 900ms cubic-bezier(0.22, 1, 0.36, 1), background-color 500ms ease, box-shadow 500ms ease; }
 .motion-queue-job { animation: none; }
 .motion-queue-handoff { border-color: var(--cyan); }
 .motion-queue-reassessment, .motion-queue-intake { animation: none; }
