@@ -39,7 +39,7 @@ class Stage3Tests(unittest.TestCase):
         self.assertIsNotNone(result["features"]["holdout_window"]["start"])
         self.assertIn("precision", result["features"]["holdout_metrics"])
         self.assertIn("f1", result["features"]["baseline_metrics"])
-        self.assertEqual(result["model_version"], "stage3-logreg-phase-v2")
+        self.assertEqual(result["model_version"], "stage3-logreg-phase-v4")
         self.assertGreaterEqual(result["features"]["holdout_metrics"]["event_recovery_rate"], 0.5)
 
     def test_short_or_non_periodic_history_stays_needs_more_data(self) -> None:
