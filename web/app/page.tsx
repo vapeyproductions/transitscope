@@ -779,90 +779,6 @@ function monitoringDotClass(status: string | undefined): string {
   return "neutral";
 }
 
-type MotionTransfer = {
-  key: string;
-  kind: string;
-  status: string;
-  path: string;
-  label: string;
-  delay: number;
-  sourceX: number;
-  sourceY: number;
-};
-
-const motionLaneX: Record<AssessmentStage, number> = {
-  stage1: 32,
-  stage2: 58,
-  stage3: 84,
-};
-
-function motionRankY(rank: number): number {
-  const row = Math.min(10, Math.floor((Math.max(1, rank) - 1) / 7));
-  return 108 + row * 16;
-}
-
-function motionTransferRoute(
-  stage: AssessmentStage,
-  kind: string,
-  sourceRank: number,
-  destinationRank: number,
-): { path: string; label: string; sourceX: number; sourceY: number } {
-  const destinationX = motionLaneX[stage];
-  const queueY = 62;
-  const destinationY = motionRankY(destinationRank);
-  if (stage === "stage1" && kind === "intake") {
-    const sourceX = 8;
-    const sourceY = queueY;
-    return {
-      path: `M 0 0 L ${destinationX - sourceX} 0 L ${destinationX - sourceX} ${destinationY - sourceY}`,
-      label: `Candidate universe → Stage 1 queue → Stage 1 rank ${destinationRank}`,
-      sourceX,
-      sourceY,
-    };
-  }
-  if (kind === "handoff") {
-    const sourceStage = stage === "stage2" ? "Stage 1" : "Stage 2";
-    const sourceX = stage === "stage2" ? motionLaneX.stage1 : motionLaneX.stage2;
-    const sourceY = motionRankY(sourceRank);
-    return {
-      path: `M 0 0 L 0 ${queueY - sourceY} L ${destinationX - sourceX} ${queueY - sourceY} L ${destinationX - sourceX} ${destinationY - sourceY}`,
-      label: `${sourceStage} rank ${sourceRank} → ${stageName(stage)} queue → ${stageName(stage)} rank ${destinationRank}`,
-      sourceX,
-      sourceY,
-    };
-  }
-  if (kind === "reassessment") {
-    const sourceX = destinationX;
-    const sourceY = motionRankY(sourceRank);
-    return {
-      path: `M 0 0 L 0 ${queueY - sourceY} L 0 ${destinationY - sourceY}`,
-      label: `${stageName(stage)} rank ${sourceRank} → reassessment queue → rank ${destinationRank}`,
-      sourceX,
-      sourceY,
-    };
-  }
-  const sourceX = destinationX;
-  const sourceY = queueY;
-  return {
-    path: `M 0 0 L 0 ${destinationY - sourceY}`,
-    label: `${stageName(stage)} queue → rank ${destinationRank}`,
-    sourceX,
-    sourceY,
-  };
-}
-
-function MotionTransferLayer({ transfers, speed }: { transfers: MotionTransfer[]; speed: number }) {
-  const duration = 2.4 / speed;
-  return <svg className="motion-transfer-layer" viewBox="0 0 100 325" preserveAspectRatio="none" aria-hidden="true">
-    {transfers.map((transfer) => <g className={`motion-transfer motion-transfer-${transfer.kind}`} key={transfer.key}>
-      <circle className={`motion-transfer-dot ${monitoringDotClass(transfer.status)}`} cx={transfer.sourceX} cy={transfer.sourceY} r="1.5">
-        <title>{transfer.label} · {transfer.status}</title>
-        <animateMotion dur={`${duration}s`} begin={`${transfer.delay / speed}s`} fill="freeze" path={transfer.path} repeatCount="1" />
-      </circle>
-    </g>)}
-  </svg>;
-}
-
 function MonitoringCycleActivityPanel({ activity }: { activity: MonitoringCycleActivity }) {
   const runs = activity.runs ?? [];
   const stages: AssessmentStage[] = ["stage1", "stage2", "stage3"];
@@ -933,42 +849,13 @@ function MonitoringCycleActivityPanel({ activity }: { activity: MonitoringCycleA
   const frameLabel = frame ? formatDate(frame.finished_at) : "Waiting for first cycle";
   const stageQueueTotal = (stage: AssessmentStage) => queueEventsFor(stage).length;
   const rankedSamplesFor = (stage: AssessmentStage) => frame?.ranked_samples?.[stage] ?? [];
-  const rankForCandidate = (stage: AssessmentStage, candidateId: string | undefined, fallback: number) => {
-    const match = rankedSamplesFor(stage).find((sample) => sample.candidate_id === candidateId);
-    return match?.rank ?? fallback;
-  };
-  const topPromisingRank = (stage: AssessmentStage) => rankedSamplesFor(stage).find((sample) => sample.status === "Promising")?.rank ?? 1;
-  const motionTransfers: MotionTransfer[] = [];
-  stages.forEach((stage, stageIndex) => {
-    queueEventsFor(stage).slice(0, 12).forEach((event, index) => {
-      const kind = event.kind ?? "evaluation";
-      const destinationRank = rankForCandidate(stage, event.candidate_id, index + 1);
-      const sourceStage = stage === "stage2" ? "stage1" : stage === "stage3" ? "stage2" : "stage1";
-      const sourceRank = kind === "handoff"
-        ? topPromisingRank(sourceStage)
-        : rankForCandidate(stage, event.candidate_id, destinationRank);
-      const route = motionTransferRoute(stage, kind, sourceRank, destinationRank);
-      motionTransfers.push({
-        key: `${frame?.cycle_id ?? "empty"}-${stage}-${event.candidate_id ?? "job"}-${kind}-${index}`,
-        kind,
-        status: event.queue_status ?? "New Job",
-        path: route.path,
-        label: route.label,
-        delay: motionTransfers.length * 2.65 + stageIndex * 0.08,
-        sourceX: route.sourceX,
-        sourceY: route.sourceY,
-      });
-    });
-  });
-  const motionSequenceDurationMs = ((motionTransfers.length * 2.65) + 2.4) * 1000 / speed;
-
   useEffect(() => {
     if (!playing || runs.length < 2) return;
-    const timer = window.setTimeout(() => {
+    const timer = window.setInterval(() => {
       setFrameIndex((current) => Math.min(current + 1, runs.length - 1));
-    }, Math.max(2200, motionSequenceDurationMs));
-    return () => window.clearTimeout(timer);
-  }, [frame?.cycle_id, motionSequenceDurationMs, playing, runs.length]);
+    }, Math.max(650, 2200 / speed));
+    return () => window.clearInterval(timer);
+  }, [playing, runs.length, speed]);
 
   return <section className="ops-section cycle-activity-section" aria-labelledby="cycle-activity-title">
     <div className="ops-section-heading"><div><p className="eyebrow">Live worker activity</p><h4 id="cycle-activity-title">Pipeline motion · last {activity.window_minutes} minutes</h4></div><span className="section-note">{activity.run_count} saved cycles · time flows left to right</span></div>
@@ -979,12 +866,10 @@ function MonitoringCycleActivityPanel({ activity }: { activity: MonitoringCycleA
         <div className="pipeline-motion-track" aria-label="Candidate movement from universe through Stage 3">
           <article className="motion-lane motion-universe-lane"><div className="motion-lane-title"><strong>Candidate universe</strong><small>{incomingCount.toLocaleString()} arrivals</small></div><div className="motion-universe-intake"><div className="motion-universe-source"><span>New targets</span><div className="motion-universe-dots">{Array.from({ length: incomingDots }, (_, index) => <span className="motion-dot neutral" key={`arrival-${frameIndex}-${index}`} title="New candidate from target universe" />)}</div></div><span className="motion-universe-arrow" aria-hidden="true">→</span><span className="motion-universe-destination">Stage 1 queue</span></div><div className="motion-lane-caption">New targets enter Stage 1 only as downstream work opens a job.</div></article>
           {stages.map((stage) => { const dots = representativeDots(stage); const stacks = queueStacks(stage); const queueJobs = queueEventsFor(stage); const summary = frame?.stages[stage] ?? {}; const handoffs = stage === "stage3" ? currentStage2Handoffs : queueJobs.filter((job) => job.kind === "handoff").length; return <article className={`motion-lane motion-${stage}-lane`} key={stage}><div className="motion-lane-title"><strong>{stageName(stage)}</strong><small>{dots.length} ranked sample dots · {stageQueueTotal(stage).toLocaleString()} jobs</small></div><div className="motion-lane-queue"><span>Work queue</span><div className="motion-queue-stacks">{stacks.map((stack, stackIndex) => <div className="motion-queue-stack" key={`${stage}-stack-${stackIndex}`}>{stack.map((job, dotIndex) => <span className={`motion-dot ${monitoringDotClass(job.queue_status ?? "New Job")} motion-queue-job ${job.kind === "handoff" ? "motion-queue-handoff" : job.kind === "reassessment" ? "motion-queue-reassessment" : "motion-queue-intake"}`} key={`${stage}-${stackIndex}-${job.candidate_id ?? "job"}-${dotIndex}`} title={`${job.kind ?? "job"} · ${job.queue_status ?? "queued"}`} />)}</div>)}</div>{!queueJobs.length && <small className="motion-queue-empty">No jobs called in this cycle</small>}</div><div className="motion-lane-field"><div className="motion-rank-guide" aria-hidden="true"><span>higher rank</span><span>lower rank</span></div><div className="motion-ranked-dots">{dots.map((dot, index) => <span className={`motion-dot ${monitoringDotClass(dot.status)}`} key={`${stage}-${dot.status}-${dot.rank}-${index}`} style={{ animationDelay: `${(index % 9) * -0.27}s` }} title={`Rank ${dot.rank} · ${dot.status} · representative of ${stageName(stage)} ranking`} />)}{!dots.length && <span className="motion-field-empty">No ranked candidates</span>}</div></div><div className="motion-lane-caption">{handoffs ? `${handoffs} candidate${handoffs === 1 ? "" : "s"} called downstream this cycle.` : stage === "stage3" ? "Reassess Needs More Data in rank order." : summary.evaluated ? "Rankings updated; no downstream job was called." : "Waiting for a downstream call."}</div></article>; })}
-          <MotionTransferLayer transfers={motionTransfers} speed={speed} />
         </div>
         <div className="pipeline-motion-footer"><div className="pipeline-dot-legend"><span><i className="pipeline-dot promising" />Promising</span><span><i className="pipeline-dot needs-more-data" />Needs more data</span><span><i className="pipeline-dot inconclusive" />Inconclusive</span><span><i className="pipeline-dot known-match" />Known</span></div><label className="motion-scrubber"><span>Replay position</span><input aria-label="Pipeline motion replay position" type="range" min={0} max={Math.max(0, runs.length - 1)} value={frameIndex} onChange={(event) => { setFrameIndex(Number(event.target.value)); setPlaying(false); }} /><small>{frameIndex + 1} / {runs.length}</small></label></div>
-        <div className="motion-path-note">Each colored dot is one saved job moving from its source rank, through the work queue, and into its destination ranking.</div>
       </div>
-      <p className="cycle-activity-note">Ranking dots are ordered from highest rank to lowest rank and are intentionally representative rather than one-to-one. Animated route dots show one recorded job at a time: its source rank → the current or next stage work queue → its destination rank. Inconclusive candidates remain in their stage ranking and do not enter a queue unless a later job is explicitly called. Drag the replay position to inspect any saved cycle.</p>
+      <p className="cycle-activity-note">Ranking dots are ordered from highest rank to lowest rank and are intentionally representative rather than one-to-one. Queue dots show jobs called during the selected cycle; Inconclusive candidates remain in their stage ranking and do not enter a queue unless a later job is explicitly called. Drag the replay position to inspect any saved cycle.</p>
       <div className="timing-card-grid">{stages.map((stage) => { const timing = activity.timings[stage] ?? { average_cycle_seconds: null, average_needs_more_data_seconds: null, average_dispatch_seconds: null, handoffs: 0 }; const flow = activity.throughput[stage] ?? { evaluated: 0, promising: 0, needs_more_data: 0, inconclusive: 0, known_match: 0, handoffs: 0 }; return <article className="timing-card" key={stage}><div className="timing-card-heading"><strong>{stageName(stage)}</strong><span>{flow.evaluated.toLocaleString()} assessed</span></div><div className="timing-stat-row"><span><small>Avg stage time</small><strong>{durationLabel(timing.average_cycle_seconds)}</strong></span><span><small>Needs data time</small><strong>{durationLabel(timing.average_needs_more_data_seconds)}</strong></span></div><div className="timing-stat-row"><span><small>Promising</small><strong>{flow.promising}</strong></span><span><small>Inconclusive</small><strong>{flow.inconclusive}</strong></span></div><div className="timing-stat-row"><span><small>Needs more data</small><strong>{flow.needs_more_data}</strong></span><span><small>Handoffs</small><strong>{flow.handoffs}</strong></span></div>{stage === "stage2" && <p>Needs More Data reassessment time: <strong>{durationLabel(timing.average_needs_more_data_seconds)}</strong>.</p>}{stage === "stage3" && <p>Stage 2 handoff processing time: <strong>{durationLabel(timing.average_dispatch_seconds)}</strong> · {timing.handoffs} handoffs.</p>}</article>; })}</div>
     </>}
   </section>;

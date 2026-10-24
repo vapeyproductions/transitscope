@@ -446,19 +446,11 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .motion-dot.error { background: var(--red); box-shadow: 0 0 7px rgba(255, 117, 117, 0.5); }
 .motion-field-empty { color: var(--faint); font-size: 9px; left: 50%; position: absolute; top: 50%; transform: translate(-50%, -50%); white-space: nowrap; }
 .motion-lane-caption { color: var(--faint); font-size: 8px; line-height: 1.35; min-height: 25px; padding: 7px 3px 0; text-align: center; }
-.motion-transfer-layer { height: 100%; inset: 0; overflow: visible; pointer-events: none; position: absolute; width: 100%; z-index: 5; }
-.motion-transfer-dot { fill: var(--cyan); stroke: rgba(232, 240, 255, 0.9); stroke-width: 0.35; }
-.motion-transfer-dot.promising { fill: var(--green); }
-.motion-transfer-dot.needs-more-data { fill: var(--blue); }
-.motion-transfer-dot.inconclusive { fill: var(--gold); }
-.motion-transfer-dot.known-match { fill: var(--purple); }
-.motion-transfer-dot.error { fill: var(--red); }
 .pipeline-motion-footer { align-items: end; display: flex; gap: 16px; justify-content: space-between; margin-top: 9px; }
 .pipeline-motion-footer .pipeline-dot-legend { margin-top: 0; }
 .motion-scrubber { align-items: center; color: var(--muted); display: flex; flex: 0 1 310px; font-size: 9px; gap: 8px; }
 .motion-scrubber input { accent-color: var(--cyan); flex: 1; min-width: 90px; }
 .motion-scrubber small { color: var(--faint); white-space: nowrap; }
-.motion-path-note { align-items: center; color: var(--faint); display: flex; font-size: 8px; gap: 7px; line-height: 1.35; margin-top: 9px; }
 .timing-card-grid { display: grid; gap: 9px; grid-template-columns: repeat(3, 1fr); }
 .timing-card-heading { align-items: center; display: flex; justify-content: space-between; margin-bottom: 13px; }
 .timing-card-heading strong { font-size: 12px; }
