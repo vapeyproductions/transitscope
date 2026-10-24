@@ -538,9 +538,24 @@ def run_live_cycle(
         if stage2_queue_ready
         else []
     )
+    # Existing Stage 3 records still need maintenance even before the initial
+    # Stage 2 queue reaches its promotion threshold. This is intentionally
+    # separate from new Stage 2 -> Stage 3 promotion: it lets an older
+    # proof-of-life record pick up improved persistence/coverage behavior
+    # without opening the gate for new candidates prematurely.
+    stage3_existing_candidates = [
+        candidate
+        for candidate in active_candidates(store)
+        if candidate["current_stage"] == "stage3"
+    ]
     stage3_work: list[dict[str, Any]] = []
     seen_stage3: set[str] = set()
-    for candidate in stage2_candidates + stage3_retry_candidates + stage3_prime_candidates:
+    for candidate in (
+        stage2_candidates
+        + stage3_retry_candidates
+        + stage3_prime_candidates
+        + stage3_existing_candidates
+    ):
         if candidate["candidate_id"] not in seen_stage3:
             stage3_work.append(candidate)
             seen_stage3.add(candidate["candidate_id"])
