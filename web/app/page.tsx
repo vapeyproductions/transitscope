@@ -786,6 +786,8 @@ type MotionTransfer = {
   path: string;
   label: string;
   delay: number;
+  sourceX: number;
+  sourceY: number;
 };
 
 const motionLaneX: Record<AssessmentStage, number> = {
@@ -804,43 +806,58 @@ function motionTransferRoute(
   kind: string,
   sourceRank: number,
   destinationRank: number,
-): { path: string; label: string } {
+): { path: string; label: string; sourceX: number; sourceY: number } {
   const destinationX = motionLaneX[stage];
   const queueY = 62;
   const destinationY = motionRankY(destinationRank);
   if (stage === "stage1" && kind === "intake") {
+    const sourceX = 8;
+    const sourceY = queueY;
     return {
-      path: `M 8 ${queueY} L ${destinationX} ${queueY} L ${destinationX} ${destinationY}`,
+      path: `M 0 0 L ${destinationX - sourceX} 0 L ${destinationX - sourceX} ${destinationY - sourceY}`,
       label: `Candidate universe → Stage 1 queue → Stage 1 rank ${destinationRank}`,
+      sourceX,
+      sourceY,
     };
   }
   if (kind === "handoff") {
     const sourceStage = stage === "stage2" ? "Stage 1" : "Stage 2";
     const sourceX = stage === "stage2" ? motionLaneX.stage1 : motionLaneX.stage2;
+    const sourceY = motionRankY(sourceRank);
     return {
-      path: `M ${sourceX} ${motionRankY(sourceRank)} L ${sourceX} ${queueY} L ${destinationX} ${queueY} L ${destinationX} ${destinationY}`,
+      path: `M 0 0 L 0 ${queueY - sourceY} L ${destinationX - sourceX} ${queueY - sourceY} L ${destinationX - sourceX} ${destinationY - sourceY}`,
       label: `${sourceStage} rank ${sourceRank} → ${stageName(stage)} queue → ${stageName(stage)} rank ${destinationRank}`,
+      sourceX,
+      sourceY,
     };
   }
   if (kind === "reassessment") {
+    const sourceX = destinationX;
+    const sourceY = motionRankY(sourceRank);
     return {
-      path: `M ${destinationX} ${motionRankY(sourceRank)} L ${destinationX} ${queueY} L ${destinationX} ${destinationY}`,
+      path: `M 0 0 L 0 ${queueY - sourceY} L 0 ${destinationY - sourceY}`,
       label: `${stageName(stage)} rank ${sourceRank} → reassessment queue → rank ${destinationRank}`,
+      sourceX,
+      sourceY,
     };
   }
+  const sourceX = destinationX;
+  const sourceY = queueY;
   return {
-    path: `M ${destinationX} ${queueY} L ${destinationX} ${destinationY}`,
+    path: `M 0 0 L 0 ${destinationY - sourceY}`,
     label: `${stageName(stage)} queue → rank ${destinationRank}`,
+    sourceX,
+    sourceY,
   };
 }
 
-function MotionTransferLayer({ transfers }: { transfers: MotionTransfer[] }) {
+function MotionTransferLayer({ transfers, speed }: { transfers: MotionTransfer[]; speed: number }) {
+  const duration = 2.4 / speed;
   return <svg className="motion-transfer-layer" viewBox="0 0 100 325" preserveAspectRatio="none" aria-hidden="true">
     {transfers.map((transfer) => <g className={`motion-transfer motion-transfer-${transfer.kind}`} key={transfer.key}>
-      <circle className={`motion-transfer-dot ${monitoringDotClass(transfer.status)}`} opacity="0" r="1.5">
+      <circle className={`motion-transfer-dot ${monitoringDotClass(transfer.status)}`} cx={transfer.sourceX} cy={transfer.sourceY} r="1.5">
         <title>{transfer.label} · {transfer.status}</title>
-        <animateMotion dur="1.35s" begin={`${transfer.delay}s`} fill="freeze" path={transfer.path} repeatCount="1" />
-        <animate attributeName="opacity" begin={`${transfer.delay}s`} dur="1.35s" fill="freeze" keyTimes="0;0.08;0.86;1" values="0;1;1;0" />
+        <animateMotion dur={`${duration}s`} begin={`${transfer.delay / speed}s`} fill="freeze" path={transfer.path} repeatCount="1" />
       </circle>
     </g>)}
   </svg>;
@@ -864,14 +881,6 @@ function MonitoringCycleActivityPanel({ activity }: { activity: MonitoringCycleA
     setFrameIndex(0);
     setPlaying(runs.length > 1);
   }, [latestRunId, runs.length]);
-
-  useEffect(() => {
-    if (!playing || runs.length < 2) return;
-    const timer = window.setInterval(() => {
-      setFrameIndex((current) => Math.min(current + 1, runs.length - 1));
-    }, Math.max(650, 2200 / speed));
-    return () => window.clearInterval(timer);
-  }, [playing, runs.length, speed]);
 
   useEffect(() => {
     if (playing && frameIndex >= runs.length - 1) setPlaying(false);
@@ -945,21 +954,32 @@ function MonitoringCycleActivityPanel({ activity }: { activity: MonitoringCycleA
         status: event.queue_status ?? "New Job",
         path: route.path,
         label: route.label,
-        delay: (motionTransfers.length + stageIndex) * 1.6,
+        delay: motionTransfers.length * 2.65 + stageIndex * 0.08,
+        sourceX: route.sourceX,
+        sourceY: route.sourceY,
       });
     });
   });
+  const motionSequenceDurationMs = ((motionTransfers.length * 2.65) + 2.4) * 1000 / speed;
+
+  useEffect(() => {
+    if (!playing || runs.length < 2) return;
+    const timer = window.setTimeout(() => {
+      setFrameIndex((current) => Math.min(current + 1, runs.length - 1));
+    }, Math.max(2200, motionSequenceDurationMs));
+    return () => window.clearTimeout(timer);
+  }, [frame?.cycle_id, motionSequenceDurationMs, playing, runs.length]);
 
   return <section className="ops-section cycle-activity-section" aria-labelledby="cycle-activity-title">
     <div className="ops-section-heading"><div><p className="eyebrow">Live worker activity</p><h4 id="cycle-activity-title">Pipeline motion · last {activity.window_minutes} minutes</h4></div><span className="section-note">{activity.run_count} saved cycles · time flows left to right</span></div>
     {!runs.length ? <div className="ops-empty">No cycle history has been recorded in this deployment yet. The motion view will begin when the next worker cycle completes.</div> : <>
       <div className="cycle-summary-grid"><article className="cycle-summary-card"><span className="metric-label">Completed cycles</span><strong>{activity.run_count} / {activity.expected_runs}</strong><small>worker runs available to replay</small></article><article className="cycle-summary-card"><span className="metric-label">Candidates evaluated</span><strong>{evaluatedTotal.toLocaleString()}</strong><small>across all stages · {numberLabel(evaluatedTotal / Math.max(1, activity.window_minutes), 2)} per minute</small></article><article className="cycle-summary-card"><span className="metric-label">Needs more data</span><strong>{needsTotal.toLocaleString()}</strong><small>reassessments or new evaluations</small></article><article className="cycle-summary-card"><span className="metric-label">Downstream handoffs</span><strong>{handoffTotal.toLocaleString()}</strong><small>Stage 3 calls in the window</small></article></div>
       <div className="pipeline-motion-shell">
-        <div className="pipeline-motion-toolbar"><div className="motion-intake-badge"><span className="motion-arrival-dot" />New candidate entering · {incomingCount.toLocaleString()} in this cycle</div><div className="motion-controls"><button className="button button-quiet" type="button" onClick={() => setPlaying((current) => !current)} disabled={runs.length < 2}>{playing ? "Ⅱ Pause" : "▶ Play"}</button><label><span>Speed</span><select aria-label="Motion replay speed" value={speed} onChange={(event) => setSpeed(Number(event.target.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select></label><span className="motion-time">{frameLabel}</span></div></div>
+        <div className="pipeline-motion-toolbar"><div className="motion-intake-badge">New candidate entering · {incomingCount.toLocaleString()} in this cycle</div><div className="motion-controls"><button className="button button-quiet" type="button" onClick={() => setPlaying((current) => !current)} disabled={runs.length < 2}>{playing ? "Ⅱ Pause" : "▶ Play"}</button><label><span>Speed</span><select aria-label="Motion replay speed" value={speed} onChange={(event) => setSpeed(Number(event.target.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select></label><span className="motion-time">{frameLabel}</span></div></div>
         <div className="pipeline-motion-track" aria-label="Candidate movement from universe through Stage 3">
-          <article className="motion-lane motion-universe-lane"><div className="motion-lane-title"><strong>Candidate universe</strong><small>{incomingCount.toLocaleString()} arrivals</small></div><div className="motion-universe-intake"><div className="motion-universe-source"><span>New targets</span><div className="motion-universe-dots">{Array.from({ length: incomingDots }, (_, index) => <span className="motion-dot neutral motion-arrival" key={`arrival-${frameIndex}-${index}`} style={{ animationDelay: `${index * -0.35}s` }} title="New candidate from target universe" />)}</div></div><span className="motion-universe-arrow" aria-hidden="true">→</span><span className="motion-universe-destination">Stage 1 queue</span></div><div className="motion-lane-caption">New targets enter Stage 1 only as downstream work opens a job.</div></article>
+          <article className="motion-lane motion-universe-lane"><div className="motion-lane-title"><strong>Candidate universe</strong><small>{incomingCount.toLocaleString()} arrivals</small></div><div className="motion-universe-intake"><div className="motion-universe-source"><span>New targets</span><div className="motion-universe-dots">{Array.from({ length: incomingDots }, (_, index) => <span className="motion-dot neutral" key={`arrival-${frameIndex}-${index}`} title="New candidate from target universe" />)}</div></div><span className="motion-universe-arrow" aria-hidden="true">→</span><span className="motion-universe-destination">Stage 1 queue</span></div><div className="motion-lane-caption">New targets enter Stage 1 only as downstream work opens a job.</div></article>
           {stages.map((stage) => { const dots = representativeDots(stage); const stacks = queueStacks(stage); const queueJobs = queueEventsFor(stage); const summary = frame?.stages[stage] ?? {}; const handoffs = stage === "stage3" ? currentStage2Handoffs : queueJobs.filter((job) => job.kind === "handoff").length; return <article className={`motion-lane motion-${stage}-lane`} key={stage}><div className="motion-lane-title"><strong>{stageName(stage)}</strong><small>{dots.length} ranked sample dots · {stageQueueTotal(stage).toLocaleString()} jobs</small></div><div className="motion-lane-queue"><span>Work queue</span><div className="motion-queue-stacks">{stacks.map((stack, stackIndex) => <div className="motion-queue-stack" key={`${stage}-stack-${stackIndex}`}>{stack.map((job, dotIndex) => <span className={`motion-dot ${monitoringDotClass(job.queue_status ?? "New Job")} motion-queue-job ${job.kind === "handoff" ? "motion-queue-handoff" : job.kind === "reassessment" ? "motion-queue-reassessment" : "motion-queue-intake"}`} key={`${stage}-${stackIndex}-${job.candidate_id ?? "job"}-${dotIndex}`} title={`${job.kind ?? "job"} · ${job.queue_status ?? "queued"}`} />)}</div>)}</div>{!queueJobs.length && <small className="motion-queue-empty">No jobs called in this cycle</small>}</div><div className="motion-lane-field"><div className="motion-rank-guide" aria-hidden="true"><span>higher rank</span><span>lower rank</span></div><div className="motion-ranked-dots">{dots.map((dot, index) => <span className={`motion-dot ${monitoringDotClass(dot.status)}`} key={`${stage}-${dot.status}-${dot.rank}-${index}`} style={{ animationDelay: `${(index % 9) * -0.27}s` }} title={`Rank ${dot.rank} · ${dot.status} · representative of ${stageName(stage)} ranking`} />)}{!dots.length && <span className="motion-field-empty">No ranked candidates</span>}</div></div><div className="motion-lane-caption">{handoffs ? `${handoffs} candidate${handoffs === 1 ? "" : "s"} called downstream this cycle.` : stage === "stage3" ? "Reassess Needs More Data in rank order." : summary.evaluated ? "Rankings updated; no downstream job was called." : "Waiting for a downstream call."}</div></article>; })}
-          <MotionTransferLayer transfers={motionTransfers} />
+          <MotionTransferLayer transfers={motionTransfers} speed={speed} />
         </div>
         <div className="pipeline-motion-footer"><div className="pipeline-dot-legend"><span><i className="pipeline-dot promising" />Promising</span><span><i className="pipeline-dot needs-more-data" />Needs more data</span><span><i className="pipeline-dot inconclusive" />Inconclusive</span><span><i className="pipeline-dot known-match" />Known</span></div><label className="motion-scrubber"><span>Replay position</span><input aria-label="Pipeline motion replay position" type="range" min={0} max={Math.max(0, runs.length - 1)} value={frameIndex} onChange={(event) => { setFrameIndex(Number(event.target.value)); setPlaying(false); }} /><small>{frameIndex + 1} / {runs.length}</small></label></div>
         <div className="motion-path-note">Each colored dot is one saved job moving from its source rank, through the work queue, and into its destination ranking.</div>
