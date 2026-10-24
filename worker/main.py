@@ -112,14 +112,14 @@ def main() -> None:
                 result = run_live_cycle(
                     data_dir=data_dir,
                     manifest_path=manifest_path,
-                    batch_size=int(os.getenv("STAGE1_BATCH_SIZE", "4")),
-                    max_workers=int(os.getenv("STAGE1_MAX_WORKERS", "1")),
+                    batch_size=int(os.getenv("STAGE1_BATCH_SIZE", "16")),
+                    max_workers=int(os.getenv("STAGE1_MAX_WORKERS", "4")),
                     top_n=int(os.getenv("TOP_N_DISPLAY", "500")),
-                    stage_capacity=int(os.getenv("STAGE2_CAPACITY", "100")),
+                    stage_capacity=int(os.getenv("STAGE2_CAPACITY", "25")),
                     max_history_sectors=int(os.getenv("MAX_HISTORY_SECTORS", "8")),
-                    stage1_pool_size=int(os.getenv("STAGE1_POOL_SIZE", "2000")),
-                    stage2_capacity=int(os.getenv("STAGE2_CAPACITY", "100")),
-                    stage3_capacity=int(os.getenv("STAGE3_CAPACITY", "25")),
+                    stage1_pool_size=int(os.getenv("STAGE1_POOL_SIZE", "500")),
+                    stage2_capacity=int(os.getenv("STAGE2_CAPACITY", "25")),
+                    stage3_capacity=int(os.getenv("STAGE3_CAPACITY", "6")),
                     status_callback=lambda state, details: write_status(data_dir, state, details),
                 )
                 write_status(data_dir, "idle", {"last_cycle": result})
@@ -127,7 +127,7 @@ def main() -> None:
                 write_status(data_dir, "error", {"error": repr(exc)})
                 time.sleep(float(os.getenv("WORKER_ERROR_RETRY_SECONDS", "30")))
                 continue
-            time.sleep(float(os.getenv("LIVE_POLL_SECONDS", str(heartbeat_seconds))))
+            time.sleep(float(os.getenv("LIVE_POLL_SECONDS", "300")))
         write_status(data_dir, "stopped")
         return
 

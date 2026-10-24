@@ -396,9 +396,9 @@ def run_live_cycle(
     top_n: int,
     stage_capacity: int | None = None,
     max_history_sectors: int,
-    stage1_pool_size: int = 2000,
+    stage1_pool_size: int = 500,
     stage2_capacity: int | None = None,
-    stage3_capacity: int = 25,
+    stage3_capacity: int = 6,
     status_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run one bounded archive poll and publish only changed pipeline state."""
@@ -408,7 +408,7 @@ def run_live_cycle(
     paths = DataPaths(data_dir)
     store = DuckDBStore(paths.database)
     store.initialize()
-    promotion_capacity = stage2_capacity or stage_capacity or 100
+    promotion_capacity = stage2_capacity or stage_capacity or 25
 
     def fill_stage1() -> dict[str, Any]:
         stage1 = [

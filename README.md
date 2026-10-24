@@ -19,7 +19,7 @@ The compose worker is intentionally paused by default with `RUN_LIVE_PIPELINE=fa
 
 ## ML operations and eventual deployment
 
-The `ML Ops` tab is a read-only control-plane view for the system that will run the long-lived search. It reports the configured 2,000-target Stage 1 pool, progress through the 126,000-target manifest, occupied Stage 1/2/3 slots, status counts, model versions and aggregate metrics, MAST/catalog provider health, archive coverage watermarks, recent batches/events, selection buckets, and 10-degree sky-cell outcome signals. Sampling signals are descriptive until adaptive replacement sampling is explicitly enabled.
+The `ML Ops` tab is a read-only control-plane view for the system that will run the long-lived search. It reports the configured 500-target Stage 1 pool, progress through the 126,000-target manifest, occupied Stage 1/2/3 slots, status counts, model versions and aggregate metrics, MAST/catalog provider health, archive coverage watermarks, recent batches/events, selection buckets, and 10-degree sky-cell outcome signals. Sampling signals are descriptive until adaptive replacement sampling is explicitly enabled.
 
 For a public always-updating launch, keep the responsibilities separate even if they are deployed from one repository:
 
@@ -66,11 +66,13 @@ Run a bounded batch and resume it later from its DuckDB checkpoint:
 
 ```bash
 docker compose run --rm worker python run_stage1_batch.py \
-  --batch-size 4 \
-  --max-workers 1
+  --batch-size 16 \
+  --max-workers 4
 ```
 
-The live Docker worker uses a 2,000-target Stage 1 processing pool, bounded CPU parallelism, checkpointing, and an unprocessed-manifest replacement queue. It displays the top 500 rows per ranking through 100-row pages. Stage 2 and Stage 3 use independent promotion windows of 100 and 25 by default. Only `Promising` candidates advance; `Inconclusive` candidates remain visible in history but release their processing slot; `Needs More Data` holds its slot until an unexamined archive/live window is available; and known matches are removed from active views while remaining in replay history. Each published change saves ranking snapshots.
+The live Docker worker uses a 500-target Stage 1 processing pool, bounded CPU parallelism, checkpointing, and an unprocessed-manifest replacement queue. It displays the top 500 rows per ranking through 100-row pages. Stage 2 and Stage 3 use independent promotion windows of 25 and 6 by default. Only `Promising` candidates advance; `Inconclusive` candidates remain visible in history but release their processing slot; `Needs More Data` holds its slot until an unexamined archive/live window is available; and known matches are removed from active views while remaining in replay history. Each published change saves ranking snapshots.
+
+The accelerated live profile evaluates up to 16 fresh Stage 1 targets per batch with four CPU workers and polls every five minutes. The live cycle can perform two Stage 1 fills when the pool has room, so the initial fill can reach roughly 32 fresh targets per five-minute cycle before provider latency, failures, and refresh work are included.
 
 ## Stage 2 historical validation
 

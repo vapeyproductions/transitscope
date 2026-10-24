@@ -25,14 +25,14 @@ def parse_args() -> argparse.Namespace:
             )
         ),
     )
-    parser.add_argument("--batch-size", type=int, default=int(os.getenv("STAGE1_BATCH_SIZE", "4")))
+    parser.add_argument("--batch-size", type=int, default=int(os.getenv("STAGE1_BATCH_SIZE", "16")))
     parser.add_argument(
         "--max-workers",
         type=int,
-        default=int(os.getenv("STAGE1_MAX_WORKERS", "1")),
+        default=int(os.getenv("STAGE1_MAX_WORKERS", "4")),
     )
     parser.add_argument("--top-n", type=int, default=int(os.getenv("TOP_N_DISPLAY", "100")))
-    parser.add_argument("--stage-capacity", type=int, default=int(os.getenv("STAGE1_CAPACITY", "100")))
+    parser.add_argument("--stage-capacity", type=int, default=int(os.getenv("STAGE1_CAPACITY", "25")))
     parser.add_argument(
         "--retire-candidate",
         action="append",

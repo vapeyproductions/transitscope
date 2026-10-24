@@ -852,9 +852,9 @@ class ReadOnlyStore:
         }
         configured_universe = int(os.getenv("TARGET_UNIVERSE_SIZE", "126000"))
         stage_capacities = {
-            "stage1": int(os.getenv("STAGE1_POOL_SIZE", "2000")),
-            "stage2": int(os.getenv("STAGE2_CAPACITY", "100")),
-            "stage3": int(os.getenv("STAGE3_CAPACITY", "25")),
+            "stage1": int(os.getenv("STAGE1_POOL_SIZE", "500")),
+            "stage2": int(os.getenv("STAGE2_CAPACITY", "25")),
+            "stage3": int(os.getenv("STAGE3_CAPACITY", "6")),
         }
         empty = {
             "generated_at": datetime.utcnow().isoformat() + "Z",

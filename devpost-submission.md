@@ -59,7 +59,7 @@ The planning artifacts are included in `docs/hackathon-build/`.
 - Overall, Stage 1, Stage 2, and Stage 3 ranking APIs and dashboard tabs.
 - Persisted replay metadata, snapshots, and events with independent tab playheads.
 - Candidate modal with light curve, stage-specific metrics, current activity, next action, and pipeline history.
-- Live queue policy with a 2,000-target Stage 1 processing pool, status-gated promotion, separate Stage 2/3 capacities, and same-cycle replacement sampling.
+- Live queue policy with a 500-target Stage 1 processing pool, status-gated promotion, separate Stage 2/3 capacities, and same-cycle replacement sampling.
 - Top-500 ranking display with 100-row pagination, coverage watermarks, unchanged-input deduplication, and Stage 3 `Prime Candidate` labeling.
 - Honest loading, empty, unavailable, and provisional-evidence states.
 

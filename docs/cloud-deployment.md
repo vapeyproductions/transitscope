@@ -27,7 +27,7 @@ RUN_LIVE_PIPELINE=false
 ```
 
 In this state the service writes a heartbeat but does not download MAST data,
-run models, populate the 2,000-target Stage 1 pool, or advance the queue. Do
+run models, populate the 500-target Stage 1 pool, or advance the queue. Do
 not change this variable until the API, volume, provider limits, and dashboard
 have been checked in the cloud.
 
@@ -80,10 +80,11 @@ The first live run should be enabled as a controlled deployment change:
 RUN_LIVE_PIPELINE=true
 ```
 
-Start with `STAGE1_MAX_WORKERS=1` and the existing 2,000-target pool. Watch the
-ML Ops dashboard, provider health, data volume, and worker heartbeat before
-increasing concurrency. The pipeline is expected to run over days, not finish
-in a request or a single build.
+Use the bounded acceleration profile of `STAGE1_BATCH_SIZE=16`,
+`STAGE1_MAX_WORKERS=4`, `LIVE_POLL_SECONDS=300`, and a 500-target Stage 1 pool.
+Watch the ML Ops dashboard, provider health, data volume, and worker heartbeat
+before increasing concurrency. The initial pool should fill over hours, not
+finish in a request or a single build.
 
 ## Follow-up scaling work
 
