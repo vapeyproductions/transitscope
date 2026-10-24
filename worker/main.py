@@ -113,6 +113,60 @@ def candidate_status_summary(store: DuckDBStore, candidate_ids: list[object]) ->
     return result_summary([{"status": row[0]} for row in rows])
 
 
+def candidate_cycle_events(store: DuckDBStore, candidate_ids: list[object]) -> list[dict[str, object]]:
+    """Return one event per Stage 1 candidate evaluated in this cycle.
+
+    Cycle telemetry is intentionally compact, but the ML Ops view benefits from
+    seeing the individual work items as dots. The candidate state is read after
+    the publish boundary, so the event reflects the status that was produced
+    by the Stage 1 evaluation.
+    """
+
+    normalized_ids = list(dict.fromkeys(str(candidate_id) for candidate_id in candidate_ids if candidate_id))
+    if not normalized_ids:
+        return []
+    placeholders = ", ".join("?" for _ in normalized_ids)
+    with store.connect() as connection:
+        rows = connection.execute(
+            f"SELECT candidate_id, status FROM candidates WHERE candidate_id IN ({placeholders})",
+            normalized_ids,
+        ).fetchall()
+    statuses = {str(row[0]): str(row[1] or "unknown") for row in rows}
+    return [
+        {
+            "candidate_id": candidate_id,
+            "stage": "stage1",
+            "status": statuses.get(candidate_id, "unknown"),
+            "kind": "evaluation",
+        }
+        for candidate_id in normalized_ids
+    ]
+
+
+def result_cycle_events(stage: str, results: object) -> list[dict[str, object]]:
+    """Normalize per-candidate stage results for the ML Ops dot timeline."""
+
+    if not isinstance(results, list):
+        return []
+    events: list[dict[str, object]] = []
+    for result in results:
+        if not isinstance(result, dict) or not result.get("candidate_id"):
+            continue
+        event: dict[str, object] = {
+            "candidate_id": str(result["candidate_id"]),
+            "stage": stage,
+            "status": str(result.get("status") or "unknown"),
+            "kind": "evaluation",
+        }
+        if result.get("dispatch_source_candidate_id"):
+            event["kind"] = "handoff"
+            event["source_candidate_id"] = str(result["dispatch_source_candidate_id"])
+        elif stage == "stage3":
+            event["kind"] = "reassessment"
+        events.append(event)
+    return events
+
+
 def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -> dict:
     batch = result.get("batch") if isinstance(result.get("batch"), dict) else {}
     refresh = result.get("stage1_refresh") if isinstance(result.get("stage1_refresh"), dict) else {}
@@ -142,12 +196,16 @@ def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -
         "needs_more_data_seconds": round(float(timings.get("stage3_needs_more_data_seconds") or 0.0), 3),
         "dispatch_seconds": round(float(timings.get("stage3_dispatch_seconds") or 0.0), 3),
     })
+    events = candidate_cycle_events(store, stage1_candidate_ids)
+    events.extend(result_cycle_events("stage2", result.get("stage2")))
+    events.extend(result_cycle_events("stage3", stage3_results))
     return {
         "stage1": stage1_summary,
         "stage2": stage2_summary,
         "stage3": stage3_summary,
         "timings": {key: round(float(value), 3) for key, value in timings.items()},
         "queue": queue_snapshot(store),
+        "events": events,
         "stage3_reassessment": result.get("stage3_reassessment", {}),
         "stage3_intake": result.get("stage3_intake", {}),
     }

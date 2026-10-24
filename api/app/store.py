@@ -1594,6 +1594,9 @@ class ReadOnlyStore:
             queue = payload.get("queue", {})
             if not isinstance(queue, dict):
                 queue = {}
+            events = payload.get("events", [])
+            if not isinstance(events, list):
+                events = []
             runs.append(
                 {
                     "cycle_id": row[0],
@@ -1603,6 +1606,7 @@ class ReadOnlyStore:
                     "duration_seconds": round(float(row[4] or 0.0), 2),
                     "stages": stages,
                     "queue": queue,
+                    "events": [event for event in events if isinstance(event, dict)],
                     "stage3_reassessment": payload.get("stage3_reassessment", {}),
                     "stage3_intake": payload.get("stage3_intake", {}),
                 }

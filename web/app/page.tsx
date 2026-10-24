@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
@@ -266,6 +266,14 @@ type MonitoringCycleStage = {
   dispatch_seconds?: number;
 };
 
+type MonitoringCycleEvent = {
+  candidate_id?: string;
+  stage?: string;
+  status?: string;
+  kind?: string;
+  source_candidate_id?: string;
+};
+
 type MonitoringCycle = {
   cycle_id: string;
   started_at: string;
@@ -274,6 +282,7 @@ type MonitoringCycle = {
   duration_seconds: number;
   stages: Record<string, MonitoringCycleStage>;
   queue: Record<string, Record<string, number>>;
+  events?: MonitoringCycleEvent[];
 };
 
 type MonitoringCycleActivity = {
@@ -744,6 +753,15 @@ function monitoringStatusLabel(status: string): string {
   return status;
 }
 
+function monitoringDotClass(status: string | undefined): string {
+  if (status === "Promising") return "promising";
+  if (status === "Needs More Data") return "needs-more-data";
+  if (status === "Inconclusive") return "inconclusive";
+  if (status === "Known Match") return "known-match";
+  if (status === "error") return "error";
+  return "neutral";
+}
+
 function MonitoringCycleActivityPanel({ activity }: { activity: MonitoringCycleActivity }) {
   const runs = activity.runs ?? [];
   const stages: AssessmentStage[] = ["stage1", "stage2", "stage3"];
@@ -752,13 +770,43 @@ function MonitoringCycleActivityPanel({ activity }: { activity: MonitoringCycleA
   const handoffTotal = stages.reduce((total, stage) => total + (activity.throughput[stage]?.handoffs ?? 0), 0);
   const queueMax = Math.max(1, ...activity.queue.series.flatMap((point) => [point.stage1, point.stage2, point.stage3]));
   const countsFor = (stage: string) => activity.queue.current?.[stage] ?? {};
+  const maxDotsPerSlot = 12;
+  const eventStatuses = ["Promising", "Needs More Data", "Inconclusive", "Known Match", "error"];
+  const summaryKeys: Record<string, keyof MonitoringCycleStage> = {
+    Promising: "promising",
+    "Needs More Data": "needs_more_data",
+    Inconclusive: "inconclusive",
+    "Known Match": "known_match",
+    error: "errors",
+  };
+  const eventsFor = (run: MonitoringCycle, stage: AssessmentStage): MonitoringCycleEvent[] => {
+    const events = (run.events ?? []).filter((event) => event.stage === stage);
+    if (events.length) return events;
+    const summary = run.stages[stage] ?? {};
+    const fallback: MonitoringCycleEvent[] = [];
+    for (const status of eventStatuses) {
+      const count = Number(summary[summaryKeys[status]] ?? 0);
+      for (let index = 0; index < Math.min(count, maxDotsPerSlot); index += 1) {
+        fallback.push({ stage, status, kind: "summary" });
+      }
+    }
+    return fallback;
+  };
+  const queueDotsFor = (stage: AssessmentStage) => {
+    const counts = countsFor(stage);
+    const entries = Object.entries(counts).filter(([, count]) => Number(count || 0) > 0);
+    const total = entries.reduce((sum, [, count]) => sum + Number(count || 0), 0);
+    const dots = entries.flatMap(([status, count]) => Array.from({ length: Math.min(Number(count || 0), 18) }, (_, index) => ({ status, index })));
+    return { total, dots };
+  };
 
   return <section className="ops-section cycle-activity-section" aria-labelledby="cycle-activity-title">
     <div className="ops-section-heading"><div><p className="eyebrow">Live worker activity</p><h4 id="cycle-activity-title">Last {activity.expected_runs} runs · queue movement</h4></div><span className="section-note">{activity.run_count} completed in the last {activity.window_minutes} minutes · updates with the monitoring poll</span></div>
     {!runs.length ? <div className="ops-empty">No cycle history has been recorded in this deployment yet. The activity model will populate after the next worker cycle completes.</div> : <>
       <div className="cycle-summary-grid"><article className="cycle-summary-card"><span className="metric-label">Completed cycles</span><strong>{activity.run_count} / {activity.expected_runs}</strong><small>worker runs observed</small></article><article className="cycle-summary-card"><span className="metric-label">Candidates evaluated</span><strong>{evaluatedTotal.toLocaleString()}</strong><small>across all stages · {numberLabel(evaluatedTotal / Math.max(1, activity.window_minutes), 2)} per minute</small></article><article className="cycle-summary-card"><span className="metric-label">Needs more data</span><strong>{needsTotal.toLocaleString()}</strong><small>reassessments or new evaluations</small></article><article className="cycle-summary-card"><span className="metric-label">Downstream handoffs</span><strong>{handoffTotal.toLocaleString()}</strong><small>Stage 2 candidates called by Stage 3</small></article></div>
-      <div className="cycle-activity-scroll"><div className="cycle-activity-grid" style={{ gridTemplateColumns: "minmax(132px, 1.4fr) repeat(" + runs.length + ", minmax(58px, 1fr))" }} role="table" aria-label="Worker activity by run"><div className="cycle-activity-corner" role="columnheader">Stage / run</div>{runs.map((run) => <div className="cycle-run-label" key={run.cycle_id} role="columnheader"><strong>{formatDate(run.finished_at)}</strong><small>{durationLabel(run.duration_seconds)}</small></div>)}{stages.map((stage) => <div className="cycle-row" key={stage} role="row"><div className="cycle-stage-label"><strong>{stageName(stage)}</strong><small>{activity.throughput[stage]?.evaluated ?? 0} assessed/hr</small></div>{runs.map((run) => { const summary = run.stages[stage] ?? {}; const work = Number(summary.evaluated ?? summary.attempted ?? 0); const needs = Number(summary.needs_more_data ?? 0); const known = Number(summary.known_match ?? 0); return <div className={work ? "cycle-cell has-work" : "cycle-cell no-work"} key={run.cycle_id + stage} role="cell"><strong>{work || "—"}</strong><small>{needs ? "+" + needs + " needs" : known ? known + " known" : summary.handoffs ? summary.handoffs + " handoff" : run.status === "error" ? "error" : "idle"}</small></div>; })}</div>)}</div></div>
-      <p className="cycle-activity-note">{activity.note}</p>
+      <div className="pipeline-dots-scroll"><div className="pipeline-dots-grid" style={{ gridTemplateColumns: `minmax(132px, 1.2fr) repeat(${runs.length}, minmax(62px, 1fr)) minmax(148px, 1.45fr)` }} role="table" aria-label="Candidate movement by worker cycle"><div className="pipeline-dots-corner" role="columnheader">Stage / cycle</div>{runs.map((run) => <div className="pipeline-run-label" key={run.cycle_id} role="columnheader"><strong>{formatDate(run.finished_at)}</strong><small>{durationLabel(run.duration_seconds)}</small></div>)}<div className="pipeline-queue-header" role="columnheader">Queued now</div>{stages.map((stage) => { const queue = queueDotsFor(stage); return <Fragment key={stage}><div className="pipeline-stage-label" role="rowheader"><strong>{stageName(stage)}</strong><small>{activity.throughput[stage]?.evaluated ?? 0} assessed · {queue.total.toLocaleString()} queued</small></div>{runs.map((run) => { const allEvents = eventsFor(run, stage); const visibleEvents = allEvents.slice(0, maxDotsPerSlot); const overflow = Math.max(0, allEvents.length - visibleEvents.length); return <div className="pipeline-dots-cell" key={run.cycle_id + stage} role="cell" aria-label={`${stageName(stage)} activity for ${formatDate(run.finished_at)}`}><div className="pipeline-dots">{visibleEvents.map((event, index) => <span className={`pipeline-dot ${monitoringDotClass(event.status)} ${event.kind === "handoff" ? "handoff" : ""}`} key={`${run.cycle_id}-${stage}-${event.candidate_id ?? "summary"}-${index}`} title={`${event.candidate_id ?? "Candidate event"} · ${event.status ?? "Unknown"}${event.kind === "handoff" ? " · Stage 3 handoff" : ""}`} aria-label={`${event.status ?? "Unknown"} candidate event`} />)}</div>{overflow > 0 && <small className="pipeline-dot-overflow">+{overflow}</small>}{!visibleEvents.length && <span className="pipeline-dot-empty">—</span>}</div>; })}<div className="pipeline-queue-cell" role="cell"><div className="pipeline-dots">{queue.dots.map(({ status, index }) => <span className={`pipeline-dot ${monitoringDotClass(status)}`} key={`${stage}-${status}-${index}`} title={`${status} · queued now`} />)}</div><strong>{queue.total.toLocaleString()}</strong>{queue.dots.length < queue.total && <small>+{(queue.total - queue.dots.length).toLocaleString()} more</small>}</div></Fragment>; })}</div></div>
+      <div className="pipeline-dot-legend"><span><i className="pipeline-dot promising" />Promising</span><span><i className="pipeline-dot needs-more-data" />Needs more data</span><span><i className="pipeline-dot inconclusive" />Inconclusive</span><span><i className="pipeline-dot known-match" />Known</span><span><i className="pipeline-dot handoff" />Stage 3 handoff</span></div>
+      <p className="cycle-activity-note">Each colored dot is a candidate event from one completed worker cycle. Newer cycles are farther right; the final column shows the current queued state. A ring around a dot marks a Stage 3 handoff.</p>
       <div className="timing-card-grid">{stages.map((stage) => { const timing = activity.timings[stage] ?? { average_cycle_seconds: null, average_needs_more_data_seconds: null, average_dispatch_seconds: null, handoffs: 0 }; const flow = activity.throughput[stage] ?? { evaluated: 0, promising: 0, needs_more_data: 0, inconclusive: 0, known_match: 0, handoffs: 0 }; return <article className="timing-card" key={stage}><div className="timing-card-heading"><strong>{stageName(stage)}</strong><span>{flow.evaluated.toLocaleString()} assessed</span></div><div className="timing-stat-row"><span><small>Avg stage time</small><strong>{durationLabel(timing.average_cycle_seconds)}</strong></span><span><small>Needs data time</small><strong>{durationLabel(timing.average_needs_more_data_seconds)}</strong></span></div><div className="timing-stat-row"><span><small>Promising</small><strong>{flow.promising}</strong></span><span><small>Inconclusive</small><strong>{flow.inconclusive}</strong></span></div><div className="timing-stat-row"><span><small>Needs more data</small><strong>{flow.needs_more_data}</strong></span><span><small>Handoffs</small><strong>{flow.handoffs}</strong></span></div>{stage === "stage2" && <p>Needs More Data reassessment time: <strong>{durationLabel(timing.average_needs_more_data_seconds)}</strong>.</p>}{stage === "stage3" && <p>Stage 2 handoff processing time: <strong>{durationLabel(timing.average_dispatch_seconds)}</strong> · {timing.handoffs} handoffs.</p>}</article>; })}</div>
       <div className="flow-monitor-grid"><section className="flow-panel"><div className="ops-section-heading"><div><p className="eyebrow">Queue shape</p><h5>Active candidates over the last hour</h5></div><span className="section-note">Each group is one completed cycle</span></div>{activity.queue.series.length ? <div className="queue-trend" aria-label="Active candidate queue trend">{activity.queue.series.map((point) => <div className="queue-trend-group" key={point.finished_at} title={formatDate(point.finished_at) + " · Stage 1 " + point.stage1 + ", Stage 2 " + point.stage2 + ", Stage 3 " + point.stage3}><span className="queue-bar stage1" style={{ height: Math.max(5, point.stage1 / queueMax * 100) + "%" }} /><span className="queue-bar stage2" style={{ height: Math.max(5, point.stage2 / queueMax * 100) + "%" }} /><span className="queue-bar stage3" style={{ height: Math.max(5, point.stage3 / queueMax * 100) + "%" }} /></div>)}</div> : <div className="ops-empty">Queue history will appear after the next cycle.</div>}<div className="queue-legend"><span><i className="queue-key stage1" />Stage 1</span><span><i className="queue-key stage2" />Stage 2</span><span><i className="queue-key stage3" />Stage 3</span></div></section><section className="flow-panel"><div className="ops-section-heading"><div><p className="eyebrow">Current backlog</p><h5>Where candidates are waiting now</h5></div></div><div className="backlog-list">{stages.map((stage) => { const counts = countsFor(stage); const total = Object.values(counts).reduce((sum, count) => sum + Number(count || 0), 0); return <div className="backlog-row" key={stage}><strong>{stageName(stage)}</strong><span>{total.toLocaleString()} total</span><small>{counts["Promising"] ?? 0} promising · {counts["Needs More Data"] ?? 0} needs data · {counts["Inconclusive"] ?? 0} inconclusive</small></div>; })}</div></section></div>
     </>}
