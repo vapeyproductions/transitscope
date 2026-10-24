@@ -402,6 +402,51 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .pipeline-dot-legend { align-items: center; color: var(--muted); display: flex; flex-wrap: wrap; font-size: 9px; gap: 13px; margin-top: 10px; }
 .pipeline-dot-legend span { align-items: center; display: inline-flex; gap: 6px; }
 .pipeline-dot-legend .pipeline-dot { height: 7px; width: 7px; }
+.pipeline-motion-shell { background: radial-gradient(circle at 75% 10%, rgba(118, 228, 237, 0.08), transparent 32%), rgba(3, 8, 17, 0.28); border: 1px solid rgba(118, 228, 237, 0.16); border-radius: 11px; overflow: hidden; padding: 14px; }
+.pipeline-motion-toolbar { align-items: center; display: flex; gap: 12px; justify-content: space-between; margin-bottom: 14px; }
+.motion-intake-badge { align-items: center; color: var(--cyan); display: inline-flex; font-size: 10px; gap: 7px; }
+.motion-arrival-dot { animation: motion-arrival-pulse 1.7s ease-in-out infinite; background: var(--cyan); border-radius: 50%; box-shadow: 0 0 12px rgba(118, 228, 237, 0.72); display: inline-block; height: 8px; width: 8px; }
+.motion-controls { align-items: center; display: flex; gap: 8px; }
+.motion-controls .button { font-size: 10px; padding: 7px 10px; }
+.motion-controls label { align-items: center; color: var(--muted); display: inline-flex; font-size: 9px; gap: 5px; }
+.motion-controls select { background: rgba(255, 255, 255, 0.06); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 9px; padding: 5px 6px; }
+.motion-time { color: var(--faint); font-size: 9px; white-space: nowrap; }
+.pipeline-motion-track { display: grid; gap: 8px; grid-template-columns: repeat(4, minmax(0, 1fr)); min-height: 325px; }
+.motion-lane { min-width: 0; position: relative; }
+.motion-lane:not(:last-child)::after { animation: motion-arrow-pulse 2.2s ease-in-out infinite; color: var(--cyan); content: "→"; font-size: 20px; opacity: 0.72; position: absolute; right: -13px; top: 43%; z-index: 2; }
+.motion-lane-title { align-items: baseline; display: flex; gap: 6px; justify-content: space-between; min-height: 26px; }
+.motion-lane-title strong { font-size: 11px; }
+.motion-lane-title small { color: var(--muted); font-size: 8px; text-align: right; }
+.motion-lane-queue { background: rgba(255, 255, 255, 0.045); border: 1px solid rgba(146, 169, 205, 0.14); border-radius: 7px 7px 0 0; min-height: 65px; padding: 7px; }
+.motion-lane-queue > span { color: var(--faint); display: block; font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; }
+.motion-queue-stacks { align-items: end; display: flex; gap: 5px; height: 39px; justify-content: center; margin-top: 4px; }
+.motion-queue-stack { align-items: center; display: flex; flex-direction: column-reverse; gap: 3px; justify-content: flex-start; min-height: 12px; }
+.motion-lane-field { background: rgba(7, 14, 27, 0.78); border: 1px solid rgba(146, 169, 205, 0.14); border-top: 0; height: 178px; overflow: hidden; position: relative; }
+.motion-lane-field::before { background: linear-gradient(90deg, transparent 49%, rgba(118, 228, 237, 0.055) 50%, transparent 51%), linear-gradient(0deg, transparent 49%, rgba(118, 228, 237, 0.045) 50%, transparent 51%); background-size: 50% 50%; content: ""; inset: 0; opacity: 0.5; pointer-events: none; position: absolute; }
+.motion-universe-field { background: linear-gradient(160deg, rgba(118, 228, 237, 0.08), rgba(7, 14, 27, 0.78) 58%); }
+.motion-universe-label { color: var(--muted); font-size: 9px; left: 9px; position: absolute; top: 9px; z-index: 1; }
+.motion-dot { border: 1px solid transparent; border-radius: 50%; display: inline-block; height: 7px; position: relative; width: 7px; z-index: 1; }
+.motion-lane-field > .motion-dot { animation: motion-float 3.8s ease-in-out infinite; position: absolute; }
+.motion-dot.promising { background: var(--green); box-shadow: 0 0 7px rgba(116, 214, 172, 0.56); }
+.motion-dot.needs-more-data { background: var(--blue); box-shadow: 0 0 7px rgba(119, 168, 255, 0.5); }
+.motion-dot.inconclusive { background: var(--gold); box-shadow: 0 0 7px rgba(239, 190, 93, 0.48); }
+.motion-dot.known-match { background: var(--purple); box-shadow: 0 0 7px rgba(168, 148, 255, 0.46); }
+.motion-dot.neutral { background: var(--cyan); box-shadow: 0 0 7px rgba(118, 228, 237, 0.5); }
+.motion-dot.error { background: var(--red); box-shadow: 0 0 7px rgba(255, 117, 117, 0.5); }
+.motion-dot.motion-moving { animation: motion-swoop 2.1s ease-in-out infinite; border-color: var(--cyan); }
+.motion-dot.motion-arrival { animation: motion-drop 2.2s ease-in-out infinite; }
+.motion-field-empty { color: var(--faint); font-size: 9px; left: 50%; position: absolute; top: 50%; transform: translate(-50%, -50%); white-space: nowrap; }
+.motion-lane-caption { color: var(--faint); font-size: 8px; line-height: 1.35; min-height: 25px; padding: 7px 3px 0; text-align: center; }
+.pipeline-motion-footer { align-items: end; display: flex; gap: 16px; justify-content: space-between; margin-top: 9px; }
+.pipeline-motion-footer .pipeline-dot-legend { margin-top: 0; }
+.motion-scrubber { align-items: center; color: var(--muted); display: flex; flex: 0 1 310px; font-size: 9px; gap: 8px; }
+.motion-scrubber input { accent-color: var(--cyan); flex: 1; min-width: 90px; }
+.motion-scrubber small { color: var(--faint); white-space: nowrap; }
+@keyframes motion-float { 0%, 100% { transform: translate3d(0, 2px, 0); } 50% { transform: translate3d(0, -4px, 0); } }
+@keyframes motion-drop { 0% { opacity: 0; transform: translate3d(12px, -32px, 0) scale(0.65); } 32%, 100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); } }
+@keyframes motion-swoop { 0%, 100% { transform: translate3d(0, 0, 0); } 35% { transform: translate3d(18px, -13px, 0) scale(1.25); } 70% { transform: translate3d(28px, -28px, 0) scale(0.85); } }
+@keyframes motion-arrival-pulse { 0%, 100% { opacity: 0.45; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.2); } }
+@keyframes motion-arrow-pulse { 0%, 100% { opacity: 0.35; transform: translateX(0); } 50% { opacity: 1; transform: translateX(4px); } }
 .timing-card-grid { display: grid; gap: 9px; grid-template-columns: repeat(3, 1fr); }
 .timing-card-heading { align-items: center; display: flex; justify-content: space-between; margin-bottom: 13px; }
 .timing-card-heading strong { font-size: 12px; }
@@ -448,6 +493,11 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
   .operations-opening-panel { grid-template-columns: 1fr; }
   .operations-status-rail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ops-mini-control { grid-column: 1 / -1; }
+  .pipeline-motion-shell { overflow-x: auto; }
+  .pipeline-motion-toolbar { align-items: flex-start; flex-direction: column; }
+  .pipeline-motion-track { grid-template-columns: repeat(4, minmax(170px, 1fr)); min-width: 720px; }
+  .pipeline-motion-footer { align-items: flex-start; flex-direction: column; }
+  .motion-scrubber { flex-basis: auto; width: 100%; }
   .stage-ops-grid, .model-registry, .provider-grid, .cycle-summary-grid, .timing-card-grid, .flow-monitor-grid { grid-template-columns: 1fr; }
   .ops-section-heading { align-items: flex-start; flex-direction: column; }
   .ops-section-heading .section-note { text-align: left; }
