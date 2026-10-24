@@ -901,7 +901,8 @@ export default function HomePage() {
   const processedCount = activeReplay.active ? displayRanking?.processed_target_count ?? 0 : status?.processed_target_count ?? ranking?.processed_target_count ?? 0;
   const targetCount = status?.total_target_count ?? ranking?.total_target_count ?? 126000;
   const totalStars = displayRanking?.total_star_count ?? new Set(rows.map((row) => row.target_id)).size;
-  const panelTitle = loading && !ranking && !activeReplay.active ? "Loading published state" : totalCandidates ? `Total candidates ${totalCandidates.toLocaleString()} · Total stars ${totalStars.toLocaleString()}` : "No candidates published yet";
+  const filterActive = activeTab === "overall" ? activeControls.stage !== null : activeControls.status !== null;
+  const panelTitle = loading && !ranking && !activeReplay.active ? "Loading published state" : totalCandidates ? `Total candidates ${totalCandidates.toLocaleString()} · Total stars ${totalStars.toLocaleString()}` : filterActive ? "No candidates match this filter" : "No candidates published yet";
   const remainingCount = Math.max(0, targetCount - processedCount);
   const activeCandidateCount = status?.active_candidate_count ?? rows.length;
   const footerState = status?.last_ingest_at ? `Last published: ${formatDate(status.last_ingest_at)}` : "Awaiting first publication";
