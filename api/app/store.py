@@ -1597,6 +1597,9 @@ class ReadOnlyStore:
             events = payload.get("events", [])
             if not isinstance(events, list):
                 events = []
+            ranked_samples = payload.get("ranked_samples", {})
+            if not isinstance(ranked_samples, dict):
+                ranked_samples = {}
             runs.append(
                 {
                     "cycle_id": row[0],
@@ -1606,6 +1609,11 @@ class ReadOnlyStore:
                     "duration_seconds": round(float(row[4] or 0.0), 2),
                     "stages": stages,
                     "queue": queue,
+                    "ranked_samples": {
+                        str(stage): [sample for sample in samples if isinstance(sample, dict)]
+                        for stage, samples in ranked_samples.items()
+                        if isinstance(samples, list)
+                    },
                     "events": [event for event in events if isinstance(event, dict)],
                     "stage3_reassessment": payload.get("stage3_reassessment", {}),
                     "stage3_intake": payload.get("stage3_intake", {}),

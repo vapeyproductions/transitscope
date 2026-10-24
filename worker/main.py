@@ -80,6 +80,33 @@ def queue_snapshot(store: DuckDBStore) -> dict[str, dict[str, int]]:
     return snapshot
 
 
+def ranked_queue_samples(store: DuckDBStore, limit: int = 42) -> dict[str, list[dict[str, object]]]:
+    """Capture a compact rank-ordered sample for the animated ML Ops view."""
+
+    samples: dict[str, list[dict[str, object]]] = {}
+    with store.connect() as connection:
+        for stage in ("stage1", "stage2", "stage3"):
+            rows = connection.execute(
+                """
+                SELECT candidate_id, status, rank_stage, stage_score
+                FROM candidates
+                WHERE active = true AND current_stage = ?
+                ORDER BY rank_stage NULLS LAST, stage_score DESC NULLS LAST, candidate_id ASC
+                LIMIT ?
+                """,
+                [stage, limit],
+            ).fetchall()
+            samples[stage] = [
+                {
+                    "candidate_id": str(row[0]),
+                    "status": str(row[1] or "unknown"),
+                    "rank": int(row[2]) if row[2] is not None else index + 1,
+                }
+                for index, row in enumerate(rows)
+            ]
+    return samples
+
+
 def result_summary(results: list[dict] | None) -> dict[str, object]:
     items = results or []
     counts: dict[str, int] = {}
@@ -205,6 +232,7 @@ def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -
         "stage3": stage3_summary,
         "timings": {key: round(float(value), 3) for key, value in timings.items()},
         "queue": queue_snapshot(store),
+        "ranked_samples": ranked_queue_samples(store),
         "events": events,
         "stage3_reassessment": result.get("stage3_reassessment", {}),
         "stage3_intake": result.get("stage3_intake", {}),
