@@ -100,8 +100,8 @@ class DuckDBStore:
                 """
                 UPDATE candidates
                 SET processing_slot_occupied = CASE
-                    WHEN active = false OR status IN ('Inconclusive', 'Known Match') THEN false
-                    WHEN signal_resolution = 'pending_alias_review' THEN false
+                    WHEN active = false OR status IN ('Inconclusive', 'Known Match', 'Duplicate Signal') THEN false
+                    WHEN signal_resolution IN ('pending_alias_review', 'pending_independence_review', 'duplicate_signal') THEN false
                     ELSE true
                 END
                 """
@@ -112,14 +112,15 @@ class DuckDBStore:
                 SET signal_group_id = COALESCE(signal_group_id, candidate_id),
                     signal_resolution = COALESCE(signal_resolution, 'independent'),
                     promotion_eligible = CASE
-                        WHEN active = false OR status IN ('Inconclusive', 'Known Match') THEN false
-                        WHEN signal_resolution = 'pending_alias_review' THEN false
+                        WHEN active = false OR status IN ('Inconclusive', 'Known Match', 'Duplicate Signal') THEN false
+                        WHEN signal_resolution IN ('pending_alias_review', 'pending_independence_review', 'duplicate_signal') THEN false
                         ELSE COALESCE(promotion_eligible, true)
                     END
                 WHERE signal_group_id IS NULL
                    OR signal_resolution IS NULL
                    OR promotion_eligible IS NULL
-                   OR status IN ('Inconclusive', 'Known Match')
+                   OR status IN ('Inconclusive', 'Known Match', 'Duplicate Signal')
+                   OR signal_resolution IN ('pending_alias_review', 'pending_independence_review', 'duplicate_signal')
                 """
             )
 

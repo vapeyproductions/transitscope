@@ -137,7 +137,6 @@ def main() -> None:
                     top_n=int(os.getenv("TOP_N_DISPLAY", "500")),
                     stage1_threshold=int(os.getenv("STAGE1_PROMOTION_THRESHOLD", "100")),
                     stage2_threshold=int(os.getenv("STAGE2_PROMOTION_THRESHOLD", "25")),
-                    stage3_threshold=int(os.getenv("STAGE3_REASSESSMENT_THRESHOLD", "6")),
                     max_history_sectors=int(os.getenv("MAX_HISTORY_SECTORS", "8")),
                     stage1_pool_size=int(os.getenv("STAGE1_POOL_SIZE", "500")),
                     status_callback=lambda state, details: write_status(data_dir, state, details),

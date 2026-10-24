@@ -316,21 +316,21 @@ Every selection records its policy and weights. The policy has an exploration fl
 
 | Status | Meaning | Processing behavior |
 | --- | --- | --- |
-| Promising | Current evidence is strong enough for the candidate's stage | Highest operational priority; can be selected when it enters that stage's top-X priority threshold |
-| Needs More Data | Evidence is insufficient or delayed | Remains active, ranks above `Inconclusive`, and triggers targeted historical backfill when it enters the top-X priority threshold; it does not advance on rank alone |
+| Promising | Current evidence is strong enough for the candidate's stage | Highest operational priority; Stage 1/2 can select it inside their top-X window, while Stage 3 calls it after a prior Stage 3 result resolves |
+| Needs More Data | Evidence is insufficient or delayed | Remains active, ranks above `Inconclusive`, and triggers targeted historical backfill inside the Stage 1/2 top-X windows or through the ranked Stage 3 reassessment queue; it does not advance on rank alone |
 | Inconclusive | Current evidence is sufficient but unresolved or not competitive | Remains in active comparative rankings and history, but is lower priority than `Needs More Data` and is not rerun unless new products change the input signature |
 | Known Match | Evidence maps to a known catalog object | Tombstoned from active rankings; mapping remains visible in replay and candidate history |
 
 ### 7.2 Top-X progression
 
-Each stage has a configurable priority threshold, for example `stage1_promotion_threshold`, `stage2_promotion_threshold`, and `stage3_reassessment_threshold`. A threshold is a ranking window, not a stage capacity. A candidate may advance when:
+Stage 1 and Stage 2 have configurable priority thresholds, for example `stage1_promotion_threshold` and `stage2_promotion_threshold`. A threshold is a ranking window, not a stage capacity. Stage 3 intentionally has no top-X threshold: it maintains a ranked reassessment queue of `Needs More Data` candidates and always selects the highest-ranked unresolved candidate first. A candidate may advance when:
 
 - it is `Promising`;
-- it is within the current priority threshold;
+- it is within the current Stage 1 or Stage 2 priority threshold, or is selected by the Stage 3 Needs More Data queue;
 - the previous stage has published a completed evaluation;
 - the next-stage worker calls for another candidate.
 
-If `Needs More Data` enters a stage's top-X threshold, the worker backfills the most useful missing historical windows and re-evaluates it. Status is part of the ranking policy, not an automatic promotion bypass: `Promising` ranks above `Needs More Data`, which ranks above `Inconclusive`, and evidence score breaks ties within each status. When Stage 2 calls for a Stage 3 candidate, it selects the highest-ranked eligible `Promising` signal from Stage 2. Stage 3 also uses its threshold to re-evaluate high-ranked `Promising` and `Needs More Data` candidates. Known matches leave active rankings, allowing lower-ranked candidates to move upward and become eligible; unresolved candidates remain visible until later evidence changes their status.
+If `Needs More Data` enters a Stage 1 or Stage 2 top-X threshold, the worker backfills the most useful missing historical windows and re-evaluates it. Stage 3 does this systematically for every unresolved candidate in rank order, without a top-X cutoff. Status is part of the ranking policy, not an automatic promotion bypass: `Promising` ranks above `Needs More Data`, which ranks above `Inconclusive`, and evidence score breaks ties within each status. When Stage 2 calls for a Stage 3 candidate, it selects the highest-ranked eligible `Promising` signal from Stage 2. When a Stage 3 candidate resolves as a Prime Candidate, Inconclusive, or Known Match, Stage 3 immediately calls the next eligible Stage 2 candidate. Known matches leave active rankings, allowing lower-ranked candidates to move upward and become eligible; unresolved candidates remain visible until later evidence changes their status.
 
 ### 7.3 Overall ranking
 
@@ -576,7 +576,7 @@ TARGET_UNIVERSE_SIZE=126000
 DISPLAY_TOP_N=100
 STAGE1_PROMOTION_THRESHOLD=100
 STAGE2_PROMOTION_THRESHOLD=25
-STAGE3_REASSESSMENT_THRESHOLD=6
+STAGE3_EVALUATIONS_PER_CYCLE=4
 BATCH_SIZE=<measured>
 MAST_PRODUCT_FAMILY=<probe-selected product family>
 STAGE2_LOOKBACK_DAYS=730

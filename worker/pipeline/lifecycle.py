@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from storage.duckdb_store import DuckDBStore
@@ -18,6 +19,7 @@ STATUS_PRIORITY = {
     "Needs More Data": 2,
     "Inconclusive": 1,
     "Known Match": 0,
+    "Duplicate Signal": 0,
 }
 
 
@@ -27,28 +29,17 @@ def release_alias_siblings(
     primary_candidate_id: str,
     outcome: str,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Release held sibling signals when their primary no longer advances.
+    """Keep siblings pending until they pass an explicit independence test.
 
-    A primary that is still Promising or Needs More Data keeps its siblings on
-    hold. Once it is Inconclusive or Known Match, each sibling is eligible for
-    independent review. No candidate is deleted by this transition.
+    This function name is retained for callers written before sibling
+    independence existed. A primary becoming Inconclusive or Known Match is
+    not evidence that a sibling is distinct, so it must never silently release
+    the sibling into the next stage. The priority resolver performs the actual
+    test when the sibling reaches the Stage 1 threshold.
     """
 
-    if outcome not in {"Inconclusive", "Known Match"}:
-        return [dict(candidate) for candidate in candidates], []
-    released: list[str] = []
-    updated: list[dict[str, Any]] = []
-    for candidate in candidates:
-        item = dict(candidate)
-        if item.get("alias_of_candidate_id") == primary_candidate_id and item.get("active", True):
-            item["alias_of_candidate_id"] = None
-            item["signal_resolution"] = "released_for_independent_review"
-            item["promotion_eligible"] = item.get("status") not in {"Inconclusive", "Known Match"}
-            item["processing_slot_occupied"] = item["promotion_eligible"]
-            item["activity"] = "Released for independent review"
-            released.append(str(item["candidate_id"]))
-        updated.append(item)
-    return updated, released
+    del primary_candidate_id, outcome
+    return [dict(candidate) for candidate in candidates], []
 
 
 def active_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
@@ -64,6 +55,25 @@ def active_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
                    promotion_eligible
             FROM candidates
             WHERE active = true
+            """
+        ).fetchall()
+    return [_candidate_row(row) for row in rows]
+
+
+def all_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
+    """Return active and historical candidate rows for lifecycle decisions."""
+
+    store.initialize()
+    with store.connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT candidate_id, target_id, current_stage, status,
+                   overall_score, stage_score, rank_overall, rank_stage,
+                   activity, rank_delta, movement_kind, last_evaluated_at,
+                   known_match_id, active, processing_slot_occupied,
+                   signal_group_id, signal_resolution, alias_of_candidate_id,
+                   promotion_eligible
+            FROM candidates
             """
         ).fetchall()
     return [_candidate_row(row) for row in rows]
@@ -158,10 +168,288 @@ def promotable_candidates(
         and candidate["promotion_eligible"]
         and candidate["rank_stage"] is not None
     ]
-    # The threshold applies to eligible candidates, not to held sibling rows.
-    # A pending alias remains visible in the ranking but is not eligible for
-    # the top-X handoff queue.
+    # The threshold applies to eligible candidates, not sibling rows waiting
+    # for their independent residual/holdout assessment. A pending sibling is
+    # visible only until that assessment is triggered.
     return sorted(rows, key=lambda candidate: (candidate["rank_stage"], candidate["candidate_id"]))[:threshold]
+
+
+def resolve_priority_aliases(
+    store: DuckDBStore,
+    *,
+    data_dir: Path,
+    threshold: int,
+    processed_target_count: int,
+) -> dict[str, Any]:
+    """Assess top-priority sibling signals and publish their lifecycle result.
+
+    Pending siblings remain visible only until they enter the Stage 1 priority
+    window. At that point they leave the active ranking while the independent
+    test runs. A passing sibling is reintroduced as an independent Stage 1
+    candidate; a failed sibling is retained only as historical evidence.
+    """
+
+    from pipeline.independence import (
+        MODEL_VERSION,
+        assess_candidate_from_store,
+        latest_independence_source,
+        latest_stage1_features,
+    )
+
+    if threshold < 1:
+        raise ValueError("threshold must be positive")
+
+    candidates = all_candidates(store)
+    candidate_by_id = {str(candidate["candidate_id"]): candidate for candidate in candidates}
+    work: list[dict[str, Any]] = []
+    for candidate in candidates:
+        resolution = str(candidate.get("signal_resolution") or "")
+        if candidate.get("current_stage") != "stage1":
+            continue
+        if resolution not in {"pending_alias_review", "pending_independence_review"}:
+            continue
+        if candidate.get("status") not in {"Promising", "Needs More Data"}:
+            continue
+        if resolution == "pending_alias_review":
+            if not candidate.get("active") or candidate.get("rank_stage") is None:
+                continue
+            if int(candidate["rank_stage"]) > threshold:
+                continue
+        else:
+            # An insufficient test is not rerun against the same normalized
+            # product. A later Stage 1 refresh can change that path and make
+            # the sibling eligible for another assessment.
+            features = latest_stage1_features(store, str(candidate["candidate_id"]))
+            source_path = str(features.get("normalized_path") or "")
+            if source_path and source_path == (latest_independence_source(store, str(candidate["candidate_id"])) or ""):
+                continue
+        work.append(candidate)
+
+    if not work:
+        return {"status": "idle", "assessed": 0, "passed": 0, "failed": 0, "needs_more_data": 0}
+
+    now = datetime.now(timezone.utc)
+    assessments: list[dict[str, Any]] = []
+    for candidate in work:
+        candidate_id = str(candidate["candidate_id"])
+        primary_id = str(candidate.get("alias_of_candidate_id") or "")
+        if not primary_id or primary_id not in candidate_by_id:
+            from pipeline.independence import IndependenceResult
+
+            result = IndependenceResult(
+                "Needs More Data",
+                0.0,
+                "insufficient",
+                {},
+                "The primary signal needed for residual comparison is not available yet.",
+            )
+            sibling_features = latest_stage1_features(store, candidate_id)
+            primary_features: dict[str, Any] = {}
+        else:
+            result, sibling_features, primary_features = assess_candidate_from_store(
+                store,
+                data_dir=data_dir,
+                sibling_candidate_id=candidate_id,
+                primary_candidate_id=primary_id,
+            )
+        assessments.append(
+            {
+                "candidate": candidate,
+                "primary_id": primary_id,
+                "result": result,
+                "sibling_features": sibling_features,
+                "primary_features": primary_features,
+                "evaluated_at": now,
+            }
+        )
+
+    updated_by_id = {str(candidate["candidate_id"]): dict(candidate) for candidate in candidates}
+    for assessment in assessments:
+        candidate = updated_by_id[str(assessment["candidate"]["candidate_id"])]
+        result = assessment["result"]
+        candidate["last_evaluated_at"] = assessment["evaluated_at"]
+        candidate["rank_delta"] = 0
+        candidate["movement_kind"] = "unchanged"
+        if result.status == "Promising":
+            candidate.update(
+                {
+                    "active": True,
+                    "status": "Promising",
+                    "activity": "Released for independent review",
+                    "signal_resolution": "released_for_independent_review",
+                    "alias_of_candidate_id": None,
+                    "promotion_eligible": True,
+                    "processing_slot_occupied": True,
+                }
+            )
+        elif result.status == "Duplicate Signal":
+            candidate.update(
+                {
+                    "active": False,
+                    "status": "Duplicate Signal",
+                    "activity": "Excluded as duplicate signal",
+                    "signal_resolution": "duplicate_signal",
+                    "promotion_eligible": False,
+                    "processing_slot_occupied": False,
+                    "rank_overall": None,
+                    "rank_stage": None,
+                }
+            )
+        else:
+            candidate.update(
+                {
+                    "active": False,
+                    "status": "Needs More Data",
+                    "activity": "Awaiting more data for independence test",
+                    "signal_resolution": "pending_independence_review",
+                    "promotion_eligible": False,
+                    "processing_slot_occupied": False,
+                    "rank_overall": None,
+                    "rank_stage": None,
+                }
+            )
+
+    updated_candidates = list(updated_by_id.values())
+    active_after = [candidate for candidate in updated_candidates if candidate.get("active")]
+    overall_pool = sorted(active_after, key=overall_sort_key)
+    stage1_pool = _sort_pool(
+        [candidate for candidate in active_after if candidate.get("current_stage") == "stage1"],
+        score_key="stage_score",
+    )
+    overall_ranks = {candidate["candidate_id"]: index for index, candidate in enumerate(overall_pool, 1)}
+    stage1_ranks = {candidate["candidate_id"]: index for index, candidate in enumerate(stage1_pool, 1)}
+    previous_by_id = {str(candidate["candidate_id"]): candidate for candidate in candidates}
+    candidate_updates: list[dict[str, Any]] = []
+    for candidate in updated_candidates:
+        candidate_id = str(candidate["candidate_id"])
+        if candidate.get("active"):
+            new_overall_rank = overall_ranks[candidate_id]
+            new_stage_rank = stage1_ranks.get(candidate_id, candidate.get("rank_stage"))
+            old_rank = previous_by_id[candidate_id].get("rank_overall")
+            rank_delta, movement = movement_for_ranks(old_rank, new_overall_rank)
+            candidate["rank_overall"] = new_overall_rank
+            candidate["rank_stage"] = new_stage_rank
+            candidate["rank_delta"] = rank_delta
+            candidate["movement_kind"] = movement
+        elif candidate_id in {str(item["candidate"]["candidate_id"]) for item in assessments}:
+            candidate["rank_overall"] = None
+            candidate["rank_stage"] = None
+            candidate["rank_delta"] = -(previous_by_id[candidate_id].get("rank_overall") or 0)
+            candidate["movement_kind"] = "removed"
+        else:
+            continue
+        candidate_updates.append(
+            {
+                "candidate_id": candidate_id,
+                "current_stage": candidate["current_stage"],
+                "rank_overall": candidate.get("rank_overall"),
+                "rank_stage": candidate.get("rank_stage"),
+                "rank_delta": candidate.get("rank_delta", 0),
+                "movement_kind": candidate.get("movement_kind", "unchanged"),
+                "active": candidate.get("active", True),
+                "activity": candidate.get("activity", "No current activity"),
+                "status": candidate.get("status"),
+                "overall_score": candidate.get("overall_score"),
+                "stage_score": candidate.get("stage_score"),
+                "last_evaluated_at": candidate.get("last_evaluated_at"),
+                "known_match_id": candidate.get("known_match_id"),
+                "processing_slot_occupied": candidate.get("processing_slot_occupied"),
+                "signal_group_id": candidate.get("signal_group_id"),
+                "signal_resolution": candidate.get("signal_resolution"),
+                "alias_of_candidate_id": candidate.get("alias_of_candidate_id"),
+                "promotion_eligible": candidate.get("promotion_eligible"),
+            }
+        )
+
+    version = (store.latest_published_version() or 0) + 1
+    evaluations: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+    for assessment in assessments:
+        candidate = assessment["candidate"]
+        candidate_id = str(candidate["candidate_id"])
+        result = assessment["result"]
+        suffix = re.sub(r"[^a-zA-Z0-9]+", "", candidate_id)[-12:]
+        evaluations.append(
+            {
+                "evaluation_id": f"signal-independence-{candidate_id}-{version}",
+                "candidate_id": candidate_id,
+                "stage": "signal_independence",
+                "model_version": MODEL_VERSION,
+                "data_window_start": None,
+                "data_window_end": None,
+                "input_product_ids": [
+                    value
+                    for value in (
+                        assessment["sibling_features"].get("product_id")
+                        or assessment["sibling_features"].get("normalized_path"),
+                        f"primary:{assessment['primary_id']}",
+                    )
+                    if value
+                ],
+                "feature_json": {
+                    **result.metrics,
+                    "source_normalized_path": result.metrics.get("source_normalized_path"),
+                    "primary_candidate_id": assessment["primary_id"],
+                    "reason": result.reason,
+                },
+                "metric_json": result.metrics,
+                "classification": result.status,
+                "data_sufficiency": result.data_sufficiency,
+            }
+        )
+        events.append(
+            {
+                "event_id": f"signal-independence-{candidate_id}-{suffix}-{version}",
+                "sequence_number": version,
+                "candidate_id": candidate_id,
+                "stage": "stage1",
+                "event_type": "signal_independence_assessed",
+                "payload_json": {
+                    "classification": result.status,
+                    "score": result.score,
+                    "reason": result.reason,
+                    "primary_candidate_id": assessment["primary_id"],
+                    "signal_resolution": updated_by_id[candidate_id]["signal_resolution"],
+                    "metrics": result.metrics,
+                },
+                "occurred_at": assessment["evaluated_at"],
+                "model_run_id": f"signal-independence-{version}",
+            }
+        )
+
+    store.publish_batch(
+        version=version,
+        evaluations=evaluations,
+        events=events,
+        snapshots=[
+            {
+                "snapshot_id": f"stage1-independence-snapshot-{version}",
+                "view": "stage1",
+                "sequence_number": version,
+                "occurred_at": now,
+                "candidate_order_json": [candidate["candidate_id"] for candidate in stage1_pool],
+                "active_candidate_count": len(stage1_pool),
+                "processed_target_count": processed_target_count,
+            },
+            {
+                "snapshot_id": f"overall-independence-snapshot-{version}",
+                "view": "overall",
+                "sequence_number": version,
+                "occurred_at": now,
+                "candidate_order_json": [candidate["candidate_id"] for candidate in overall_pool],
+                "active_candidate_count": len(overall_pool),
+                "processed_target_count": processed_target_count,
+            },
+        ],
+        candidate_updates=candidate_updates,
+        note="Independent-signal validation for Stage 1 siblings",
+    )
+    counts = {
+        "passed": sum(assessment["result"].status == "Promising" for assessment in assessments),
+        "failed": sum(assessment["result"].status == "Duplicate Signal" for assessment in assessments),
+        "needs_more_data": sum(assessment["result"].status == "Needs More Data" for assessment in assessments),
+    }
+    return {"status": "complete", "assessed": len(assessments), **counts, "publish_version": version}
 
 
 def movement_for_ranks(old_rank: int | None, new_rank: int) -> tuple[int, str]:
@@ -620,6 +908,7 @@ __all__ = [
     "CATALOG_MODEL_VERSION",
     "OVERALL_RANKING_VERSION",
     "STATUS_PRIORITY",
+    "all_candidates",
     "active_candidates",
     "candidate_match_inputs",
     "movement_for_ranks",
@@ -628,5 +917,6 @@ __all__ = [
     "promotable_candidates",
     "publish_known_matches",
     "release_alias_siblings",
+    "resolve_priority_aliases",
     "repair_legacy_history",
 ]

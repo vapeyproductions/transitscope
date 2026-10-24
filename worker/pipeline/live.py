@@ -17,6 +17,7 @@ from pipeline.lifecycle import (
     processed_target_count,
     promotable_candidates,
     publish_known_matches,
+    resolve_priority_aliases,
 )
 from pipeline.stage1 import resolve_artifact_path
 from pipeline.stage2 import (
@@ -117,6 +118,22 @@ def _history_limit(max_history_sectors: int, previous_product_count: int) -> int
     if previous_product_count:
         return min(max_history_sectors, previous_product_count + expansion)
     return min(max_history_sectors, initial)
+
+
+def _stage3_needs_data_queue(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return unresolved Stage 3 candidates in current ranking order."""
+
+    return sorted(
+        (
+            candidate
+            for candidate in candidates
+            if candidate["current_stage"] == "stage3"
+            and candidate["active"]
+            and candidate["status"] == "Needs More Data"
+            and candidate["rank_stage"] is not None
+        ),
+        key=lambda candidate: (int(candidate["rank_stage"]), str(candidate["candidate_id"])),
+    )
 
 
 def _stage1_refresh_targets(
@@ -438,21 +455,19 @@ def run_live_cycle(
     top_n: int,
     stage1_threshold: int = 100,
     stage2_threshold: int = 25,
-    stage3_threshold: int = 6,
-    # Legacy keyword compatibility. These names used to describe stage
-    # capacity, but now map only to the corresponding priority threshold.
+    # Legacy keyword compatibility for Stage 1 and Stage 2 callers.
     stage_capacity: int | None = None,
     max_history_sectors: int,
     stage1_pool_size: int = 500,
     stage2_capacity: int | None = None,
-    stage3_capacity: int | None = None,
     status_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run one bounded archive poll and publish only changed pipeline state.
 
-    Stage thresholds are ranking windows. They decide which candidates are
-    eligible for prioritization or reassessment; they never cap the number of
-    candidates retained in a stage.
+    Stage 1 and Stage 2 thresholds are ranking windows. They decide which
+    candidates are eligible for prioritization; they never cap the number of
+    candidates retained in a stage. Stage 3 is driven by its ranked Needs More
+    Data queue and has no rank cutoff.
     """
 
     from batching import BatchConfig, run_batch, run_stage1_refresh
@@ -464,9 +479,7 @@ def run_live_cycle(
         stage1_threshold = stage_capacity
     if stage2_capacity is not None:
         stage2_threshold = stage2_capacity
-    if stage3_capacity is not None:
-        stage3_threshold = stage3_capacity
-    if min(stage1_threshold, stage2_threshold, stage3_threshold) < 1:
+    if min(stage1_threshold, stage2_threshold) < 1:
         raise ValueError("stage priority thresholds must be positive")
 
     def occupied_stage1_target_ids() -> set[str]:
@@ -608,6 +621,20 @@ def run_live_cycle(
     if stage1_catalog_replacement.get("status") != "idle":
         check_catalog("stage1")
 
+    # A sibling that reaches the Stage 1 priority window leaves the active
+    # ranking for an explicit independence assessment. It is not promoted or
+    # discarded solely because its primary signal advanced; the residual and
+    # chronological holdout result decides whether it returns as an eligible
+    # Stage 1 candidate or remains historical duplicate evidence.
+    signal_independence = resolve_priority_aliases(
+        store,
+        data_dir=data_dir,
+        threshold=stage1_threshold,
+        processed_target_count=processed_target_count(store),
+    )
+    if signal_independence.get("status") == "complete":
+        check_catalog("stage1")
+
     # The first Stage 2 handoff is intentionally gated on a complete initial
     # Stage 1 exploration pool. This prevents a handful of early Promising
     # results from draining the queue before the comparative baseline exists.
@@ -706,65 +733,53 @@ def run_live_cycle(
                 check_catalog("stage1")
 
     stage3_results: list[dict[str, Any]] = []
-    # Stage 3 does not wait for a fictitious queue capacity to fill. When it
-    # calls for another candidate, it takes the highest-ranked Promising
-    # Stage 2 candidate that is available. The Stage 2 top-X value only
-    # defines which Promising candidates are eligible to be called.
-    stage2_queue_ready = initial_stage1_ready
-    stage2_candidates = (
-        promotable_candidates(store, stage="stage2", threshold=stage2_threshold)[:1]
-        if stage2_queue_ready
-        else []
-    )
-    stage3_retry_candidates = (
-        [
-            candidate
-            for candidate in active_candidates(store)
-            if candidate["current_stage"] == "stage3"
-            and candidate["status"] == "Needs More Data"
-            and candidate["rank_stage"] is not None
-            and int(candidate["rank_stage"]) <= stage3_threshold
-        ]
-        if stage2_queue_ready
-        else []
-    )
-    stage3_prime_candidates = (
-        [
-            candidate
-            for candidate in active_candidates(store)
-            if candidate["current_stage"] == "stage3"
-            and candidate["status"] == "Promising"
-            and candidate["rank_stage"] is not None
-            and int(candidate["rank_stage"]) <= stage3_threshold
-        ]
-        if stage2_queue_ready
-        else []
-    )
-    # Stage 3 candidates outside the reassessment threshold remain in the
-    # ranking but are not rerun. This keeps the threshold meaningful and
-    # prevents every historical Stage 3 row from consuming a new evaluation
-    # on every live cycle.
-    stage3_work: list[dict[str, Any]] = []
-    seen_stage3: set[str] = set()
-    for candidate in (
-        stage2_candidates
-        + stage3_retry_candidates
-        + stage3_prime_candidates
-    ):
-        if candidate["candidate_id"] not in seen_stage3:
-            stage3_work.append(candidate)
-            seen_stage3.add(candidate["candidate_id"])
-    for candidate in stage3_work:
-        if status_callback:
-            status_callback("processing_stage3", {"candidate_id": candidate["candidate_id"]})
-        stage3_results.append(
-            _evaluate_stage3(
+    # Stage 3 is a queue, not a top-X threshold. Work the highest-ranked
+    # unresolved candidate first. Once it resolves to a Prime Candidate or
+    # Inconclusive, immediately call the highest-ranked eligible Promising
+    # candidate from Stage 2. A small execution budget protects the worker
+    # from an unexpectedly large cascade without changing ranking policy.
+    stage3_queue_ready = initial_stage1_ready
+    stage3_budget = max(1, int(os.getenv("STAGE3_EVALUATIONS_PER_CYCLE", "4")))
+    stage3_seen: set[str] = set()
+    if stage3_queue_ready:
+        for _ in range(stage3_budget):
+            candidates_now = active_candidates(store)
+            unresolved = [
+                candidate
+                for candidate in _stage3_needs_data_queue(candidates_now)
+                if candidate["candidate_id"] not in stage3_seen
+            ]
+            if unresolved:
+                candidate = unresolved[0]
+            else:
+                stage2_candidates = [
+                    candidate
+                    for candidate in promotable_candidates(
+                        store,
+                        stage="stage2",
+                        threshold=stage2_threshold,
+                    )
+                    if candidate["candidate_id"] not in stage3_seen
+                ]
+                if not stage2_candidates:
+                    break
+                candidate = stage2_candidates[0]
+
+            candidate_id = str(candidate["candidate_id"])
+            stage3_seen.add(candidate_id)
+            if status_callback:
+                status_callback("processing_stage3", {"candidate_id": candidate_id})
+            result = _evaluate_stage3(
                 store,
                 candidate,
                 data_dir=data_dir,
                 max_history_sectors=max_history_sectors,
             )
-        )
+            stage3_results.append(result)
+            # No new evidence was available, so retrying the same unresolved
+            # candidate in this cycle would only repeat the signature check.
+            if result.get("status") in {"unchanged", "missing_stage2_input", "Needs More Data"}:
+                break
 
     # Stage 3 is the final assessment stage, so a catalog match here is a
     # legitimate Stage 3 removal and is retained in the identified/replay
@@ -788,6 +803,7 @@ def run_live_cycle(
         "batch": batch,
         "stage1_refresh": refresh_batch,
         "stage1_catalog_replacement": stage1_catalog_replacement,
+        "signal_independence": signal_independence,
         "replacement_batch": replacement_batch,
         "exploration_batch": exploration_batch,
         "stage2": stage2_results,

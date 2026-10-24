@@ -1044,12 +1044,13 @@ class ReadOnlyStore:
         }
         configured_universe = int(os.getenv("TARGET_UNIVERSE_SIZE", "126000"))
         initial_stage1_pool = int(os.getenv("STAGE1_POOL_SIZE", "500"))
-        stage_thresholds = {
+        stage_thresholds: dict[str, int | None] = {
             # These are ranking windows, not runtime compute capacities. A
             # stage may retain and display candidates beyond its threshold.
             "stage1": int(os.getenv("STAGE1_PROMOTION_THRESHOLD", "100")),
             "stage2": int(os.getenv("STAGE2_PROMOTION_THRESHOLD", "25")),
-            "stage3": int(os.getenv("STAGE3_REASSESSMENT_THRESHOLD", "6")),
+            # Stage 3 is a ranked Needs More Data queue, not a top-X window.
+            "stage3": None,
         }
         empty = {
             "generated_at": datetime.utcnow().isoformat() + "Z",
@@ -1116,17 +1117,27 @@ class ReadOnlyStore:
                 stage_data[stage]["total_candidates"] += int(count)
 
             for stage in stage_data:
-                try:
+                threshold = stage_thresholds[stage]
+                if threshold is None:
+                    priority_count = connection.execute(
+                        """
+                        SELECT COUNT(*) FROM candidates
+                        WHERE current_stage = ? AND active = true
+                          AND status = 'Needs More Data'
+                        """,
+                        [stage],
+                    ).fetchone()[0]
+                    priority_label = "Needs More Data reassessment queue"
+                else:
                     priority_count = connection.execute(
                         """
                         SELECT COUNT(*) FROM candidates
                         WHERE current_stage = ? AND active = true
                           AND rank_stage IS NOT NULL AND rank_stage <= ?
                         """,
-                        [stage, stage_thresholds[stage]],
+                        [stage, threshold],
                     ).fetchone()[0]
-                except Exception:
-                    priority_count = 0
+                    priority_label = f"Top {threshold} priority threshold"
                 latest = connection.execute(
                     """
                     SELECT MAX(last_evaluated_at), COUNT(*)
@@ -1136,7 +1147,8 @@ class ReadOnlyStore:
                     [stage],
                 ).fetchone()
                 stage_data[stage]["priority_candidates"] = int(priority_count or 0)
-                stage_data[stage]["threshold"] = stage_thresholds[stage]
+                stage_data[stage]["threshold"] = threshold
+                stage_data[stage]["priority_label"] = priority_label
                 stage_data[stage]["last_evaluated_at"] = isoformat(latest[0])
                 stage_data[stage]["evaluated_candidate_count"] = int(latest[1] or 0)
 
@@ -1250,12 +1262,17 @@ class ReadOnlyStore:
 
     @staticmethod
     def _empty_monitoring_stages(
-        thresholds: dict[str, int],
+        thresholds: dict[str, int | None],
     ) -> dict[str, dict[str, Any]]:
         return {
             stage: {
                 "stage": stage,
                 "threshold": threshold,
+                "priority_label": (
+                    "Needs More Data reassessment queue"
+                    if threshold is None
+                    else f"Top {threshold} priority threshold"
+                ),
                 "priority_candidates": 0,
                 "total_candidates": 0,
                 "evaluated_candidate_count": 0,

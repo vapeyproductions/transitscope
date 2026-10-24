@@ -460,21 +460,17 @@ def classify_signal_relationships(
         )
         primary_id = str(normalized[primary_index]["result"]["candidate_id"])
         is_alias_group = len(component) > 1
-        primary_outcome = str(normalized[primary_index]["result"].get("status"))
         for index in component:
             result = normalized[index]["result"]
             result_features = dict(result.get("features") or {})
             is_primary = index == primary_index
-            sibling_released = (
-                is_alias_group
-                and not is_primary
-                and primary_outcome in {"Inconclusive", "Known Match"}
-            )
+            # A sibling is never released merely because the primary was
+            # rejected or catalogued. It must pass the explicit residual /
+            # chronological holdout test when it reaches the Stage 1 priority
+            # threshold.
             resolution = (
                 "primary"
                 if is_alias_group and is_primary
-                else "released_for_independent_review"
-                if sibling_released
                 else "pending_alias_review"
                 if is_alias_group
                 else "independent"
@@ -487,21 +483,17 @@ def classify_signal_relationships(
                 {
                     "signal_group_id": group_id,
                     "signal_resolution": resolution,
-                    "alias_of_candidate_id": None
-                    if not is_alias_group or is_primary or sibling_released
-                    else primary_id,
+                    "alias_of_candidate_id": None if not is_alias_group or is_primary else primary_id,
                     "promotion_eligible": promotion_eligible,
                 }
             )
             result["features"] = result_features
             result["signal_group_id"] = group_id
             result["signal_resolution"] = resolution
-            result["alias_of_candidate_id"] = None if not is_alias_group or is_primary or sibling_released else primary_id
+            result["alias_of_candidate_id"] = None if not is_alias_group or is_primary else primary_id
             result["promotion_eligible"] = promotion_eligible
             if resolution == "pending_alias_review":
-                result["activity"] = "Awaiting independent-signal review"
-            elif resolution == "released_for_independent_review":
-                result["activity"] = "Released for independent review"
+                result["activity"] = "Queued for independence assessment"
             result["processing_slot_occupied"] = (
                 result.get("status") != "Inconclusive" and resolution != "pending_alias_review"
             )
@@ -515,12 +507,8 @@ def classify_signal_relationships(
                         "primary_candidate_id": primary_id,
                         "signal_group_id": group_id,
                         "comparison": comparison,
-                        "event_type": "signal_alias_released" if sibling_released else "signal_alias_held",
-                        "reason": (
-                            "primary signal was inconclusive"
-                            if sibling_released
-                            else "possible phase-shifted duplicate; awaiting independent review"
-                        ),
+                        "event_type": "signal_alias_held",
+                        "reason": "possible phase-shifted duplicate; awaiting independent residual and holdout test",
                     }
                 )
     return normalized, alias_events
@@ -701,7 +689,14 @@ def publish_stage1_batch(
         if previous_by_id.get(str(item["result"]["candidate_id"]), {}).get("current_stage") not in {None, STAGE}
     }
     stage1_results = [
-        item for item in results if str(item["result"]["candidate_id"]) not in advanced_result_ids
+        item
+        for item in results
+        if str(item["result"]["candidate_id"]) not in advanced_result_ids
+        and not (
+            previous_by_id.get(str(item["result"]["candidate_id"]), {}).get("signal_resolution")
+            == "duplicate_signal"
+            and not previous_by_id.get(str(item["result"]["candidate_id"]), {}).get("active", True)
+        )
     ]
     result_candidate_ids = {
         str(item["result"]["candidate_id"])
