@@ -202,7 +202,13 @@ class DuckDBStore:
                 )
                 connection.execute("COMMIT")
             except Exception:
-                connection.execute("ROLLBACK")
+                # DuckDB may already have ended the transaction while
+                # propagating a constraint/connection error. Do not replace
+                # the useful original exception with a rollback failure.
+                try:
+                    connection.execute("ROLLBACK")
+                except Exception:
+                    pass
                 raise
 
     @staticmethod

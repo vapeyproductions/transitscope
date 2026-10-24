@@ -125,6 +125,8 @@ def main() -> None:
                 write_status(data_dir, "idle", {"last_cycle": result})
             except Exception as exc:  # keep the worker alive and make the error inspectable
                 write_status(data_dir, "error", {"error": repr(exc)})
+                time.sleep(float(os.getenv("WORKER_ERROR_RETRY_SECONDS", "30")))
+                continue
             time.sleep(float(os.getenv("LIVE_POLL_SECONDS", str(heartbeat_seconds))))
         write_status(data_dir, "stopped")
         return
