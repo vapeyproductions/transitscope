@@ -280,6 +280,15 @@ type MonitoringRankedSample = {
   rank?: number;
 };
 
+type MonitoringQueueEvent = {
+  candidate_id?: string;
+  stage?: string;
+  kind?: "intake" | "handoff" | "reassessment" | string;
+  queue_status?: string;
+  reason?: string;
+  source_candidate_id?: string;
+};
+
 type MonitoringCycle = {
   cycle_id: string;
   started_at: string;
@@ -289,6 +298,7 @@ type MonitoringCycle = {
   stages: Record<string, MonitoringCycleStage>;
   queue: Record<string, Record<string, number>>;
   ranked_samples?: Record<string, MonitoringRankedSample[]>;
+  queue_events?: MonitoringQueueEvent[];
   events?: MonitoringCycleEvent[];
 };
 
@@ -801,14 +811,24 @@ function MonitoringCycleActivityPanel({ activity }: { activity: MonitoringCycleA
   }, [frameIndex, playing, runs.length]);
 
   const frame = runs[Math.min(frameIndex, Math.max(0, runs.length - 1))];
-  const countsFor = (stage: AssessmentStage): Record<string, number> => {
-    const frameCounts = frame?.queue?.[stage] ?? {};
-    if (Object.values(frameCounts).some((count) => Number(count || 0) > 0)) return frameCounts;
-    return activity.queue.current?.[stage] ?? {};
+  const queueEventsFor = (stage: AssessmentStage): MonitoringQueueEvent[] => {
+    const recorded = (frame?.queue_events ?? []).filter((event) => event.stage === stage);
+    if (recorded.length) return recorded;
+
+    // Older cycle records predate explicit queue telemetry. Infer only the
+    // jobs represented by their event stream, never from stage status totals.
+    return (frame?.events ?? [])
+      .filter((event) => event.stage === stage && event.candidate_id)
+      .map((event) => ({
+        candidate_id: event.candidate_id,
+        stage,
+        kind: event.kind === "handoff" ? "handoff" : event.kind === "reassessment" ? "reassessment" : "evaluation",
+        queue_status: event.kind === "handoff" ? "Promising" : event.kind === "reassessment" ? "Needs More Data" : "New Job",
+        reason: "legacy_cycle_event",
+        source_candidate_id: event.source_candidate_id,
+      }));
   };
   const representativeDots = (stage: AssessmentStage): Array<{ status: string; index: number; rank: number }> => {
-    const counts = countsFor(stage);
-    const entries = Object.entries(counts).filter(([, count]) => Number(count || 0) > 0);
     const fallbackEvents = (frame?.events ?? []).filter((event) => event.stage === stage);
     const rankedSamples = frame?.ranked_samples?.[stage] ?? [];
     const cap = stage === "stage1" ? 42 : stage === "stage2" ? 30 : 22;
@@ -819,28 +839,23 @@ function MonitoringCycleActivityPanel({ activity }: { activity: MonitoringCycleA
         rank: sample.rank ?? index + 1,
       }));
     }
-    if (!entries.length && fallbackEvents.length) {
-      const fallbackCounts = fallbackEvents.reduce<Record<string, number>>((result, event) => {
-        const status = event.status ?? "unknown";
-        result[status] = (result[status] ?? 0) + 1;
-        return result;
-      }, {});
-      entries.push(...Object.entries(fallbackCounts));
-    }
-    const total = entries.reduce((sum, [, count]) => sum + Number(count || 0), 0);
-    if (!total) return [];
-    return entries.flatMap(([status, count]) => Array.from({ length: Math.max(1, Math.round(Number(count || 0) / total * cap)) }, (_, index) => ({ status, index, rank: index + 1 })));
+    return fallbackEvents.slice(0, cap).map((event, index) => ({
+      status: event.status ?? "unknown",
+      index,
+      rank: index + 1,
+    }));
   };
   const queueStacks = (stage: AssessmentStage) => {
-    const dots = representativeDots(stage).slice(0, 20);
-    const stackCount = Math.min(5, Math.max(1, Math.ceil(dots.length / 4)));
-    return Array.from({ length: stackCount }, (_, stackIndex) => dots.filter((_, index) => index % stackCount === stackIndex).slice(0, 4));
+    const jobs = queueEventsFor(stage).slice(0, 20);
+    const stackCount = Math.min(5, Math.max(1, Math.ceil(jobs.length / 4)));
+    return Array.from({ length: jobs.length ? stackCount : 0 }, (_, stackIndex) => jobs.filter((_, index) => index % stackCount === stackIndex).slice(0, 4));
   };
-  const incomingCount = Number(frame?.stages.stage1?.selected ?? frame?.events?.filter((event) => event.stage === "stage1").length ?? 0);
+  const incomingJobs = queueEventsFor("stage1").filter((event) => event.kind === "intake");
+  const incomingCount = incomingJobs.length;
   const incomingDots = Math.min(8, Math.max(incomingCount ? 1 : 0, Math.round(incomingCount / 4)));
-  const currentStage2Handoffs = Number(frame?.stages.stage3?.handoffs ?? frame?.events?.filter((event) => event.kind === "handoff").length ?? 0);
+  const currentStage2Handoffs = queueEventsFor("stage3").filter((event) => event.kind === "handoff").length;
   const frameLabel = frame ? formatDate(frame.finished_at) : "Waiting for first cycle";
-  const stageQueueTotal = (stage: AssessmentStage) => Object.values(countsFor(stage)).reduce((sum, count) => sum + Number(count || 0), 0);
+  const stageQueueTotal = (stage: AssessmentStage) => queueEventsFor(stage).length;
 
   return <section className="ops-section cycle-activity-section" aria-labelledby="cycle-activity-title">
     <div className="ops-section-heading"><div><p className="eyebrow">Live worker activity</p><h4 id="cycle-activity-title">Pipeline motion · last {activity.window_minutes} minutes</h4></div><span className="section-note">{activity.run_count} saved cycles · time flows left to right</span></div>
@@ -849,12 +864,12 @@ function MonitoringCycleActivityPanel({ activity }: { activity: MonitoringCycleA
       <div className="pipeline-motion-shell">
         <div className="pipeline-motion-toolbar"><div className="motion-intake-badge"><span className="motion-arrival-dot" />New candidate entering · {incomingCount.toLocaleString()} in this cycle</div><div className="motion-controls"><button className="button button-quiet" type="button" onClick={() => setPlaying((current) => !current)} disabled={runs.length < 2}>{playing ? "Ⅱ Pause" : "▶ Play"}</button><label><span>Speed</span><select aria-label="Motion replay speed" value={speed} onChange={(event) => setSpeed(Number(event.target.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select></label><span className="motion-time">{frameLabel}</span></div></div>
         <div className="pipeline-motion-track" aria-label="Candidate movement from universe through Stage 3">
-          <article className="motion-lane motion-universe-lane"><div className="motion-lane-title"><strong>Candidate universe</strong><small>{incomingCount.toLocaleString()} new this cycle</small></div><div className="motion-lane-queue"><span>Incoming</span><div className="motion-queue-stacks">{Array.from({ length: Math.max(1, Math.min(4, incomingDots)) }, (_, stackIndex) => <div className="motion-queue-stack" key={`incoming-${stackIndex}`}><span className="motion-dot neutral" /><span className="motion-dot neutral" /></div>)}</div></div><div className="motion-lane-field motion-universe-field"><div className="motion-universe-label">{activity.queue.current?.stage1 ? `${Object.values(activity.queue.current.stage1).reduce((sum, count) => sum + Number(count || 0), 0).toLocaleString()} targets staged` : "Waiting for intake"}</div>{Array.from({ length: incomingDots }, (_, index) => <span className="motion-dot neutral motion-arrival" key={`arrival-${frameIndex}-${index}`} style={{ left: `${18 + (index * 19) % 64}%`, top: `${19 + (index * 31) % 55}%`, animationDelay: `${index * -0.35}s` }} title="New candidate from target universe" />)}</div><div className="motion-lane-caption">Targets are selected from the remaining universe and fall into Stage 1.</div></article>
-          {stages.map((stage) => { const dots = representativeDots(stage); const stacks = queueStacks(stage); const summary = frame?.stages[stage] ?? {}; const handoffs = stage === "stage3" ? currentStage2Handoffs : Number(summary.released ?? 0); return <article className={`motion-lane motion-${stage}-lane`} key={stage}><div className="motion-lane-title"><strong>{stageName(stage)}</strong><small>{dots.length} ranked sample dots · {stageQueueTotal(stage).toLocaleString()} queued</small></div><div className="motion-lane-queue"><span>Queue</span><div className="motion-queue-stacks">{stacks.map((stack, stackIndex) => <div className="motion-queue-stack" key={`${stage}-stack-${stackIndex}`}>{stack.map((dot, dotIndex) => <span className={`motion-dot ${monitoringDotClass(dot.status)}`} key={`${stage}-${stackIndex}-${dot.status}-${dotIndex}`} title={`${dot.status} · queued`} />)}</div>)}</div></div><div className="motion-lane-field"><div className="motion-rank-guide" aria-hidden="true"><span>higher rank</span><span>lower rank</span></div>{dots.map((dot, index) => { const rankPosition = dots.length > 1 ? index / (dots.length - 1) : 0.5; return <span className={`motion-dot ${monitoringDotClass(dot.status)} ${index < 2 && handoffs ? "motion-moving" : ""}`} key={`${stage}-${dot.status}-${dot.rank}-${index}`} style={{ left: `${15 + (index * 41) % 72}%`, top: `${12 + rankPosition * 72}%`, animationDelay: `${(index % 9) * -0.27}s` }} title={`Rank ${dot.rank} · ${dot.status} · representative of ${stageName(stage)} queue`} />; })}{!dots.length && <span className="motion-field-empty">No queued candidates</span>}</div><div className="motion-lane-caption">{handoffs ? `${handoffs} candidate${handoffs === 1 ? "" : "s"} called downstream this cycle.` : stage === "stage3" ? "Reassess Needs More Data in rank order." : "Waiting for a downstream call."}</div></article>; })}
+          <article className="motion-lane motion-universe-lane"><div className="motion-lane-title"><strong>Candidate universe</strong><small>{incomingCount.toLocaleString()} arrivals</small></div><div className="motion-universe-intake"><div className="motion-universe-source"><span>New targets</span><div className="motion-universe-dots">{Array.from({ length: incomingDots }, (_, index) => <span className="motion-dot neutral motion-arrival" key={`arrival-${frameIndex}-${index}`} style={{ animationDelay: `${index * -0.35}s` }} title="New candidate from target universe" />)}</div></div><span className="motion-universe-arrow" aria-hidden="true">→</span><span className="motion-universe-destination">Stage 1 queue</span></div><div className="motion-lane-caption">New targets enter Stage 1 only as downstream work opens a job.</div></article>
+          {stages.map((stage) => { const dots = representativeDots(stage); const stacks = queueStacks(stage); const queueJobs = queueEventsFor(stage); const summary = frame?.stages[stage] ?? {}; const handoffs = stage === "stage3" ? currentStage2Handoffs : queueJobs.filter((job) => job.kind === "handoff").length; return <article className={`motion-lane motion-${stage}-lane`} key={stage}><div className="motion-lane-title"><strong>{stageName(stage)}</strong><small>{dots.length} ranked sample dots · {stageQueueTotal(stage).toLocaleString()} jobs</small></div><div className="motion-lane-queue"><span>Work queue</span><div className="motion-queue-stacks">{stacks.map((stack, stackIndex) => <div className="motion-queue-stack" key={`${stage}-stack-${stackIndex}`}>{stack.map((job, dotIndex) => <span className={`motion-dot ${monitoringDotClass(job.queue_status ?? "New Job")} motion-queue-job ${job.kind === "handoff" ? "motion-queue-handoff" : job.kind === "reassessment" ? "motion-queue-reassessment" : "motion-queue-intake"}`} key={`${stage}-${stackIndex}-${job.candidate_id ?? "job"}-${dotIndex}`} title={`${job.kind ?? "job"} · ${job.queue_status ?? "queued"}`} />)}</div>)}</div>{!queueJobs.length && <small className="motion-queue-empty">No jobs called in this cycle</small>}</div><div className="motion-lane-field"><div className="motion-rank-guide" aria-hidden="true"><span>higher rank</span><span>lower rank</span></div><div className="motion-ranked-dots">{dots.map((dot, index) => <span className={`motion-dot ${monitoringDotClass(dot.status)} ${index < 2 && handoffs ? "motion-moving" : ""}`} key={`${stage}-${dot.status}-${dot.rank}-${index}`} style={{ animationDelay: `${(index % 9) * -0.27}s` }} title={`Rank ${dot.rank} · ${dot.status} · representative of ${stageName(stage)} ranking`} />)}{!dots.length && <span className="motion-field-empty">No ranked candidates</span>}</div></div><div className="motion-lane-caption">{handoffs ? `${handoffs} candidate${handoffs === 1 ? "" : "s"} called downstream this cycle.` : stage === "stage3" ? "Reassess Needs More Data in rank order." : summary.evaluated ? "Rankings updated; no downstream job was called." : "Waiting for a downstream call."}</div></article>; })}
         </div>
         <div className="pipeline-motion-footer"><div className="pipeline-dot-legend"><span><i className="pipeline-dot promising" />Promising</span><span><i className="pipeline-dot needs-more-data" />Needs more data</span><span><i className="pipeline-dot inconclusive" />Inconclusive</span><span><i className="pipeline-dot known-match" />Known</span></div><label className="motion-scrubber"><span>Replay position</span><input aria-label="Pipeline motion replay position" type="range" min={0} max={Math.max(0, runs.length - 1)} value={frameIndex} onChange={(event) => { setFrameIndex(Number(event.target.value)); setPlaying(false); }} /><small>{frameIndex + 1} / {runs.length}</small></label></div>
       </div>
-      <p className="cycle-activity-note">Dots are intentionally representative rather than one-to-one. Queue dots show status mix, vertical stacks show concurrent work, and animated dots indicate candidates being called or entering the next section. Drag the replay position to inspect any saved cycle.</p>
+      <p className="cycle-activity-note">Ranking dots are ordered from highest rank to lowest rank and are intentionally representative rather than one-to-one. Work-queue dots show only jobs called during that cycle: new intake, downstream handoffs, or Needs More Data reassessments. Inconclusive candidates remain in their stage ranking and do not appear in the work queue unless a later reassessment is explicitly called. Drag the replay position to inspect any saved cycle.</p>
       <div className="timing-card-grid">{stages.map((stage) => { const timing = activity.timings[stage] ?? { average_cycle_seconds: null, average_needs_more_data_seconds: null, average_dispatch_seconds: null, handoffs: 0 }; const flow = activity.throughput[stage] ?? { evaluated: 0, promising: 0, needs_more_data: 0, inconclusive: 0, known_match: 0, handoffs: 0 }; return <article className="timing-card" key={stage}><div className="timing-card-heading"><strong>{stageName(stage)}</strong><span>{flow.evaluated.toLocaleString()} assessed</span></div><div className="timing-stat-row"><span><small>Avg stage time</small><strong>{durationLabel(timing.average_cycle_seconds)}</strong></span><span><small>Needs data time</small><strong>{durationLabel(timing.average_needs_more_data_seconds)}</strong></span></div><div className="timing-stat-row"><span><small>Promising</small><strong>{flow.promising}</strong></span><span><small>Inconclusive</small><strong>{flow.inconclusive}</strong></span></div><div className="timing-stat-row"><span><small>Needs more data</small><strong>{flow.needs_more_data}</strong></span><span><small>Handoffs</small><strong>{flow.handoffs}</strong></span></div>{stage === "stage2" && <p>Needs More Data reassessment time: <strong>{durationLabel(timing.average_needs_more_data_seconds)}</strong>.</p>}{stage === "stage3" && <p>Stage 2 handoff processing time: <strong>{durationLabel(timing.average_dispatch_seconds)}</strong> · {timing.handoffs} handoffs.</p>}</article>; })}</div>
     </>}
   </section>;
@@ -960,8 +975,8 @@ export function MonitoringPanel({ refreshKey }: { refreshKey: number }) {
     <div className="operations-opening-panel">
       <section className="pipeline-insight-card" aria-labelledby="operations-title">
         <div className="pipeline-insight-heading"><div><p className="eyebrow accent">Pipeline pulse</p><h3 id="operations-title">Where the waterfall is slowing</h3><p>Throughput, queue pressure, and downstream handoffs from the most recent worker cycles.</p></div><span className={`pipeline-health-indicator ${overview.worker.state === "error" || overview.control.pipeline_paused ? "attention" : "flowing"}`}><span className="status-dot" />{overview.control.pipeline_paused ? "Paused" : overview.worker.state === "error" ? "Needs attention" : "Live flow"}</span></div>
-        <div className="pipeline-flow-track" aria-label="Pipeline stage flow summary">{pipelinePulse.map((stage) => { const maxEvaluated = Math.max(1, ...pipelinePulse.map((item) => item.throughput.evaluated)); return <article className={`pipeline-flow-stage ${stage.stage}`} key={stage.stage}><div className="pipeline-flow-heading"><strong>{stageName(stage.stage)}</strong><span>{stage.throughput.evaluated.toLocaleString()} assessed</span></div><div className="pipeline-flow-meter"><span style={{ width: `${Math.max(stage.throughput.evaluated ? 8 : 0, Math.min(100, stage.throughput.evaluated / maxEvaluated * 100))}%` }} /></div><small>{stage.queued.toLocaleString()} queued · {stage.throughput.handoffs} handoffs</small></article>; })}</div>
-        <div className="pipeline-insight-metrics"><article><span className="metric-label">Slowest lane</span><strong>{slowestStage ? stageName(slowestStage.stage) : "—"}</strong><small>{slowestStage?.timing.average_cycle_seconds ? `${durationLabel(slowestStage.timing.average_cycle_seconds)} average cycle` : "No timing yet"}</small></article><article><span className="metric-label">Flow rate</span><strong>{numberLabel(totalEvaluated / Math.max(1, overview.cycle_activity.window_minutes), 2)} / min</strong><small>{totalEvaluated.toLocaleString()} assessed in the window</small></article><article><span className="metric-label">Needs more data</span><strong>{totalNeedsMoreData.toLocaleString()}</strong><small>reassessments or new evaluations</small></article><article><span className="metric-label">Current queue</span><strong>{totalQueue.toLocaleString()}</strong><small>{totalHandoffs.toLocaleString()} downstream handoffs in window</small></article></div>
+        <div className="pipeline-flow-track" aria-label="Pipeline stage flow summary">{pipelinePulse.map((stage) => { const maxEvaluated = Math.max(1, ...pipelinePulse.map((item) => item.throughput.evaluated)); return <article className={`pipeline-flow-stage ${stage.stage}`} key={stage.stage}><div className="pipeline-flow-heading"><strong>{stageName(stage.stage)}</strong><span>{stage.throughput.evaluated.toLocaleString()} assessed</span></div><div className="pipeline-flow-meter"><span style={{ width: `${Math.max(stage.throughput.evaluated ? 8 : 0, Math.min(100, stage.throughput.evaluated / maxEvaluated * 100))}%` }} /></div><small>{stage.queued.toLocaleString()} jobs called · {stage.throughput.handoffs} handoffs</small></article>; })}</div>
+        <div className="pipeline-insight-metrics"><article><span className="metric-label">Slowest lane</span><strong>{slowestStage ? stageName(slowestStage.stage) : "—"}</strong><small>{slowestStage?.timing.average_cycle_seconds ? `${durationLabel(slowestStage.timing.average_cycle_seconds)} average cycle` : "No timing yet"}</small></article><article><span className="metric-label">Flow rate</span><strong>{numberLabel(totalEvaluated / Math.max(1, overview.cycle_activity.window_minutes), 2)} / min</strong><small>{totalEvaluated.toLocaleString()} assessed in the window</small></article><article><span className="metric-label">Needs more data</span><strong>{totalNeedsMoreData.toLocaleString()}</strong><small>reassessments or new evaluations</small></article><article><span className="metric-label">Jobs called</span><strong>{totalQueue.toLocaleString()}</strong><small>{totalHandoffs.toLocaleString()} downstream handoffs in window</small></article></div>
         <div className="pipeline-insight-footer"><span><strong>Catalog:</strong> {catalogSummary} · {catalogDetail}</span><span>Last {overview.cycle_activity.run_count} completed cycles</span></div>
       </section>
       <aside className="operations-status-rail" aria-label="Worker and data status">

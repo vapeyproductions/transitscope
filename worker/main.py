@@ -194,6 +194,101 @@ def result_cycle_events(stage: str, results: object) -> list[dict[str, object]]:
     return events
 
 
+def queue_cycle_events(result: dict, store: DuckDBStore) -> list[dict[str, object]]:
+    """Describe jobs that entered a stage queue during this worker cycle.
+
+    Queue telemetry is intentionally distinct from ranking telemetry. A stage
+    status is not a queued job: an Inconclusive candidate remains in its
+    stage's ranked population but does not appear here unless it is later
+    submitted for a new reassessment job.
+    """
+
+    events: list[dict[str, object]] = []
+
+    def add(
+        candidate_id: object,
+        stage: str,
+        kind: str,
+        queue_status: str,
+        reason: str,
+        source_candidate_id: object | None = None,
+    ) -> None:
+        if not candidate_id:
+            return
+        event: dict[str, object] = {
+            "candidate_id": str(candidate_id),
+            "stage": stage,
+            "kind": kind,
+            "queue_status": queue_status,
+            "reason": reason,
+        }
+        if source_candidate_id:
+            event["source_candidate_id"] = str(source_candidate_id)
+        events.append(event)
+
+    batch = result.get("batch") if isinstance(result.get("batch"), dict) else {}
+    for candidate_id in batch.get("candidate_ids") or []:
+        add(
+            candidate_id,
+            "stage1",
+            "intake",
+            "New Target",
+            "candidate_universe_intake",
+        )
+
+    refresh = result.get("stage1_refresh") if isinstance(result.get("stage1_refresh"), dict) else {}
+    for candidate_id in refresh.get("candidate_ids") or []:
+        add(
+            candidate_id,
+            "stage1",
+            "reassessment",
+            "Needs More Data",
+            "stage1_needs_more_data_reassessment",
+        )
+
+    for request in result.get("stage1_requests") or []:
+        if not isinstance(request, dict):
+            continue
+        for candidate_id in request.get("candidate_ids") or []:
+            add(
+                candidate_id,
+                "stage1",
+                "intake",
+                "New Target",
+                "stage3_waterfall_replacement",
+            )
+
+    for item in result.get("stage2") or []:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("queue_kind") or "handoff")
+        queue_status = str(item.get("queue_status") or ("Needs More Data" if kind == "reassessment" else "Promising"))
+        add(
+            item.get("candidate_id"),
+            "stage2",
+            kind,
+            queue_status,
+            str(item.get("queue_reason") or "stage3_downstream_request"),
+            item.get("source_candidate_id"),
+        )
+
+    for item in result.get("stage3") or []:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("queue_kind") or ("handoff" if item.get("dispatch_source_candidate_id") else "reassessment"))
+        queue_status = str(item.get("queue_status") or ("Promising" if kind == "handoff" else "Needs More Data"))
+        add(
+            item.get("candidate_id"),
+            "stage3",
+            kind,
+            queue_status,
+            str(item.get("queue_reason") or "stage3_ranked_reassessment"),
+            item.get("dispatch_source_candidate_id"),
+        )
+
+    return events
+
+
 def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -> dict:
     batch = result.get("batch") if isinstance(result.get("batch"), dict) else {}
     refresh = result.get("stage1_refresh") if isinstance(result.get("stage1_refresh"), dict) else {}
@@ -233,6 +328,7 @@ def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -
         "timings": {key: round(float(value), 3) for key, value in timings.items()},
         "queue": queue_snapshot(store),
         "ranked_samples": ranked_queue_samples(store),
+        "queue_events": queue_cycle_events(result, store),
         "events": events,
         "stage3_reassessment": result.get("stage3_reassessment", {}),
         "stage3_intake": result.get("stage3_intake", {}),

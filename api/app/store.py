@@ -1600,6 +1600,9 @@ class ReadOnlyStore:
             ranked_samples = payload.get("ranked_samples", {})
             if not isinstance(ranked_samples, dict):
                 ranked_samples = {}
+            queue_events = payload.get("queue_events", [])
+            if not isinstance(queue_events, list):
+                queue_events = []
             runs.append(
                 {
                     "cycle_id": row[0],
@@ -1614,6 +1617,7 @@ class ReadOnlyStore:
                         for stage, samples in ranked_samples.items()
                         if isinstance(samples, list)
                     },
+                    "queue_events": [event for event in queue_events if isinstance(event, dict)],
                     "events": [event for event in events if isinstance(event, dict)],
                     "stage3_reassessment": payload.get("stage3_reassessment", {}),
                     "stage3_intake": payload.get("stage3_intake", {}),
@@ -1670,16 +1674,26 @@ class ReadOnlyStore:
                 "handoffs": handoffs,
             }
 
-        latest_queue = runs[-1]["queue"] if runs else {}
-        if not latest_queue:
-            latest_queue = {
-                stage: dict(stage_data[stage].get("counts", {}))
-                for stage in stage_names
-                if stage in stage_data
-            }
+        def queue_job_counts(run: dict[str, Any]) -> dict[str, dict[str, int]]:
+            events = run.get("queue_events", [])
+            if not isinstance(events, list) or not events:
+                # Legacy cycles have no explicit queue ledger. Their event
+                # stream still identifies work jobs, but their status totals
+                # are ranking populations and must never be used as queues.
+                events = run.get("events", [])
+            counts = {stage: {"jobs": 0} for stage in stage_names}
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                stage = str(event.get("stage") or "")
+                if stage in counts and event.get("candidate_id"):
+                    counts[stage]["jobs"] += 1
+            return counts
+
+        latest_queue = queue_job_counts(runs[-1]) if runs else {}
         queue_series = []
         for run in runs:
-            queue = run.get("queue", {})
+            queue = queue_job_counts(run)
             queue_series.append(
                 {
                     "finished_at": run["finished_at"],

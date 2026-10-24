@@ -1008,6 +1008,13 @@ def run_live_cycle(
             data_dir=data_dir,
             max_history_sectors=max_history_sectors,
         )
+        result.update(
+            {
+                "queue_kind": "handoff",
+                "queue_status": "Promising",
+                "queue_reason": "stage3_called_stage1_promising_candidate",
+            }
+        )
         elapsed = add_timing("stage2_seconds", stage2_started)
         if result.get("status") == "Needs More Data":
             timings["stage2_needs_more_data_seconds"] += elapsed
@@ -1072,6 +1079,13 @@ def run_live_cycle(
                     data_dir=data_dir,
                     max_history_sectors=max_history_sectors,
                 )
+                result.update(
+                    {
+                        "queue_kind": "reassessment",
+                        "queue_status": "Needs More Data",
+                        "queue_reason": "stage3_requested_stage2_needs_more_data_reassessment",
+                    }
+                )
                 elapsed = add_timing("stage2_seconds", stage2_started)
                 if result.get("status") == "Needs More Data":
                     timings["stage2_needs_more_data_seconds"] += elapsed
@@ -1133,6 +1147,13 @@ def run_live_cycle(
                 max_history_sectors=max_history_sectors,
                 publish_lock=stage3_publish_lock,
             )
+            result.update(
+                {
+                    "queue_kind": "handoff",
+                    "queue_status": "Promising",
+                    "queue_reason": "stage3_initial_intake_from_stage2",
+                }
+            )
             add_timing("stage3_seconds", stage3_started)
             stage3_results.append(result)
             check_catalog("stage3")
@@ -1159,6 +1180,13 @@ def run_live_cycle(
         )
         reassessment_elapsed = add_timing("stage3_seconds", stage3_reassessment_started)
         for result in reassessment_results:
+            result.update(
+                {
+                    "queue_kind": "reassessment",
+                    "queue_status": "Needs More Data",
+                    "queue_reason": "stage3_ranked_needs_more_data_reassessment",
+                }
+            )
             stage3_results.append(result)
             if result.get("status") == "Needs More Data":
                 timings["stage3_needs_more_data_seconds"] += reassessment_elapsed / max(1, len(reassessment_results))
@@ -1207,6 +1235,13 @@ def run_live_cycle(
                 dispatch_source_candidate_id=source_candidate_id,
                 publish_lock=stage3_publish_lock,
             )
+            result.update(
+                {
+                    "queue_kind": "handoff",
+                    "queue_status": "Promising",
+                    "queue_reason": "stage3_called_stage2_promising_candidate",
+                }
+            )
             dispatch_elapsed = add_timing("stage3_seconds", stage3_started)
             timings["stage3_dispatch_seconds"] += dispatch_elapsed
             if result.get("status") == "Needs More Data":
@@ -1246,6 +1281,7 @@ def run_live_cycle(
         "stage1_catalog_replacement": stage1_catalog_replacement,
         "signal_independence": signal_independence,
         "replacement_batch": stage1_requests[-1] if stage1_requests else {"status": "idle", "selected_count": 0},
+        "stage1_requests": stage1_requests,
         "exploration_batch": {
             "status": "idle",
             "message": "Continuous exploration is paused until Stage 3 requests a downstream replacement",
