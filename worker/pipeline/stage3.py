@@ -339,7 +339,7 @@ class Stage3Processor:
                 0.0,
                 "insufficient",
                 base_features,
-                None,
+                normalized_path,
             )
 
         windows = self._windows(time_values)
@@ -353,7 +353,7 @@ class Stage3Processor:
                 0.0,
                 "insufficient",
                 base_features,
-                None,
+                normalized_path,
             )
 
         train_indices = np.concatenate((windows[0], windows[1]))
@@ -383,7 +383,7 @@ class Stage3Processor:
                 0.0,
                 "insufficient",
                 base_features,
-                None,
+                normalized_path,
             )
 
         train_features = _phase_features(train_time, period_days=period, transit_time=transit_time)
