@@ -19,6 +19,8 @@ STATUS_PRIORITY = {
     "Inconclusive": 1,
     "Known Match": 0,
 }
+RANKING_STATUS_FILTERS = set(STATUS_PRIORITY) | {"Duplicate Signal"}
+RANKING_SORTS = {"rank", "last_assessed_desc", "last_assessed_asc"}
 
 
 def isoformat(value: object) -> str | None:
@@ -186,9 +188,26 @@ class ReadOnlyStore:
         finally:
             connection.close()
 
-    def rankings(self, view: str, limit: int, page: int = 1) -> dict[str, Any]:
+    def rankings(
+        self,
+        view: str,
+        limit: int,
+        page: int = 1,
+        *,
+        stage_filter: str | None = None,
+        status_filter: str | None = None,
+        sort: str = "rank",
+    ) -> dict[str, Any]:
         if view not in RANKING_VIEWS:
             raise ValueError(f"unsupported ranking view: {view}")
+        if stage_filter is not None and stage_filter not in VIEW_STAGE.values():
+            raise ValueError(f"unsupported stage filter: {stage_filter}")
+        if view != "overall" and stage_filter is not None:
+            raise ValueError("stage filters are only available on the overall ranking")
+        if status_filter is not None and status_filter not in RANKING_STATUS_FILTERS:
+            raise ValueError(f"unsupported status filter: {status_filter}")
+        if sort not in RANKING_SORTS:
+            raise ValueError(f"unsupported ranking sort: {sort}")
         display_cap = 500
         page = max(1, int(page))
         offset = (page - 1) * limit
@@ -229,36 +248,57 @@ class ReadOnlyStore:
                     """,
                     [view],
                 ).fetchone()
-            stage_filter = VIEW_STAGE.get(view)
-            if stage_filter:
+            view_stage = VIEW_STAGE.get(view)
+            selected_stage = stage_filter or view_stage
+            where_clauses = ["c.active = true"]
+            where_params: list[Any] = []
+            if selected_stage:
+                where_clauses.append("c.current_stage = ?")
+                where_params.append(selected_stage)
+            if status_filter:
+                where_clauses.append("c.status = ?")
+                where_params.append(status_filter)
+            where_sql = " AND ".join(where_clauses)
+
+            if selected_stage:
                 total_ranked_count = int(
                     connection.execute(
-                        "SELECT COUNT(*) FROM candidates WHERE active = true AND current_stage = ?",
-                        [stage_filter],
+                        f"SELECT COUNT(*) FROM candidates AS c WHERE {where_sql}",
+                        where_params,
                     ).fetchone()[0]
                 )
             else:
                 total_ranked_count = int(
                     connection.execute(
-                        "SELECT COUNT(*) FROM candidates WHERE active = true"
+                        f"SELECT COUNT(*) FROM candidates AS c WHERE {where_sql}",
+                        where_params,
                     ).fetchone()[0]
                 )
-            if stage_filter:
+            if selected_stage:
                 total_star_count = int(
                     connection.execute(
-                        "SELECT COUNT(DISTINCT target_id) FROM candidates WHERE active = true AND current_stage = ?",
-                        [stage_filter],
+                        f"SELECT COUNT(DISTINCT c.target_id) FROM candidates AS c WHERE {where_sql}",
+                        where_params,
                     ).fetchone()[0]
                 )
             else:
                 total_star_count = int(
                     connection.execute(
-                        "SELECT COUNT(DISTINCT target_id) FROM candidates WHERE active = true"
+                        f"SELECT COUNT(DISTINCT c.target_id) FROM candidates AS c WHERE {where_sql}",
+                        where_params,
                     ).fetchone()[0]
                 )
-            if stage_filter:
-                rows = connection.execute(
-                    """
+
+            if sort == "last_assessed_desc":
+                order_sql = "last_evaluated_at DESC NULLS LAST"
+            elif sort == "last_assessed_asc":
+                order_sql = "last_evaluated_at ASC NULLS LAST"
+            elif view_stage:
+                order_sql = "c.rank_stage NULLS LAST, c.stage_score DESC NULLS LAST"
+            else:
+                order_sql = "c.rank_overall NULLS LAST, c.overall_score DESC NULLS LAST"
+            rows = connection.execute(
+                f"""
                     SELECT c.candidate_id, c.target_id, c.current_stage, c.status,
                            c.overall_score, c.stage_score, c.rank_overall, c.rank_stage,
                            c.activity, c.rank_delta, c.movement_kind,
@@ -274,36 +314,12 @@ class ReadOnlyStore:
                            c.signal_group_id, c.signal_resolution,
                            c.alias_of_candidate_id, c.promotion_eligible
                     FROM candidates AS c
-                    WHERE c.active = true AND c.current_stage = ?
-                    ORDER BY c.rank_stage NULLS LAST, c.stage_score DESC NULLS LAST
+                    WHERE {where_sql}
+                    ORDER BY {order_sql}, c.candidate_id ASC
                     LIMIT ? OFFSET ?
                     """,
-                    [stage_filter, effective_limit, offset],
-                ).fetchall()
-            else:
-                rows = connection.execute(
-                    """
-                    SELECT c.candidate_id, c.target_id, c.current_stage, c.status,
-                           c.overall_score, c.stage_score, c.rank_overall, c.rank_stage,
-                           c.activity, c.rank_delta, c.movement_kind,
-                           COALESCE(
-                               (
-                                   SELECT MAX(event.occurred_at)
-                                   FROM pipeline_events AS event
-                                   WHERE event.candidate_id = c.candidate_id
-                                     AND event.event_type IN ('stage1_evaluated', 'stage2_evaluated', 'stage3_evaluated')
-                               ),
-                               c.last_evaluated_at
-                           ) AS last_evaluated_at,
-                           c.signal_group_id, c.signal_resolution,
-                           c.alias_of_candidate_id, c.promotion_eligible
-                    FROM candidates AS c
-                    WHERE c.active = true
-                    ORDER BY c.rank_overall NULLS LAST, c.overall_score DESC NULLS LAST
-                    LIMIT ? OFFSET ?
-                    """,
-                    [effective_limit, offset],
-                ).fetchall()
+                [*where_params, effective_limit, offset],
+            ).fetchall()
 
             signal_indices = self._signal_indices(
                 connection,
@@ -355,6 +371,9 @@ class ReadOnlyStore:
                 "total_ranked_count": total_ranked_count,
                 "total_star_count": total_star_count,
                 "page_count": (min(total_ranked_count, display_cap) + limit - 1) // limit,
+                "stage_filter": stage_filter,
+                "status_filter": status_filter,
+                "sort": sort,
                 "rows": projected_rows,
                 "removed": [],
             }

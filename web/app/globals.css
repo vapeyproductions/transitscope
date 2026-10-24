@@ -112,6 +112,15 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .table-wrap { min-height: 330px; }
 .ranking-table { align-items: center; display: grid; gap: 16px; grid-template-columns: 52px minmax(140px, 1.4fr) 1fr minmax(160px, 1.5fr) 0.8fr 0.8fr; }
 .ranking-table-header { color: var(--faint); font-size: 10px; font-weight: 700; letter-spacing: 0.1em; padding: 15px 22px; text-transform: uppercase; }
+.column-control { align-items: center; display: inline-flex; max-width: 100%; position: relative; text-transform: uppercase; }
+.column-control-trigger { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: inline-flex; font: inherit; gap: 5px; letter-spacing: inherit; padding: 4px 0; text-align: left; text-transform: inherit; }
+.column-control-trigger:hover, .column-control-trigger:focus-visible, .column-control-trigger.active { color: var(--cyan); }
+.column-control-arrow { color: var(--cyan); font-size: 13px; line-height: 1; }
+.column-control-clear { align-items: center; background: rgba(118, 228, 237, 0.1); border: 0; border-radius: 50%; color: var(--cyan); cursor: pointer; display: inline-flex; font-size: 13px; height: 19px; justify-content: center; margin-left: 4px; padding: 0; width: 19px; }
+.column-control-clear:hover, .column-control-clear:focus-visible { background: rgba(118, 228, 237, 0.22); }
+.column-control-menu { background: #111c30; border: 1px solid var(--border-bright); border-radius: 9px; box-shadow: 0 18px 34px rgba(0, 0, 0, 0.35); display: flex; flex-direction: column; gap: 3px; left: 0; min-width: 178px; padding: 6px; position: absolute; text-transform: none; top: calc(100% + 8px); z-index: 12; }
+.column-control-option { background: transparent; border: 0; border-radius: 6px; color: var(--text); cursor: pointer; font-size: 11px; padding: 8px 9px; text-align: left; white-space: nowrap; }
+.column-control-option:hover, .column-control-option:focus-visible { background: rgba(118, 228, 237, 0.1); color: var(--cyan); }
 .empty-state { align-items: center; border-top: 1px solid rgba(146, 169, 205, 0.08); display: flex; flex-direction: column; justify-content: center; min-height: 270px; padding: 34px 22px; text-align: center; }
 .empty-state p { color: var(--muted); font-size: 13px; line-height: 1.6; margin-bottom: 16px; max-width: 480px; }
 .empty-orbit { align-items: center; border: 1px solid rgba(118, 228, 237, 0.28); border-radius: 999px; display: flex; height: 58px; justify-content: center; margin-bottom: 18px; position: relative; transform: rotate(-18deg); width: 112px; }

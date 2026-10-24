@@ -79,9 +79,19 @@ def rankings(
     view: str = Query("overall"),
     limit: int = Query(100, ge=1, le=100),
     page: int = Query(1, ge=1, le=5),
+    stage_filter: str | None = Query(None),
+    status_filter: str | None = Query(None),
+    sort: str = Query("rank"),
 ) -> dict:
     try:
-        return ReadOnlyStore().rankings(view, limit, page)
+        return ReadOnlyStore().rankings(
+            view,
+            limit,
+            page,
+            stage_filter=stage_filter,
+            status_filter=status_filter,
+            sort=sort,
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=400,

@@ -7,6 +7,8 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 type RankingView = "overall" | "stage1" | "stage2" | "stage3";
 type AssessmentStage = "stage1" | "stage2" | "stage3";
 type CandidateStatus = "Promising" | "Needs More Data" | "Inconclusive" | "Known Match" | "Duplicate Signal";
+type AssessmentSort = "rank" | "last_assessed_desc" | "last_assessed_asc";
+type RankingControls = { stage: AssessmentStage | null; status: CandidateStatus | null; sort: AssessmentSort };
 
 type DashboardStatus = {
   data_version: number | null;
@@ -324,6 +326,14 @@ const tabs: Array<{ id: RankingView; label: string }> = [
   { id: "stage3", label: "Stage 3" },
 ];
 
+const assessmentStages: AssessmentStage[] = ["stage1", "stage2", "stage3"];
+const statusFilterOptions: CandidateStatus[] = ["Promising", "Needs More Data", "Inconclusive", "Known Match", "Duplicate Signal"];
+
+function createRankingControls(): Record<RankingView, RankingControls> {
+  const controls: RankingControls = { stage: null, status: null, sort: "rank" };
+  return { overall: { ...controls }, stage1: { ...controls }, stage2: { ...controls }, stage3: { ...controls } };
+}
+
 function createReplayStates(): Record<RankingView, ReplayState> {
   const state: ReplayState = {
     active: false,
@@ -386,6 +396,36 @@ function stageName(stage: string): string {
 
 function displayStatus(status: string, stage?: string): string {
   return status === "Promising" && stage === "stage3" ? "Prime Candidate" : status;
+}
+
+function RankingColumnControl({
+  label,
+  active,
+  open,
+  options,
+  ariaLabel,
+  onToggle,
+  onSelect,
+  onClear,
+}: {
+  label: string;
+  active: boolean;
+  open: boolean;
+  options: Array<{ value: string; label: string }>;
+  ariaLabel: string;
+  onToggle: () => void;
+  onSelect: (value: string) => void;
+  onClear: () => void;
+}) {
+  return <div className="column-control" onClick={(event) => event.stopPropagation()}>
+    <button className={`column-control-trigger${active ? " active" : ""}`} type="button" aria-haspopup="menu" aria-expanded={open} aria-label={ariaLabel} onClick={onToggle}>
+      <span>{label}</span><span className="column-control-arrow" aria-hidden="true">⌄</span>
+    </button>
+    {active && <button className="column-control-clear" type="button" aria-label={`Clear ${label} selection`} onClick={onClear}>×</button>}
+    {open && <div className="column-control-menu" role="menu">
+      {options.map((option) => <button className="column-control-option" key={option.value} type="button" role="menuitem" onClick={() => onSelect(option.value)}>{option.label}</button>)}
+    </div>}
+  </div>;
 }
 
 function signalLetter(value: unknown): string | null {
@@ -598,8 +638,6 @@ function CandidateModal({ candidate, curve, history, replaySequence, onClose }: 
   </div>;
 }
 
-const assessmentStages: AssessmentStage[] = ["stage1", "stage2", "stage3"];
-
 function IdentifiedPanel({ onOpenCandidate, refreshKey }: { onOpenCandidate: (candidateId: string) => void; refreshKey: number }) {
   const [response, setResponse] = useState<IdentifiedResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -736,6 +774,8 @@ export default function HomePage() {
   const [history, setHistory] = useState<HistoryResponse | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
   const [replayStates, setReplayStates] = useState<Record<RankingView, ReplayState>>(createReplayStates);
+  const [rankingControls, setRankingControls] = useState<Record<RankingView, RankingControls>>(createRankingControls);
+  const [openColumnControl, setOpenColumnControl] = useState<"status" | "assessed" | null>(null);
   const [rankingPage, setRankingPage] = useState(1);
   const [pipelineStatusOpen, setPipelineStatusOpen] = useState(false);
 
@@ -754,7 +794,12 @@ export default function HomePage() {
     setLoading(true);
     setError(null);
     try {
-      const [nextStatus, nextRanking] = await Promise.all([fetchJson<DashboardStatus>("/api/status"), fetchJson<RankingResponse>(`/api/rankings?view=${activeTab}&limit=100&page=${rankingPage}`)]);
+      const controls = rankingControls[activeTab];
+      const query = new URLSearchParams({ view: activeTab, limit: "100", page: String(rankingPage) });
+      if (activeTab === "overall" && controls.stage) query.set("stage_filter", controls.stage);
+      if (activeTab !== "overall" && controls.status) query.set("status_filter", controls.status);
+      if (controls.sort !== "rank") query.set("sort", controls.sort);
+      const [nextStatus, nextRanking] = await Promise.all([fetchJson<DashboardStatus>("/api/status"), fetchJson<RankingResponse>(`/api/rankings?${query.toString()}`)]);
       setStatus(nextStatus);
       setRanking(nextRanking);
     } catch (cause) {
@@ -762,7 +807,7 @@ export default function HomePage() {
     } finally {
       setLoading(false);
     }
-  }, [activeTab, rankingPage]);
+  }, [activeTab, rankingControls, rankingPage]);
 
   useEffect(() => { void loadDashboard(); }, [loadDashboard]);
 
@@ -827,6 +872,12 @@ export default function HomePage() {
   }, [activeTab, closeCandidate, exitReplay, identifiedOpen, loadDashboard]);
 
   const activeReplay = replayStates[activeTab];
+  const activeControls = rankingControls[activeTab];
+  const updateRankingControls = (patch: Partial<RankingControls>) => {
+    setRankingControls((current) => ({ ...current, [activeTab]: { ...current[activeTab], ...patch } }));
+    setRankingPage(1);
+    setOpenColumnControl(null);
+  };
   useEffect(() => {
     if (!activeReplay.active || !activeReplay.playing) return;
     if (activeReplay.cursor >= activeReplay.maxSequence) {
@@ -856,6 +907,12 @@ export default function HomePage() {
   const nextUpdateAt = status?.worker.next_update_at ?? (status?.last_ingest_at ? new Date(new Date(status.last_ingest_at).getTime() + 5 * 60 * 1000).toISOString() : null);
   const pageCount = displayRanking?.page_count ?? 0;
   const displayCap = displayRanking?.display_cap ?? 500;
+  const statusControlActive = activeTab === "overall" ? activeControls.stage !== null : activeControls.status !== null;
+  const statusControlLabel = activeTab === "overall" ? (activeControls.stage ? stageName(activeControls.stage) : "Status") : (activeControls.status ? displayStatus(activeControls.status, activeTab) : "Status");
+  const statusControlOptions = activeTab === "overall"
+    ? assessmentStages.map((stage) => ({ value: stage, label: stageName(stage) }))
+    : statusFilterOptions.map((statusOption) => ({ value: statusOption, label: displayStatus(statusOption, activeTab) }));
+  const assessmentSortLabel = activeControls.sort === "last_assessed_desc" ? "Most recently assessed" : activeControls.sort === "last_assessed_asc" ? "Oldest assessed first" : "Last assessed";
   const selectRankingPage = (page: number) => {
     setRankingPage(page);
     if (activeReplay.active) void loadReplaySnapshot(activeTab, activeReplay.cursor, page);
@@ -870,11 +927,11 @@ export default function HomePage() {
   return <main className="observatory-shell">
     <div className="ambient-glow ambient-glow-one" aria-hidden="true" /><div className="ambient-glow ambient-glow-two" aria-hidden="true" />
     <header className="topbar"><div className="brand-lockup"><div className="brand-mark" aria-hidden="true">✦</div><div><p className="eyebrow">TransitScope // live assessment lab</p><h1>Explore potential space discoveries</h1></div></div><div className="topbar-actions"><span className="data-state"><span className={`status-dot ${status?.data_version ? "" : "muted"}`} /> {dataState}</span><button className="button button-quiet" type="button" onClick={() => void handleRefresh()} disabled={refreshing || loading}>↻ <span>{refreshing ? "Checking" : "Refresh"}</span></button><button className="button button-quiet tool-button" type="button" aria-label="Open ML Ops dashboard" title="ML Ops dashboard" onClick={() => { setOpsPassword(""); setOpsPasswordError(false); setOpsAccessOpen(true); }}>🔧</button></div></header>
-    <nav className="tab-row" aria-label="Assessment rankings">{tabs.map((tab) => <button className={`tab-button ${!identifiedOpen && activeTab === tab.id ? "active" : ""}`} key={tab.id} onClick={() => { setIdentifiedOpen(false); setPipelineStatusOpen(false); setRankingPage(1); setActiveTab(tab.id); }} type="button">{tab.label}</button>)}<button className={`tab-button ${identifiedOpen ? "active" : ""}`} type="button" onClick={() => { closeCandidate(); exitReplay(activeTab); setPipelineStatusOpen(false); setIdentifiedOpen(true); }}>Identified Known Matches</button></nav>
+    <nav className="tab-row" aria-label="Assessment rankings">{tabs.map((tab) => <button className={`tab-button ${!identifiedOpen && activeTab === tab.id ? "active" : ""}`} key={tab.id} onClick={() => { setIdentifiedOpen(false); setPipelineStatusOpen(false); setOpenColumnControl(null); setRankingPage(1); setActiveTab(tab.id); }} type="button">{tab.label}</button>)}<button className={`tab-button ${identifiedOpen ? "active" : ""}`} type="button" onClick={() => { closeCandidate(); exitReplay(activeTab); setPipelineStatusOpen(false); setOpenColumnControl(null); setIdentifiedOpen(true); }}>Identified Known Matches</button></nav>
     {!identifiedOpen ? <>
     <section className="stage-heading"><div><div className="stage-kicker"><span className="stage-number">{copy.number}</span> {copy.kicker}</div><h3>{copy.title}</h3><p>{copy.description}</p></div>{activeReplay.active ? <div className="replay-dock-wrap"><div className="replay-dock" aria-label={`${copy.title} replay controls`} title={activeReplay.loading ? "Loading saved replay snapshot" : `Saved replay · ${activeReplay.snapshot?.occurred_at ? formatDate(activeReplay.snapshot.occurred_at) : "Beginning of assessment"}`}><button aria-label={activeReplay.playing ? "Pause replay" : "Play replay"} className="button button-quiet replay-play" type="button" onClick={() => updateReplay(activeTab, { playing: !activeReplay.playing })} disabled={activeReplay.maxSequence === 0}>{activeReplay.playing ? "Ⅱ" : "▶"}</button><label className="replay-speed"> <span>Speed</span><select aria-label="Replay speed" value={activeReplay.speed} onChange={(event) => updateReplay(activeTab, { speed: Number(event.target.value) })}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select></label><input aria-label="Replay position" className="replay-range" type="range" min={0} max={activeReplay.maxSequence} value={activeReplay.cursor} onChange={(event) => void loadReplaySnapshot(activeTab, Number(event.target.value))} /><button className="button button-replay-active replay-exit" type="button" onClick={() => exitReplay(activeTab)}>Exit replay</button></div>{activeReplay.error && <p className="replay-error">{activeReplay.error}</p>}</div> : <div className="stage-actions"><button className="button button-outline" type="button" onClick={() => void startReplay(activeTab)}>Replay</button>{activeTab === "overall" && <button className="button button-outline" type="button" onClick={() => setPipelineStatusOpen((open) => !open)} aria-expanded={pipelineStatusOpen}>{pipelineStatusOpen ? "Hide pipeline status" : "Pipeline status"}</button>}</div>}</section>
     {activeTab === "overall" && pipelineStatusOpen && !activeReplay.active && <section className="metrics-grid" aria-label="Processing summary"><article className="metric-card"><span className="metric-label">Target universe</span><strong>{remainingCount.toLocaleString()} / {targetCount.toLocaleString()}</strong><span className="metric-detail">stars left in target universe exploration</span></article><article className="metric-card"><span className="metric-label">Processed</span><strong>{processedCount.toLocaleString()}</strong><span className="metric-detail">targets with published evaluations</span></article><article className="metric-card"><span className="metric-label">Active candidates</span><strong>{activeCandidateCount.toLocaleString()}</strong><span className="metric-detail">currently visible in this assessment</span></article><article className="metric-card metric-card-status"><span className="metric-label">Pipeline status</span><strong><span className={`status-dot ${status?.data_version ? "" : "muted"}`} /> {pipelineState}</strong><span className="metric-detail">{footerState}</span><span className="metric-detail">Next update: {nextUpdateAt ? formatDate(nextUpdateAt) : "Calculating…"}</span></article></section>}
-    <section className="ranking-panel" aria-labelledby="ranking-title"><div className="panel-header"><div><p className="eyebrow">Top candidates · {activeReplay.active ? "saved replay" : "live ranking"}</p><h3 id="ranking-title">{panelTitle}</h3></div><span className="panel-meta">Top {displayCap.toLocaleString()} displayed</span></div>{error ? <div className="error-state" role="alert"><span className="status-dot muted" /><h4>Published state unavailable</h4><p>{error}</p><button className="button button-outline" type="button" onClick={() => void loadDashboard()}>Try again</button></div> : activeReplay.loading && !activeReplay.snapshot ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Reading saved replay state.</h4><p>The replay is reconstructing this view from persisted ranking snapshots. No model is run during replay.</p></div> : loading && !ranking && !activeReplay.active ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Reading the latest published state.</h4><p>The API is checking the worker’s durable publication boundary. No model is run during a dashboard load.</p></div> : rows.length || removals.length ? <div className="table-wrap"><div className="ranking-table ranking-table-header" aria-hidden="true"><span>Rank</span><span>Candidate</span><span>Status</span><span>Current activity</span><span>Movement</span><span>Last assessed</span></div><div className="ranking-rows">{removals.map((removal) => <div className="ranking-table ranking-table-row replay-removal-row" key={`removed-${displayRanking?.sequence_number ?? 0}-${removal.candidate_id}`} role="status" aria-label={`${candidateDisplayLabel(removal.target_id, removal.candidate_id, undefined, removal.signal_index)} removed as already known`}><span className="rank-value">{removal.rank ?? "—"}</span><span className="candidate-cell"><strong>{candidateDisplayLabel(removal.target_id, removal.candidate_id, undefined, removal.signal_index)}</strong></span><span><span className="stage-status-stage">{stageName(removal.stage)}</span>{" "}<span className="status-pill status-known-match">Already Known</span><small className="score-label">{removal.known_match_id ?? "Catalog match"}</small></span><span className="activity-cell"><span className="activity-pulse removal-pulse" />{removal.activity}</span><span className="movement movement-removed">→ Removed</span><span className="last-update">{formatDate(removal.occurred_at)}</span></div>)}{rows.map((row) => { const resolutionLabel = signalResolutionLabel(row.signal_resolution); const rowStatus = displayStatus(row.status, row.stage); return <button className="ranking-table ranking-table-row" key={row.candidate_id} type="button" onClick={() => void openCandidate(row.candidate_id)} aria-label={`Open details for ${candidateDisplayLabel(row.target_id, row.candidate_id, undefined, row.signal_index)}`}><span className="rank-value">{row.rank}</span><span className="candidate-cell"><strong>{candidateDisplayLabel(row.target_id, row.candidate_id, undefined, row.signal_index)}</strong>{resolutionLabel && <small className="signal-resolution-note">{resolutionLabel}</small>}</span><span><span className="stage-status-stage">{stageName(row.stage)}</span>{" "}<span className={`status-pill status-${statusClass(rowStatus)}`}>{rowStatus}</span></span><span className="activity-cell"><span className="activity-pulse" />{row.activity}</span><span className={`movement movement-${row.movement}`}>{movementLabel(row)}</span><span className="last-update">{formatDate(row.last_evaluated_at)}</span></button>; })}</div>{pageCount > 1 && <nav className="ranking-pages" aria-label="Ranking pages"><span>Showing page {displayRanking?.page ?? rankingPage} of {pageCount}</span><div>{Array.from({ length: pageCount }, (_, index) => index + 1).map((page) => <button className={`page-button ${(displayRanking?.page ?? rankingPage) === page ? "active" : ""}`} key={page} type="button" onClick={() => selectRankingPage(page)}>{page}</button>)}</div></nav>}</div> : <div className="empty-state" role="status"><div className="empty-orbit" aria-hidden="true"><span /></div><h4>{activeReplay.active && activeReplay.cursor === 0 ? "The replay begins before the first candidate." : "The observatory is waiting for its first observation."}</h4><p>{activeReplay.active ? "Move the replay forward to watch candidates enter, change rank, advance, or leave the active pool." : "The ranking will populate when a MAST/TESS evaluation is published. Empty is a real state here—not a hidden placeholder result."}</p><div className="empty-state-meta"><span className="status-dot muted" /> No current activity</div></div>}</section>
+    <section className="ranking-panel" aria-labelledby="ranking-title"><div className="panel-header"><div><p className="eyebrow">Top candidates · {activeReplay.active ? "saved replay" : "live ranking"}</p><h3 id="ranking-title">{panelTitle}</h3></div><span className="panel-meta">Top {displayCap.toLocaleString()} displayed</span></div>{error ? <div className="error-state" role="alert"><span className="status-dot muted" /><h4>Published state unavailable</h4><p>{error}</p><button className="button button-outline" type="button" onClick={() => void loadDashboard()}>Try again</button></div> : activeReplay.loading && !activeReplay.snapshot ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Reading saved replay state.</h4><p>The replay is reconstructing this view from persisted ranking snapshots. No model is run during replay.</p></div> : loading && !ranking && !activeReplay.active ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Reading the latest published state.</h4><p>The API is checking the worker’s durable publication boundary. No model is run during a dashboard load.</p></div> : rows.length || removals.length ? <div className="table-wrap"><div className="ranking-table ranking-table-header"><span>Rank</span><span>Candidate</span><RankingColumnControl label={statusControlLabel} active={statusControlActive} open={openColumnControl === "status"} ariaLabel={activeTab === "overall" ? "Filter overall ranking by stage" : "Filter ranking by status"} options={statusControlOptions} onToggle={() => setOpenColumnControl((current) => current === "status" ? null : "status")} onSelect={(value) => activeTab === "overall" ? updateRankingControls({ stage: value as AssessmentStage }) : updateRankingControls({ status: value as CandidateStatus })} onClear={() => activeTab === "overall" ? updateRankingControls({ stage: null }) : updateRankingControls({ status: null })} /><span>Current activity</span><span>Movement</span><RankingColumnControl label={assessmentSortLabel} active={activeControls.sort !== "rank"} open={openColumnControl === "assessed"} ariaLabel="Sort ranking by assessment time" options={[{ value: "last_assessed_desc", label: "Most recently assessed" }, { value: "last_assessed_asc", label: "Oldest assessed first" }]} onToggle={() => setOpenColumnControl((current) => current === "assessed" ? null : "assessed")} onSelect={(value) => updateRankingControls({ sort: value as AssessmentSort })} onClear={() => updateRankingControls({ sort: "rank" })} /></div><div className="ranking-rows">{removals.map((removal) => <div className="ranking-table ranking-table-row replay-removal-row" key={`removed-${displayRanking?.sequence_number ?? 0}-${removal.candidate_id}`} role="status" aria-label={`${candidateDisplayLabel(removal.target_id, removal.candidate_id, undefined, removal.signal_index)} removed as already known`}><span className="rank-value">{removal.rank ?? "—"}</span><span className="candidate-cell"><strong>{candidateDisplayLabel(removal.target_id, removal.candidate_id, undefined, removal.signal_index)}</strong></span><span><span className="stage-status-stage">{stageName(removal.stage)}</span>{" "}<span className="status-pill status-known-match">Already Known</span><small className="score-label">{removal.known_match_id ?? "Catalog match"}</small></span><span className="activity-cell"><span className="activity-pulse removal-pulse" />{removal.activity}</span><span className="movement movement-removed">→ Removed</span><span className="last-update">{formatDate(removal.occurred_at)}</span></div>)}{rows.map((row) => { const resolutionLabel = signalResolutionLabel(row.signal_resolution); const rowStatus = displayStatus(row.status, row.stage); return <button className="ranking-table ranking-table-row" key={row.candidate_id} type="button" onClick={() => void openCandidate(row.candidate_id)} aria-label={`Open details for ${candidateDisplayLabel(row.target_id, row.candidate_id, undefined, row.signal_index)}`}><span className="rank-value">{row.rank}</span><span className="candidate-cell"><strong>{candidateDisplayLabel(row.target_id, row.candidate_id, undefined, row.signal_index)}</strong>{resolutionLabel && <small className="signal-resolution-note">{resolutionLabel}</small>}</span><span><span className="stage-status-stage">{stageName(row.stage)}</span>{" "}<span className={`status-pill status-${statusClass(rowStatus)}`}>{rowStatus}</span></span><span className="activity-cell"><span className="activity-pulse" />{row.activity}</span><span className={`movement movement-${row.movement}`}>{movementLabel(row)}</span><span className="last-update">{formatDate(row.last_evaluated_at)}</span></button>; })}</div>{pageCount > 1 && <nav className="ranking-pages" aria-label="Ranking pages"><span>Showing page {displayRanking?.page ?? rankingPage} of {pageCount}</span><div>{Array.from({ length: pageCount }, (_, index) => index + 1).map((page) => <button className={`page-button ${(displayRanking?.page ?? rankingPage) === page ? "active" : ""}`} key={page} type="button" onClick={() => selectRankingPage(page)}>{page}</button>)}</div></nav>}</div> : <div className="empty-state" role="status"><div className="empty-orbit" aria-hidden="true"><span /></div><h4>{activeReplay.active && activeReplay.cursor === 0 ? "The replay begins before the first candidate." : "The observatory is waiting for its first observation."}</h4><p>{activeReplay.active ? "Move the replay forward to watch candidates enter, change rank, advance, or leave the active pool." : "The ranking will populate when a MAST/TESS evaluation is published. Empty is a real state here—not a hidden placeholder result."}</p><div className="empty-state-meta"><span className="status-dot muted" /> No current activity</div></div>}</section>
     </> : <IdentifiedPanel onOpenCandidate={(candidateId) => void openCandidate(candidateId)} refreshKey={identifiedRefreshKey} />}
     <footer className="footer-note"><span className="footer-pulse" aria-hidden="true" /><span>Data source: MAST / TESS · {footerState} · Evidence is provisional</span></footer>
     {modal}
