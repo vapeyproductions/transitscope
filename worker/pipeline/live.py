@@ -770,6 +770,7 @@ def run_live_cycle(
     stage_capacity: int | None = None,
     max_history_sectors: int,
     stage1_pool_size: int = 500,
+    stage1_continuous_intake_per_cycle: int = 2,
     stage2_capacity: int | None = None,
     stage3_initial_intake_size: int = 100,
     stage3_reassessment_concurrency: int = 4,
@@ -800,6 +801,8 @@ def run_live_cycle(
         stage2_reassessment_threshold = stage2_capacity
     if min(stage1_threshold, stage2_reassessment_threshold) < 1:
         raise ValueError("stage priority thresholds must be positive")
+    if stage1_continuous_intake_per_cycle < 0:
+        raise ValueError("stage1_continuous_intake_per_cycle cannot be negative")
     if stage3_reassessment_concurrency < 1:
         raise ValueError("stage3_reassessment_concurrency must be positive")
 
@@ -836,7 +839,11 @@ def run_live_cycle(
             and candidate["processing_slot_occupied"]
         }
 
-    def fill_stage1(replacement_slots: int | None = None) -> dict[str, Any]:
+    def fill_stage1(
+        replacement_slots: int | None = None,
+        *,
+        intake_reason: str | None = None,
+    ) -> dict[str, Any]:
         """Seed the initial baseline or replace released Stage 1 work.
 
         ``stage1_pool_size`` is used only to establish the initial comparative
@@ -851,7 +858,7 @@ def run_live_cycle(
             replacement_reason = "initial_baseline"
         else:
             replacement_needed = max(0, replacement_slots)
-            replacement_reason = "released_stage1_work"
+            replacement_reason = intake_reason or "released_stage1_work"
         if not replacement_needed:
             return {
                 "status": "idle",
@@ -864,6 +871,7 @@ def run_live_cycle(
                 "replacement_reason": replacement_reason,
                 "processed_target_count": processed_target_count(store),
                 "publish_version": store.latest_published_version(),
+                "intake_reason": replacement_reason,
             }
         if status_callback:
             status_callback(
@@ -875,7 +883,7 @@ def run_live_cycle(
             )
         stage1_started = time.perf_counter()
         try:
-            return run_batch(
+            result = run_batch(
                 data_dir=data_dir,
                 manifest_path=manifest_path,
                 config=BatchConfig(
@@ -890,17 +898,19 @@ def run_live_cycle(
                     target_pool_size=stage1_pool_size,
                 ),
             )
+            result["intake_reason"] = replacement_reason
+            return result
         finally:
             add_timing("stage1_seconds", stage1_started)
 
-    # The only unconditional Stage 1 work is the initial baseline bootstrap.
-    # Once that baseline exists, Stage 3 must request every downstream
-    # assessment and replacement; the worker must not continuously churn Stage
-    # 1/2 in the background just because a ranking window exists.
+    # Bootstrap the configured Stage 1 baseline before downstream work begins.
+    # After the baseline is established, a separate small intake below keeps
+    # the Stage 1 ranking growing even when Stage 3 has no replacement debt.
+    baseline_ready_at_cycle_start = processed_target_count(store) >= stage1_pool_size
     refresh_batch: dict[str, Any] = {"status": "idle", "refresh_count": 0}
     batch = fill_stage1() if processed_target_count(store) < stage1_pool_size else {
         "status": "idle",
-        "message": "Initial Stage 1 baseline is complete; waiting for Stage 3 dispatch",
+        "message": "Initial Stage 1 baseline is complete",
         "selected_count": 0,
     }
 
@@ -991,6 +1001,7 @@ def run_live_cycle(
             )
         finally:
             add_timing("stage1_seconds", stage1_started)
+        result["intake_reason"] = "stage1_needs_more_data_reassessment"
         return result
 
     def request_stage2_replacement() -> dict[str, Any] | None:
@@ -1328,6 +1339,31 @@ def run_live_cycle(
     # Stage 3 is the final assessment stage, so a catalog match here is a
     # legitimate Stage 3 removal and is retained in the identified/replay
     # history at that stage.
+    continuous_stage1_intake: dict[str, Any] = {
+        "status": "idle",
+        "message": (
+            "Continuous Stage 1 intake is disabled"
+            if stage1_continuous_intake_per_cycle == 0
+            else "Waiting for the initial Stage 1 baseline"
+        ),
+        "selected_count": 0,
+        "evaluated_count": 0,
+        "intake_reason": "continuous_stage1_intake",
+    }
+    if baseline_ready_at_cycle_start and stage1_continuous_intake_per_cycle:
+        if status_callback:
+            status_callback(
+                "processing_stage1",
+                {
+                    "reason": "continuous_stage1_intake",
+                    "requested_count": stage1_continuous_intake_per_cycle,
+                },
+            )
+        continuous_stage1_intake = fill_stage1(
+            stage1_continuous_intake_per_cycle,
+            intake_reason="continuous_stage1_intake",
+        )
+
     check_catalog("stage3")
     matched_count = sum(int(check.get("matches") or 0) for check in catalog_checks)
     catalog = {
@@ -1350,11 +1386,8 @@ def run_live_cycle(
         "signal_independence": signal_independence,
         "replacement_batch": stage1_requests[-1] if stage1_requests else {"status": "idle", "selected_count": 0},
         "stage1_requests": stage1_requests,
-        "exploration_batch": {
-            "status": "idle",
-            "message": "Continuous exploration is paused until Stage 3 requests a downstream replacement",
-            "selected_count": 0,
-        },
+        "continuous_stage1_intake": continuous_stage1_intake,
+        "exploration_batch": continuous_stage1_intake,
         "stage2": stage2_results,
         "stage3": stage3_results,
         "stage3_intake": {

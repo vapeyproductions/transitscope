@@ -1,9 +1,41 @@
 import unittest
 
+from main import queue_cycle_events
 from pipeline.live import _stage2_needs_data_queue
 
 
 class LiveQueueTests(unittest.TestCase):
+    def test_continuous_stage1_intake_is_distinguished_from_waterfall_work(self) -> None:
+        events = queue_cycle_events(
+            {
+                "continuous_stage1_intake": {
+                    "intake_reason": "continuous_stage1_intake",
+                    "candidate_ids": ["candidate-new"],
+                },
+                "stage1_requests": [
+                    {
+                        "intake_reason": "released_stage1_work",
+                        "candidate_ids": ["candidate-replacement"],
+                    },
+                    {
+                        "intake_reason": "stage1_needs_more_data_reassessment",
+                        "refresh_count": 1,
+                        "candidate_ids": ["candidate-refresh"],
+                    },
+                ],
+            },
+            None,
+        )
+
+        self.assertEqual(
+            [(event["candidate_id"], event["kind"], event["reason"]) for event in events],
+            [
+                ("candidate-replacement", "intake", "released_stage1_work"),
+                ("candidate-refresh", "reassessment", "stage1_needs_more_data_reassessment"),
+                ("candidate-new", "intake", "continuous_stage1_intake"),
+            ],
+        )
+
     def test_stage2_needs_data_queue_is_ranked_and_thresholded(self) -> None:
         candidates = [
             {

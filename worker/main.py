@@ -249,13 +249,29 @@ def queue_cycle_events(result: dict, store: DuckDBStore) -> list[dict[str, objec
     for request in result.get("stage1_requests") or []:
         if not isinstance(request, dict):
             continue
+        is_refresh = bool(request.get("refresh_count"))
         for candidate_id in request.get("candidate_ids") or []:
+            add(
+                candidate_id,
+                "stage1",
+                "reassessment" if is_refresh else "intake",
+                "Needs More Data" if is_refresh else "New Target",
+                str(
+                    request.get("intake_reason")
+                    or request.get("replacement_reason")
+                    or "stage3_waterfall_replacement"
+                ),
+            )
+
+    continuous = result.get("continuous_stage1_intake")
+    if isinstance(continuous, dict):
+        for candidate_id in continuous.get("candidate_ids") or []:
             add(
                 candidate_id,
                 "stage1",
                 "intake",
                 "New Target",
-                "stage3_waterfall_replacement",
+                str(continuous.get("intake_reason") or "continuous_stage1_intake"),
             )
 
     for item in result.get("stage2") or []:
@@ -292,12 +308,42 @@ def queue_cycle_events(result: dict, store: DuckDBStore) -> list[dict[str, objec
 def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -> dict:
     batch = result.get("batch") if isinstance(result.get("batch"), dict) else {}
     refresh = result.get("stage1_refresh") if isinstance(result.get("stage1_refresh"), dict) else {}
-    stage1_candidate_ids = list(batch.get("candidate_ids") or []) + list(refresh.get("candidate_ids") or [])
+    continuous = result.get("continuous_stage1_intake") if isinstance(result.get("continuous_stage1_intake"), dict) else {}
+    request_ids = [
+        candidate_id
+        for request in result.get("stage1_requests") or []
+        if isinstance(request, dict)
+        for candidate_id in request.get("candidate_ids") or []
+    ]
+    stage1_candidate_ids = (
+        list(batch.get("candidate_ids") or [])
+        + list(refresh.get("candidate_ids") or [])
+        + request_ids
+        + list(continuous.get("candidate_ids") or [])
+    )
     stage1_summary = candidate_status_summary(store, stage1_candidate_ids)
     stage1_summary.update({
-        "selected": int(batch.get("selected_count") or 0) + int(refresh.get("refresh_count") or 0),
+        "selected": (
+            int(batch.get("selected_count") or 0)
+            + int(refresh.get("refresh_count") or 0)
+            + sum(
+                int(request.get("selected_count") or 0)
+                for request in result.get("stage1_requests") or []
+                if isinstance(request, dict)
+            )
+            + int(continuous.get("selected_count") or 0)
+        ),
         "evaluated": len(stage1_candidate_ids),
-        "failed": int(batch.get("failed_count") or 0) + int(refresh.get("failed_count") or 0),
+        "failed": (
+            int(batch.get("failed_count") or 0)
+            + int(refresh.get("failed_count") or 0)
+            + sum(
+                int(request.get("failed_count") or 0)
+                for request in result.get("stage1_requests") or []
+                if isinstance(request, dict)
+            )
+            + int(continuous.get("failed_count") or 0)
+        ),
         "released": int(batch.get("replacement_slots") or 0),
         "timing_seconds": round(float(timings.get("stage1_seconds") or 0.0), 3),
     })
@@ -333,6 +379,7 @@ def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -
         "stage2_reassessment": result.get("stage2_reassessment", {}),
         "stage3_reassessment": result.get("stage3_reassessment", {}),
         "stage3_intake": result.get("stage3_intake", {}),
+        "continuous_stage1_intake": result.get("continuous_stage1_intake", {}),
     }
 
 
@@ -439,6 +486,9 @@ def main() -> None:
                     stage2_reassessment_threshold=int(os.getenv("STAGE2_REASSESSMENT_THRESHOLD", "100")),
                     max_history_sectors=int(os.getenv("MAX_HISTORY_SECTORS", "8")),
                     stage1_pool_size=int(os.getenv("STAGE1_POOL_SIZE", "500")),
+                    stage1_continuous_intake_per_cycle=int(
+                        os.getenv("STAGE1_CONTINUOUS_INTAKE_PER_CYCLE", "2")
+                    ),
                     stage3_initial_intake_size=int(os.getenv("STAGE3_INITIAL_INTAKE_SIZE", "100")),
                     stage3_reassessment_concurrency=int(
                         os.getenv("STAGE3_REASSESSMENT_CONCURRENCY", "4")
