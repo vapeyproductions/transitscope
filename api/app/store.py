@@ -202,6 +202,7 @@ class ReadOnlyStore:
                         "stage": row[2],
                         "status": row[3],
                         "evidence_score": row[5] if row[5] is not None else row[4],
+                        "overall_score": row[4],
                         "ranking_rationale": ranking_rationale(
                             row[3], row[5] if row[5] is not None else row[4]
                         ),
@@ -596,6 +597,7 @@ class ReadOnlyStore:
                     "stage": stage,
                     "status": status,
                     "evidence_score": evidence,
+                    "overall_score": candidate[4],
                     "ranking_rationale": ranking_rationale(status, evidence),
                     "activity": payload.get("activity", candidate[8]),
                     "rank_delta": int(candidate[9] or 0),
