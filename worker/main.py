@@ -157,7 +157,6 @@ def main() -> None:
                     "idle",
                     {
                         "last_cycle": result,
-                        "catalog_audit": result.get("catalog_audit") if isinstance(result, dict) else None,
                         "catalog_health": catalog_health,
                         "history_repair": history_repair,
                         "next_update_at": (datetime.now(timezone.utc) + timedelta(seconds=poll_seconds)).isoformat(),

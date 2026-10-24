@@ -82,13 +82,22 @@ def all_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
 def candidate_match_inputs(
     store: DuckDBStore,
     candidate_ids: Sequence[str] | None = None,
+    *,
+    primary_only: bool = True,
 ) -> list[dict[str, Any]]:
-    """Return active candidates with coordinates and latest period evidence."""
+    """Return matchable candidates with coordinates and latest period evidence.
+
+    Known-object matching is deliberately limited to the canonical primary
+    signal for each star. Sibling signals are retained for independence
+    analysis, but they must never independently trigger a catalog lookup.
+    """
 
     store.initialize()
     with store.connect() as connection:
         params: list[Any] = []
         where = "WHERE c.active = true"
+        if primary_only:
+            where += " AND c.signal_resolution = 'primary'"
         if candidate_ids:
             placeholders = ", ".join("?" for _ in candidate_ids)
             where += f" AND c.candidate_id IN ({placeholders})"
@@ -96,6 +105,7 @@ def candidate_match_inputs(
         rows = connection.execute(
             f"""
             SELECT c.candidate_id, c.target_id, c.current_stage, c.status,
+                   c.signal_resolution,
                    tm.ra_deg, tm.dec_deg
             FROM candidates c
             LEFT JOIN target_manifest tm ON tm.target_id = c.target_id
@@ -128,8 +138,9 @@ def candidate_match_inputs(
                     "target_id": row[1],
                     "current_stage": row[2],
                     "status": row[3],
-                    "ra_deg": row[4],
-                    "dec_deg": row[5],
+                    "signal_resolution": row[4],
+                    "ra_deg": row[5],
+                    "dec_deg": row[6],
                     "period_days": period,
                     "features": features,
                 }
@@ -206,132 +217,6 @@ def stage3_replacement_debt(store: DuckDBStore) -> list[dict[str, Any]]:
         ),
         key=lambda item: (int(item["sequence_number"]), str(item["candidate_id"])),
     )
-
-
-def _catalog_audit_evaluation_signature(candidate: Mapping[str, Any]) -> str:
-    """Return the persisted assessment identity used by the audit queue."""
-
-    value = candidate.get("last_evaluated_at")
-    if value is None:
-        return "unassessed"
-    return value.isoformat() if hasattr(value, "isoformat") else str(value)
-
-
-def catalog_audit_candidates(
-    store: DuckDBStore,
-    *,
-    stage: str,
-    catalog_signature: str,
-    limit: int,
-) -> list[dict[str, Any]]:
-    """Return active candidates not yet checked for this catalog snapshot.
-
-    The candidate's latest assessment timestamp is part of the durable audit
-    key. A new Stage 2 evaluation therefore re-enters the audit queue, while a
-    worker restart does not repeat an unchanged comparison.
-    """
-
-    if limit < 1:
-        raise ValueError("catalog audit limit must be positive")
-    candidates = [
-        candidate
-        for candidate in active_candidates(store)
-        if candidate["current_stage"] == stage
-    ]
-    if not candidates:
-        return []
-    store.initialize()
-    with store.connect() as connection:
-        rows = connection.execute(
-            """
-            SELECT candidate_id, payload_json
-            FROM pipeline_events
-            WHERE event_type = 'catalog_audit_checked'
-              AND stage = ?
-            """,
-            [stage],
-        ).fetchall()
-    audited: set[tuple[str, str, str]] = set()
-    for candidate_id, payload_json in rows:
-        try:
-            payload = json.loads(payload_json or "{}")
-        except (TypeError, ValueError, json.JSONDecodeError):
-            continue
-        audited.add(
-            (
-                str(candidate_id),
-                str(payload.get("candidate_evaluation_signature") or "unassessed"),
-                str(payload.get("catalog_signature") or ""),
-            )
-        )
-    pending = [
-        candidate
-        for candidate in candidates
-        if (
-            str(candidate["candidate_id"]),
-            _catalog_audit_evaluation_signature(candidate),
-            str(catalog_signature),
-        )
-        not in audited
-    ]
-    return sorted(
-        pending,
-        key=lambda candidate: (
-            candidate["rank_stage"] is None,
-            int(candidate["rank_stage"] or 0),
-            str(candidate["candidate_id"]),
-        ),
-    )[:limit]
-
-
-def publish_catalog_audit_events(
-    store: DuckDBStore,
-    audits: Sequence[Mapping[str, Any]],
-    *,
-    stage: str,
-    catalog_signature: str,
-    catalog_status: str | None,
-    catalog_record_count: int,
-) -> int | None:
-    """Persist bounded catalog checks without creating ranking snapshots."""
-
-    if not audits:
-        return None
-    occurred_at = datetime.now(timezone.utc)
-    version = (store.latest_published_version() or 0) + 1
-    events: list[dict[str, Any]] = []
-    for audit in audits:
-        candidate_id = str(audit["candidate_id"])
-        evaluation_signature = str(audit.get("candidate_evaluation_signature") or "unassessed")
-        audit_key = f"{stage}|{candidate_id}|{catalog_signature}|{evaluation_signature}"
-        suffix = re.sub(r"[^a-zA-Z0-9]+", "", candidate_id)[-24:]
-        event_suffix = re.sub(r"[^a-zA-Z0-9]+", "", audit_key)[-24:]
-        events.append(
-            {
-                "event_id": f"catalog-audit-{suffix}-{event_suffix}",
-                "sequence_number": version,
-                "candidate_id": candidate_id,
-                "stage": stage,
-                "event_type": "catalog_audit_checked",
-                "payload_json": {
-                    "catalog_signature": catalog_signature,
-                    "catalog_status": catalog_status,
-                    "catalog_record_count": catalog_record_count,
-                    "candidate_evaluation_signature": evaluation_signature,
-                    "matched": bool(audit.get("matched")),
-                    "catalog_id": audit.get("catalog_id"),
-                    "match_kind": audit.get("match_kind"),
-                },
-                "occurred_at": occurred_at,
-                "model_run_id": f"catalog-audit-{version}",
-            }
-        )
-    store.publish_batch(
-        version=version,
-        note=f"Catalog audit for {stage}: {len(events)} candidates checked",
-        events=events,
-    )
-    return version
 
 
 def promotable_candidates(
@@ -1108,8 +993,6 @@ __all__ = [
     "all_candidates",
     "active_candidates",
     "candidate_match_inputs",
-    "catalog_audit_candidates",
-    "publish_catalog_audit_events",
     "stage3_replacement_debt",
     "movement_for_ranks",
     "overall_sort_key",

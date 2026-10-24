@@ -11,6 +11,7 @@ from ingestion.exoplanet_archive import (
     ExoplanetArchiveConfig,
 )
 from pipeline.lifecycle import (
+    candidate_match_inputs,
     overall_sort_key,
     promotable_candidates,
     publish_known_matches,
@@ -40,6 +41,71 @@ class FakeArchiveAdapter(ExoplanetArchiveAdapter):
 
 
 class CatalogTests(unittest.TestCase):
+    def test_catalog_inputs_are_limited_to_primary_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = DataPaths(Path(temp_dir))
+            paths.ensure()
+            store = DuckDBStore(paths.database)
+            now = datetime.now(timezone.utc)
+            store.publish_batch(
+                version=1,
+                targets=[
+                    {
+                        "target_id": "TIC 123",
+                        "provider_target_id": "123",
+                        "ra_deg": 10.0,
+                        "dec_deg": -2.0,
+                        "sector": 1,
+                        "cadence": "SPOC",
+                        "source_product_family": "TESS SPOC light curve",
+                        "selection_bucket": "fixture",
+                        "manifest_status": "processed",
+                    }
+                ],
+                candidates=[
+                    {
+                        "candidate_id": "primary",
+                        "target_id": "TIC 123",
+                        "current_stage": "stage1",
+                        "status": "Promising",
+                        "overall_score": 90.0,
+                        "stage_score": 90.0,
+                        "rank_overall": 1,
+                        "rank_stage": 1,
+                        "activity": "No current activity",
+                        "rank_delta": 0,
+                        "movement_kind": "new",
+                        "last_evaluated_at": now,
+                        "known_match_id": None,
+                        "active": True,
+                        "signal_resolution": "primary",
+                    },
+                    {
+                        "candidate_id": "sibling",
+                        "target_id": "TIC 123",
+                        "current_stage": "stage1",
+                        "status": "Promising",
+                        "overall_score": 89.0,
+                        "stage_score": 89.0,
+                        "rank_overall": 2,
+                        "rank_stage": 2,
+                        "activity": "Queued for independence assessment",
+                        "rank_delta": 0,
+                        "movement_kind": "new",
+                        "last_evaluated_at": now,
+                        "known_match_id": None,
+                        "active": True,
+                        "signal_resolution": "pending_alias_review",
+                    },
+                ],
+            )
+
+            self.assertEqual([item["candidate_id"] for item in candidate_match_inputs(store)], ["primary"])
+            self.assertEqual(
+                {item["candidate_id"] for item in candidate_match_inputs(store, primary_only=False)},
+                {"primary", "sibling"},
+            )
+
     def test_live_projection_includes_tic_id_and_failed_cache_is_not_reused(self) -> None:
         self.assertIn("tic_id", ExoplanetArchiveAdapter.TABLE_COLUMNS["pscomppars"])
         with tempfile.TemporaryDirectory() as temp_dir:
