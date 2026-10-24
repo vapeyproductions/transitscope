@@ -411,7 +411,7 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .motion-controls label { align-items: center; color: var(--muted); display: inline-flex; font-size: 9px; gap: 5px; }
 .motion-controls select { background: rgba(255, 255, 255, 0.06); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 9px; padding: 5px 6px; }
 .motion-time { color: var(--faint); font-size: 9px; white-space: nowrap; }
-.pipeline-motion-track { display: grid; gap: 8px; grid-template-columns: minmax(132px, 0.7fr) repeat(3, minmax(0, 1fr)); min-height: 325px; }
+.pipeline-motion-track { display: grid; gap: 8px; grid-template-columns: minmax(132px, 0.7fr) repeat(3, minmax(0, 1fr)); min-height: 325px; position: relative; }
 .motion-lane { min-width: 0; position: relative; }
 .motion-lane:not(:last-child)::after { animation: motion-arrow-pulse 2.2s ease-in-out infinite; color: var(--cyan); content: "→"; font-size: 20px; opacity: 0.72; position: absolute; right: -13px; top: 43%; z-index: 2; }
 .motion-lane-title { align-items: baseline; display: flex; gap: 6px; justify-content: space-between; min-height: 26px; }
@@ -451,11 +451,25 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .motion-dot.motion-arrival { animation: motion-drop 2.2s ease-in-out infinite; }
 .motion-field-empty { color: var(--faint); font-size: 9px; left: 50%; position: absolute; top: 50%; transform: translate(-50%, -50%); white-space: nowrap; }
 .motion-lane-caption { color: var(--faint); font-size: 8px; line-height: 1.35; min-height: 25px; padding: 7px 3px 0; text-align: center; }
+.motion-transfer-layer { height: 100%; inset: 0; overflow: visible; pointer-events: none; position: absolute; width: 100%; z-index: 5; }
+.motion-route-path { fill: none; marker-end: url(#motion-route-arrow); opacity: 0.42; stroke: var(--cyan); stroke-dasharray: 2 2; stroke-width: 0.45; vector-effect: non-scaling-stroke; }
+.motion-transfer-reassessment .motion-route-path { stroke: var(--blue); }
+.motion-transfer-handoff .motion-route-path { opacity: 0.62; }
+.motion-transfer-layer marker path { fill: var(--cyan); }
+.motion-transfer-reassessment marker path { fill: var(--blue); }
+.motion-transfer-dot { fill: var(--cyan); stroke: rgba(232, 240, 255, 0.9); stroke-width: 0.35; }
+.motion-transfer-dot.promising { fill: var(--green); }
+.motion-transfer-dot.needs-more-data { fill: var(--blue); }
+.motion-transfer-dot.inconclusive { fill: var(--gold); }
+.motion-transfer-dot.known-match { fill: var(--purple); }
+.motion-transfer-dot.error { fill: var(--red); }
 .pipeline-motion-footer { align-items: end; display: flex; gap: 16px; justify-content: space-between; margin-top: 9px; }
 .pipeline-motion-footer .pipeline-dot-legend { margin-top: 0; }
 .motion-scrubber { align-items: center; color: var(--muted); display: flex; flex: 0 1 310px; font-size: 9px; gap: 8px; }
 .motion-scrubber input { accent-color: var(--cyan); flex: 1; min-width: 90px; }
 .motion-scrubber small { color: var(--faint); white-space: nowrap; }
+.motion-path-note { align-items: center; color: var(--faint); display: flex; font-size: 8px; gap: 7px; line-height: 1.35; margin-top: 9px; }
+.motion-path-line { border-top: 1px dashed var(--cyan); display: inline-block; flex: 0 0 22px; opacity: 0.8; }
 @keyframes motion-float { 0%, 100% { transform: translate3d(0, 2px, 0); } 50% { transform: translate3d(0, -4px, 0); } }
 @keyframes motion-drop { 0% { opacity: 0; transform: translate3d(12px, -32px, 0) scale(0.65); } 32%, 100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); } }
 @keyframes motion-swoop { 0%, 100% { transform: translate3d(0, 0, 0); } 35% { transform: translate3d(18px, -13px, 0) scale(1.25); } 70% { transform: translate3d(28px, -28px, 0) scale(0.85); } }
