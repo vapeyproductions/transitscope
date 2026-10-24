@@ -12,7 +12,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.timeseries import BoxLeastSquares
 
-from pipeline.lifecycle import STATUS_PRIORITY, active_candidates, movement_for_ranks
+from pipeline.lifecycle import STATUS_PRIORITY, active_candidates, movement_for_ranks, overall_sort_key
 from storage.duckdb_store import DuckDBStore
 
 
@@ -433,13 +433,7 @@ def publish_stage1_result(
     )
     stage1_ranks = {candidate["candidate_id"]: index for index, candidate in enumerate(stage1_pool, 1)}
     overall_pool = previous + [new_candidate]
-    overall_pool.sort(
-        key=lambda candidate: (
-            -STATUS_PRIORITY.get(str(candidate.get("status")), 0),
-            -float(candidate["overall_score"] or 0.0),
-            candidate["candidate_id"],
-        )
-    )
+    overall_pool.sort(key=overall_sort_key)
     overall_ranks = {candidate["candidate_id"]: index for index, candidate in enumerate(overall_pool, 1)}
     candidate_updates = []
     for candidate in previous:

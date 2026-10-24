@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from pipeline.stage1 import Stage1ProcessingError, Stage1Processor, resolve_artifact_path
-from pipeline.lifecycle import STATUS_PRIORITY, movement_for_ranks
+from pipeline.lifecycle import STATUS_PRIORITY, movement_for_ranks, overall_sort_key
 from ingestion.mast_adapter import MastProbeError, attach_product_to_target
 from storage.duckdb_store import DuckDBStore
 from storage.paths import DataPaths
@@ -363,13 +363,7 @@ def publish_stage1_batch(
     )
     stage1_ranks = {candidate["candidate_id"]: index for index, candidate in enumerate(stage1_pool, 1)}
     overall_pool = active_existing + new_candidates
-    overall_pool.sort(
-        key=lambda candidate: (
-            -STATUS_PRIORITY.get(str(candidate.get("status")), 0),
-            -float(candidate["overall_score"] or 0.0),
-            str(candidate["candidate_id"]),
-        )
-    )
+    overall_pool.sort(key=overall_sort_key)
     overall_ranks = {candidate["candidate_id"]: index for index, candidate in enumerate(overall_pool, 1)}
     prior_by_id = {candidate["candidate_id"]: candidate for candidate in previous}
 

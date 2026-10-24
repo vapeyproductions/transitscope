@@ -9,7 +9,7 @@ from ingestion.exoplanet_archive import (
     ExoplanetArchiveAdapter,
     ExoplanetArchiveConfig,
 )
-from pipeline.lifecycle import promotable_candidates, publish_known_matches
+from pipeline.lifecycle import overall_sort_key, promotable_candidates, publish_known_matches
 from storage.duckdb_store import DuckDBStore
 from storage.paths import DataPaths
 
@@ -34,6 +34,27 @@ class FakeArchiveAdapter(ExoplanetArchiveAdapter):
 
 
 class CatalogTests(unittest.TestCase):
+    def test_overall_ranking_uses_combined_score_before_current_status(self) -> None:
+        candidates = [
+            {
+                "candidate_id": "stage3-inconclusive",
+                "status": "Inconclusive",
+                "overall_score": 78.0,
+            },
+            {
+                "candidate_id": "stage1-promising",
+                "status": "Promising",
+                "overall_score": 62.0,
+            },
+        ]
+
+        ordered = sorted(candidates, key=overall_sort_key)
+
+        self.assertEqual(
+            [candidate["candidate_id"] for candidate in ordered],
+            ["stage3-inconclusive", "stage1-promising"],
+        )
+
     def test_archive_projection_is_cached_and_matching_is_conservative(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             adapter = FakeArchiveAdapter(

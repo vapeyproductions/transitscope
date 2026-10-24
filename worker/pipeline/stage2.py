@@ -14,12 +14,12 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from pipeline.stage1 import Stage1Processor
-from pipeline.lifecycle import STATUS_PRIORITY, movement_for_ranks, processed_target_count
+from pipeline.lifecycle import STATUS_PRIORITY, movement_for_ranks, overall_sort_key, processed_target_count
 from storage.duckdb_store import DuckDBStore
 
 
 MODEL_VERSION = "stage2-repeatability-v2-backfill"
-RANKING_VERSION = "stage2-overall-v1"
+RANKING_VERSION = "stage2-overall-v2-score-first"
 
 
 @dataclass(frozen=True)
@@ -439,13 +439,7 @@ def publish_stage2_result(
     promoted = next(item for item in stage2_pool if item["candidate_id"] == candidate_id)
     overall_pool = [item for item in candidates if item["candidate_id"] != candidate_id]
     overall_pool.append(promoted)
-    overall_pool.sort(
-        key=lambda item: (
-            -STATUS_PRIORITY.get(str(item.get("status")), 0),
-            -float(item["overall_score"] or 0.0),
-            item["candidate_id"],
-        )
-    )
+    overall_pool.sort(key=overall_sort_key)
     overall_ranks = {item["candidate_id"]: index for index, item in enumerate(overall_pool, 1)}
     previous_by_id = {item["candidate_id"]: item for item in candidates}
 

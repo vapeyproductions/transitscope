@@ -15,14 +15,14 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
 from pipeline.stage1 import Stage1Processor
-from pipeline.lifecycle import STATUS_PRIORITY, movement_for_ranks, processed_target_count
+from pipeline.lifecycle import STATUS_PRIORITY, movement_for_ranks, overall_sort_key, processed_target_count
 from pipeline.stage2 import _candidate_rows
 from storage.duckdb_store import DuckDBStore
 
 
 MODEL_VERSION = "stage3-logreg-phase-v1"
 BASELINE_MODEL_VERSION = "stage3-phase-window-v1"
-RANKING_VERSION = "stage3-overall-v1"
+RANKING_VERSION = "stage3-overall-v2-score-first"
 
 
 @dataclass(frozen=True)
@@ -599,13 +599,7 @@ def publish_stage3_result(
 
     overall_pool = [item for item in candidates if item["candidate_id"] != candidate_id]
     overall_pool.append(next(item for item in stage3_pool if item["candidate_id"] == candidate_id))
-    overall_pool.sort(
-        key=lambda item: (
-            -STATUS_PRIORITY.get(str(item.get("status")), 0),
-            -float(item["overall_score"] or 0.0),
-            item["candidate_id"],
-        )
-    )
+    overall_pool.sort(key=overall_sort_key)
     overall_ranks = {item["candidate_id"]: index for index, item in enumerate(overall_pool, 1)}
     previous_by_id = {item["candidate_id"]: item for item in candidates}
 

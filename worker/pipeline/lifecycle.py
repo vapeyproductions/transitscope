@@ -11,7 +11,7 @@ from storage.duckdb_store import DuckDBStore
 
 
 CATALOG_MODEL_VERSION = "exoplanet-archive-match-v1"
-OVERALL_RANKING_VERSION = "overall-ranking-v1"
+OVERALL_RANKING_VERSION = "overall-ranking-v2-score-first"
 RANKING_VIEWS = ("overall", "stage1", "stage2", "stage3")
 STATUS_PRIORITY = {
     "Promising": 3,
@@ -344,6 +344,11 @@ def _candidate_row(row: Sequence[Any]) -> dict[str, Any]:
 
 
 def _sort_pool(candidates: Sequence[Mapping[str, Any]], *, score_key: str) -> list[dict[str, Any]]:
+    if score_key == "overall_score":
+        return sorted(
+            (dict(candidate) for candidate in candidates),
+            key=overall_sort_key,
+        )
     return sorted(
         (dict(candidate) for candidate in candidates),
         key=lambda candidate: (
@@ -351,6 +356,21 @@ def _sort_pool(candidates: Sequence[Mapping[str, Any]], *, score_key: str) -> li
             -float(candidate.get(score_key) or 0.0),
             str(candidate["candidate_id"]),
         ),
+    )
+
+
+def overall_sort_key(candidate: Mapping[str, Any]) -> tuple[float, int, str]:
+    """Rank the overall board by accumulated evidence across all completed stages.
+
+    Status remains a tie-breaker so an Inconclusive result is not preferred over
+    an otherwise equal Promising result, but the latest stage label cannot erase
+    strong evidence collected earlier in the pipeline.
+    """
+
+    return (
+        -float(candidate.get("overall_score") or 0.0),
+        -STATUS_PRIORITY.get(str(candidate.get("status")), 0),
+        str(candidate["candidate_id"]),
     )
 
 
@@ -382,6 +402,7 @@ __all__ = [
     "active_candidates",
     "candidate_match_inputs",
     "movement_for_ranks",
+    "overall_sort_key",
     "processed_target_count",
     "promotable_candidates",
     "publish_known_matches",
