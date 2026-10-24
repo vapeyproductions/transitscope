@@ -305,6 +305,8 @@ type MonitoringCycle = {
 type MonitoringCycleActivity = {
   window_minutes: number;
   expected_runs: number;
+  recent_run_count: number;
+  default_start_index: number;
   run_count: number;
   runs: MonitoringCycle[];
   throughput: Record<string, {
@@ -782,7 +784,7 @@ function monitoringDotClass(status: string | undefined): string {
 function MonitoringCycleActivityPanel({ activity }: { activity: MonitoringCycleActivity }) {
   const runs = activity.runs ?? [];
   const stages: AssessmentStage[] = ["stage1", "stage2", "stage3"];
-  const [frameIndex, setFrameIndex] = useState(0);
+  const [frameIndex, setFrameIndex] = useState(activity.default_start_index ?? 0);
   const [playing, setPlaying] = useState(runs.length > 1);
   const [speed, setSpeed] = useState(1);
   const latestRunId = runs[runs.length - 1]?.cycle_id ?? null;
@@ -794,7 +796,7 @@ function MonitoringCycleActivityPanel({ activity }: { activity: MonitoringCycleA
   useEffect(() => {
     if (!latestRunId || latestRunRef.current === latestRunId) return;
     latestRunRef.current = latestRunId;
-    setFrameIndex(0);
+    setFrameIndex(activity.default_start_index ?? Math.max(0, runs.length - (activity.recent_run_count ?? 12)));
     setPlaying(runs.length > 1);
   }, [latestRunId, runs.length]);
 
@@ -858,9 +860,9 @@ function MonitoringCycleActivityPanel({ activity }: { activity: MonitoringCycleA
   }, [playing, runs.length, speed]);
 
   return <section className="ops-section cycle-activity-section" aria-labelledby="cycle-activity-title">
-    <div className="ops-section-heading"><div><p className="eyebrow">Live worker activity</p><h4 id="cycle-activity-title">Pipeline motion · last {activity.window_minutes} minutes</h4></div><span className="section-note">{activity.run_count} saved cycles · time flows left to right</span></div>
+    <div className="ops-section-heading"><div><p className="eyebrow">Live worker activity</p><h4 id="cycle-activity-title">Pipeline motion · all saved cycles</h4></div><span className="section-note">{activity.run_count} saved cycles · latest window starts by default</span></div>
     {!runs.length ? <div className="ops-empty">No cycle history has been recorded in this deployment yet. The motion view will begin when the next worker cycle completes.</div> : <>
-      <div className="cycle-summary-grid"><article className="cycle-summary-card"><span className="metric-label">Completed cycles</span><strong>{activity.run_count} / {activity.expected_runs}</strong><small>worker runs available to replay</small></article><article className="cycle-summary-card"><span className="metric-label">Candidates evaluated</span><strong>{evaluatedTotal.toLocaleString()}</strong><small>across all stages · {numberLabel(evaluatedTotal / Math.max(1, activity.window_minutes), 2)} per minute</small></article><article className="cycle-summary-card"><span className="metric-label">Needs more data</span><strong>{needsTotal.toLocaleString()}</strong><small>reassessments or new evaluations</small></article><article className="cycle-summary-card"><span className="metric-label">Downstream handoffs</span><strong>{handoffTotal.toLocaleString()}</strong><small>Stage 3 calls in the window</small></article></div>
+      <div className="cycle-summary-grid"><article className="cycle-summary-card"><span className="metric-label">Completed cycles</span><strong>{activity.run_count.toLocaleString()}</strong><small>all worker runs retained for replay</small></article><article className="cycle-summary-card"><span className="metric-label">Candidates evaluated</span><strong>{evaluatedTotal.toLocaleString()}</strong><small>latest {activity.window_minutes} minutes · {numberLabel(evaluatedTotal / Math.max(1, activity.window_minutes), 2)} per minute</small></article><article className="cycle-summary-card"><span className="metric-label">Needs more data</span><strong>{needsTotal.toLocaleString()}</strong><small>latest {activity.window_minutes}-minute window</small></article><article className="cycle-summary-card"><span className="metric-label">Downstream handoffs</span><strong>{handoffTotal.toLocaleString()}</strong><small>Stage 3 calls in latest window</small></article></div>
       <div className="pipeline-motion-shell">
         <div className="pipeline-motion-toolbar"><div className="motion-intake-badge">New candidate entering · {incomingCount.toLocaleString()} in this cycle</div><div className="motion-controls"><button className="button button-quiet" type="button" onClick={() => setPlaying((current) => !current)} disabled={runs.length < 2}>{playing ? "Ⅱ Pause" : "▶ Play"}</button><label><span>Speed</span><select aria-label="Motion replay speed" value={speed} onChange={(event) => setSpeed(Number(event.target.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select></label><span className="motion-time">{frameLabel}</span></div></div>
         <div className="pipeline-motion-track" aria-label="Candidate movement from universe through Stage 3">
@@ -977,7 +979,7 @@ export function MonitoringPanel({ refreshKey }: { refreshKey: number }) {
         <div className="pipeline-insight-heading"><div><p className="eyebrow accent">Pipeline pulse</p><h3 id="operations-title">Where the waterfall is slowing</h3><p>Throughput, queue pressure, and downstream handoffs from the most recent worker cycles.</p></div><span className={`pipeline-health-indicator ${overview.worker.state === "error" || overview.control.pipeline_paused ? "attention" : "flowing"}`}><span className="status-dot" />{overview.control.pipeline_paused ? "Paused" : overview.worker.state === "error" ? "Needs attention" : "Live flow"}</span></div>
         <div className="pipeline-flow-track" aria-label="Pipeline stage flow summary">{pipelinePulse.map((stage) => { const maxEvaluated = Math.max(1, ...pipelinePulse.map((item) => item.throughput.evaluated)); return <article className={`pipeline-flow-stage ${stage.stage}`} key={stage.stage}><div className="pipeline-flow-heading"><strong>{stageName(stage.stage)}</strong><span>{stage.throughput.evaluated.toLocaleString()} assessed</span></div><div className="pipeline-flow-meter"><span style={{ width: `${Math.max(stage.throughput.evaluated ? 8 : 0, Math.min(100, stage.throughput.evaluated / maxEvaluated * 100))}%` }} /></div><small>{stage.queued.toLocaleString()} jobs called · {stage.throughput.handoffs} handoffs</small></article>; })}</div>
         <div className="pipeline-insight-metrics"><article><span className="metric-label">Slowest lane</span><strong>{slowestStage ? stageName(slowestStage.stage) : "—"}</strong><small>{slowestStage?.timing.average_cycle_seconds ? `${durationLabel(slowestStage.timing.average_cycle_seconds)} average cycle` : "No timing yet"}</small></article><article><span className="metric-label">Flow rate</span><strong>{numberLabel(totalEvaluated / Math.max(1, overview.cycle_activity.window_minutes), 2)} / min</strong><small>{totalEvaluated.toLocaleString()} assessed in the window</small></article><article><span className="metric-label">Needs more data</span><strong>{totalNeedsMoreData.toLocaleString()}</strong><small>reassessments or new evaluations</small></article><article><span className="metric-label">Jobs called</span><strong>{totalQueue.toLocaleString()}</strong><small>{totalHandoffs.toLocaleString()} downstream handoffs in window</small></article></div>
-        <div className="pipeline-insight-footer"><span><strong>Catalog:</strong> {catalogSummary} · {catalogDetail}</span><span>Last {overview.cycle_activity.run_count} completed cycles</span></div>
+        <div className="pipeline-insight-footer"><span><strong>Catalog:</strong> {catalogSummary} · {catalogDetail}</span><span>{overview.cycle_activity.run_count} cycles saved · metrics use latest {overview.cycle_activity.recent_run_count} cycles</span></div>
       </section>
       <aside className="operations-status-rail" aria-label="Worker and data status">
         <article className="ops-mini-card ops-mini-control"><div className={`operations-gate ${overview.control.pipeline_paused ? "paused" : "armed"}`}><span className="status-dot" />{overview.control.pipeline_paused ? "Processing paused" : "Worker armed"}<small>{overview.control.reason}</small></div><div className="operations-control-actions"><button className="button button-outline" type="button" onClick={() => void changeWorkerControl("pause")} disabled={controlBusy || overview.control.pipeline_paused}>Pause</button><button className="button button-quiet" type="button" onClick={() => void changeWorkerControl("resume")} disabled={controlBusy || !overview.control.pipeline_paused || !overview.control.autostart_enabled}>Resume</button></div>{controlMessage && <p className="operations-control-message" role="status">{controlMessage}</p>}{!overview.control.autostart_enabled && <p className="operations-control-note">Resume disabled by deployment configuration.</p>}</article>

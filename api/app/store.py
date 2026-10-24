@@ -1123,6 +1123,8 @@ class ReadOnlyStore:
             "cycle_activity": {
                 "window_minutes": 60,
                 "expected_runs": 12,
+                "recent_run_count": 0,
+                "default_start_index": 0,
                 "run_count": 0,
                 "runs": [],
                 "throughput": {},
@@ -1564,7 +1566,13 @@ class ReadOnlyStore:
         connection: duckdb.DuckDBPyConnection,
         stage_data: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
-        """Return the recent worker-cycle ledger used by the live ML Ops view."""
+        """Return all saved cycles plus latest-window aggregate metrics.
+
+        Cycle rows are durable replay history. The aggregate throughput/timing
+        cards intentionally remain scoped to the latest twelve cycles (the
+        dashboard's approximately one-hour operating window), while the
+        motion scrubber receives the complete chronological ledger.
+        """
 
         try:
             rows = connection.execute(
@@ -1572,16 +1580,14 @@ class ReadOnlyStore:
                 SELECT cycle_id, started_at, finished_at, status,
                        duration_seconds, payload_json
                 FROM pipeline_cycles
-                WHERE finished_at >= current_timestamp - INTERVAL '1 hour'
-                ORDER BY finished_at DESC
-                LIMIT 12
+                ORDER BY finished_at ASC
                 """
             ).fetchall()
         except Exception:
             rows = []
 
         runs: list[dict[str, Any]] = []
-        for row in reversed(rows):
+        for row in rows:
             try:
                 payload = json.loads(row[5] or "{}")
             except (TypeError, ValueError, json.JSONDecodeError):
@@ -1624,6 +1630,8 @@ class ReadOnlyStore:
                 }
             )
 
+        recent_runs = runs[-12:]
+        metrics_window_minutes = 60
         stage_names = ("stage1", "stage2", "stage3")
         throughput: dict[str, dict[str, Any]] = {}
         timings: dict[str, dict[str, Any]] = {}
@@ -1638,7 +1646,7 @@ class ReadOnlyStore:
             needs_timing_values: list[float] = []
             dispatch_timing_values: list[float] = []
             handoffs = 0
-            for run in runs:
+            for run in recent_runs:
                 summary = run["stages"].get(stage, {})
                 if not isinstance(summary, dict):
                     continue
@@ -1690,9 +1698,9 @@ class ReadOnlyStore:
                     counts[stage]["jobs"] += 1
             return counts
 
-        latest_queue = queue_job_counts(runs[-1]) if runs else {}
+        latest_queue = queue_job_counts(recent_runs[-1]) if recent_runs else {}
         queue_series = []
-        for run in runs:
+        for run in recent_runs:
             queue = queue_job_counts(run)
             queue_series.append(
                 {
@@ -1704,15 +1712,17 @@ class ReadOnlyStore:
             )
 
         return {
-            "window_minutes": 60,
+            "window_minutes": metrics_window_minutes,
             "expected_runs": 12,
+            "recent_run_count": len(recent_runs),
+            "default_start_index": max(0, len(runs) - len(recent_runs)),
             "run_count": len(runs),
             "runs": runs,
             "throughput": throughput,
             "timings": timings,
             "queue": {"current": latest_queue, "series": queue_series},
             "note": (
-                "Cycle history is written at worker cycle boundaries. A cycle can contain several serialized publishes, so timing is wall-clock worker time, not dashboard refresh time."
+                "Every completed worker cycle is retained for chronological replay. Throughput, timing, and queue summaries use the latest twelve cycles (approximately one hour). A cycle can contain several serialized publishes, so timing is wall-clock worker time, not dashboard refresh time."
             ),
         }
 
