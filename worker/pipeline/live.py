@@ -118,7 +118,11 @@ def _history_limit(max_history_sectors: int, previous_product_count: int) -> int
     if max_history_sectors <= 0:
         return max_history_sectors
     initial = max(1, int(os.getenv("INITIAL_HISTORY_SECTORS", "2")))
-    expansion = max(1, int(os.getenv("HISTORY_EXPANSION_SECTORS", "2")))
+    # A Needs More Data reassessment should materially expand coverage. Four
+    # additional sectors usually moves the candidate from a short probe to a
+    # useful multi-window comparison, while max_history_sectors remains the
+    # hard upper bound for one candidate.
+    expansion = max(1, int(os.getenv("HISTORY_EXPANSION_SECTORS", "4")))
     if previous_product_count:
         return min(max_history_sectors, previous_product_count + expansion)
     return min(max_history_sectors, initial)
