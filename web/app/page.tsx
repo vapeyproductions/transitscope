@@ -335,6 +335,22 @@ type MonitoringCycleActivity = {
   note: string;
 };
 
+type ManualMigration = {
+  request_id: string;
+  from_stage: AssessmentStage | "universe";
+  to_stage: AssessmentStage;
+  requested_count: number;
+  status: "pending" | "processing" | "completed" | "failed" | string;
+  created_at: string;
+  updated_at: string;
+  requested_by?: string;
+  selected_count?: number;
+  completed_count?: number;
+  candidate_ids?: string[];
+  message?: string;
+  error?: string | null;
+};
+
 type MonitoringOverview = {
   generated_at: string;
   data_version: number | null;
@@ -346,6 +362,7 @@ type MonitoringOverview = {
     deployment_gate?: boolean;
     updated_at?: string | null;
   };
+  manual_migrations: ManualMigration[];
   cycle_activity: MonitoringCycleActivity;
   worker: { state?: string; last_heartbeat?: string | null; reason?: string; catalog_health?: CatalogHealth };
   universe: {
@@ -905,6 +922,10 @@ export function MonitoringPanel({ refreshKey }: { refreshKey: number }) {
   const [pollKey, setPollKey] = useState(0);
   const [controlBusy, setControlBusy] = useState(false);
   const [controlMessage, setControlMessage] = useState<string | null>(null);
+  const [migrationBusy, setMigrationBusy] = useState(false);
+  const [migrationMessage, setMigrationMessage] = useState<string | null>(null);
+  const [migrationRoute, setMigrationRoute] = useState<"universe:stage1" | "stage1:stage2" | "stage2:stage3">("stage1:stage2");
+  const [migrationCount, setMigrationCount] = useState("100");
 
   useEffect(() => {
     let cancelled = false;
@@ -950,6 +971,30 @@ export function MonitoringPanel({ refreshKey }: { refreshKey: number }) {
       setControlMessage(cause instanceof Error ? cause.message : "Worker control request failed.");
     } finally {
       setControlBusy(false);
+    }
+  };
+
+  const queueManualMigration = async () => {
+    const [fromStage, toStage] = migrationRoute.split(":") as [AssessmentStage | "universe", AssessmentStage];
+    const count = Number.parseInt(migrationCount, 10);
+    if (!Number.isInteger(count) || count < 1 || count > 100) {
+      setMigrationMessage("Choose a migration count from 1 to 100.");
+      return;
+    }
+    setMigrationBusy(true);
+    setMigrationMessage(null);
+    try {
+      const migration = await fetchJson<ManualMigration>("/api/monitoring/migrations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ from_stage: fromStage, to_stage: toStage, count }),
+      });
+      setMigrationMessage(`${fromStage === "universe" ? "Candidate Universe" : stageName(fromStage)} → ${stageName(toStage)} migration queued for ${migration.requested_count} candidate${migration.requested_count === 1 ? "" : "s"}.`);
+      setPollKey((current) => current + 1);
+    } catch (cause) {
+      setMigrationMessage(cause instanceof Error ? cause.message : "Manual migration request failed.");
+    } finally {
+      setMigrationBusy(false);
     }
   };
 
@@ -1007,8 +1052,10 @@ export function MonitoringPanel({ refreshKey }: { refreshKey: number }) {
         <article className="ops-mini-card"><span className="metric-label">Universe progress</span><strong>{overview.universe.processed_count.toLocaleString()} <small>/ {overview.universe.configured_count.toLocaleString()}</small></strong><div className="progress-track"><span style={{ width: `${Math.max(0, Math.min(100, overview.universe.progress_percent))}%` }} /></div><span className="metric-detail">{overview.universe.remaining_count.toLocaleString()} remaining · {overview.universe.manifest_count.toLocaleString()} manifested</span></article>
         <article className="ops-mini-card"><span className="metric-label">Worker heartbeat</span><strong>{humanizeState(overview.worker.state)}</strong><span className="metric-detail">{overview.worker.last_heartbeat ? formatDate(overview.worker.last_heartbeat) : "No heartbeat yet"}</span></article>
         <article className="ops-mini-card"><span className="metric-label">Coverage health</span><strong>{overview.data_health.coverage.product_count.toLocaleString()} <small>products</small></strong><span className="metric-detail">{overview.data_health.coverage.candidate_count.toLocaleString()} candidates · {overview.data_health.coverage.window_count.toLocaleString()} windows</span></article>
+        <article className="ops-mini-card ops-migration-control"><span className="metric-label">Manual waterfall migration</span><label className="ops-control-label" htmlFor="manual-migration-route">Route</label><select id="manual-migration-route" className="ops-control-select" value={migrationRoute} onChange={(event) => setMigrationRoute(event.target.value as "universe:stage1" | "stage1:stage2" | "stage2:stage3")}><option value="universe:stage1">Candidate Universe → Stage 1</option><option value="stage1:stage2">Stage 1 → Stage 2</option><option value="stage2:stage3">Stage 2 → Stage 3</option></select><label className="ops-control-label" htmlFor="manual-migration-count">Candidates</label><input id="manual-migration-count" className="ops-control-input" type="number" min={1} max={100} value={migrationCount} onChange={(event) => setMigrationCount(event.target.value)} /><button className="button button-quiet" type="button" onClick={() => void queueManualMigration()} disabled={migrationBusy}>{migrationBusy ? "Queueing…" : "Queue migration"}</button><small className="ops-control-help">Type the batch size manually. Maximum 100 per request.</small>{migrationMessage && <p className="operations-control-message" role="status">{migrationMessage}</p>}</article>
       </aside>
     </div>
+    <section className="ops-section manual-migrations-section"><div className="ops-section-heading"><div><p className="eyebrow">Operator requests</p><h4>Manual migrations</h4></div><span className="section-note">Requests are claimed by the worker and use normal evaluation and replay publishing.</span></div>{overview.manual_migrations?.length ? <div className="manual-migration-list">{overview.manual_migrations.slice(0, 8).map((migration) => <div className="manual-migration-row" key={migration.request_id}><div><strong>{migration.from_stage === "universe" ? "Candidate Universe" : stageName(migration.from_stage)} → {stageName(migration.to_stage)}</strong><small>{migration.completed_count ?? 0} / {migration.requested_count} completed · {formatDate(migration.updated_at)}</small></div><span className={`manual-migration-status ${migration.status}`}>{migration.status}</span><em>{migration.message ?? "Waiting for worker"}</em></div>)}</div> : <div className="ops-empty">No manual migration requests yet.</div>}</section>
     <MonitoringCycleActivityPanel activity={overview.cycle_activity} />
     <section className="ops-section"><div className="ops-section-heading"><div><p className="eyebrow">Stage prioritization</p><h4>Queue policy and classifications</h4></div><span className="section-note">Stage 1 and 2 use ranking windows; Stage 3 works its Needs More Data queue in rank order.</span></div><div className="stage-ops-grid">{stages.map((stage) => <article className="stage-ops-card" key={stage.stage}><div className="stage-ops-card-heading"><strong>{stageName(stage.stage)}</strong><span>{stage.priority_label}</span></div><div className="stage-ops-inline-note">{stage.priority_candidates.toLocaleString()} currently prioritized · {stage.total_candidates.toLocaleString()} candidate signals retained</div><div className="stage-counts">{["Promising", "Needs More Data", "Inconclusive", "Known Match"].map((status) => <span key={status}><strong>{stage.counts[status] ?? 0}</strong>{monitoringStatusLabel(status)}</span>)}</div><small>Last evaluation: {formatDate(stage.last_evaluated_at)}</small></article>)}</div></section>
     <section className="ops-section"><div className="ops-section-heading"><div><p className="eyebrow">Model registry</p><h4>Algorithms and evidence quality</h4></div><span className="section-note">Metrics are aggregates of persisted evaluations, not new runs.</span></div>{overview.models.length ? <div className="model-registry">{overview.models.map((model) => <article className="model-card" key={`${model.stage}-${model.model_version}`}><div className="model-card-heading"><span className="stage-badge">{stageName(model.stage)}</span><strong>{stageName(model.stage)} model</strong></div><div className="model-stat-grid"><span><small>Evaluations</small><strong>{model.evaluation_count}</strong></span><span><small>Evidence</small><strong>{numberLabel(model.mean_evidence_score, 3)}</strong></span><span><small>Holdout F1</small><strong>{numberLabel(model.mean_holdout_f1, 2)}</strong></span><span><small>Model lift</small><strong>{numberLabel(model.mean_model_lift, 2)}</strong></span></div><p>{Object.entries(model.status_counts).map(([status, count]) => `${status}: ${count}`).join(" · ") || "No classifications recorded"}</p><small>Last evaluated {formatDate(model.last_evaluated_at)}</small></article>)}</div> : <div className="ops-empty">No model evaluations are persisted yet.</div>}</section>

@@ -574,6 +574,7 @@ def _evaluate_stage2(
     *,
     data_dir: Path,
     max_history_sectors: int,
+    publish_lock: Any | None = None,
 ) -> dict[str, Any]:
     candidate_id = str(candidate["candidate_id"])
     stage1_input = load_stage1_input(store, candidate_id)
@@ -618,12 +619,19 @@ def _evaluate_stage2(
             target_id=stage1_input["target_id"],
             stage1_features=stage1_input["features"],
         )
-    version = publish_stage2_result(
-        store,
-        result,
-        stage1_score=stage1_input["stage1_score"],
-        input_product_ids=list(product_ids),
-    )
+    def publish() -> int:
+        return publish_stage2_result(
+            store,
+            result,
+            stage1_score=stage1_input["stage1_score"],
+            input_product_ids=list(product_ids),
+        )
+
+    if publish_lock is None:
+        version = publish()
+    else:
+        with publish_lock:
+            version = publish()
     return {
         "candidate_id": candidate_id,
         "status": result["status"],
@@ -631,6 +639,70 @@ def _evaluate_stage2(
         "history_products": len(paths),
         "discovered_sectors": history.get("sectors", []),
     }
+
+
+def _run_stage2_manual_batch(
+    store: DuckDBStore,
+    candidates: list[dict[str, Any]],
+    *,
+    data_dir: Path,
+    max_history_sectors: int,
+    concurrency: int,
+    status_callback: Callable[[str, dict[str, Any]], None] | None,
+    publish_lock: Any,
+) -> list[dict[str, Any]]:
+    """Evaluate an operator-selected Stage 1 → Stage 2 batch concurrently."""
+
+    if not candidates:
+        return []
+    worker_count = max(1, min(int(concurrency), len(candidates)))
+    candidate_ids = [str(candidate["candidate_id"]) for candidate in candidates]
+    if status_callback:
+        status_callback(
+            "processing_stage2",
+            {
+                "reason": "manual_stage2_migration",
+                "candidate_ids": candidate_ids,
+                "batch_size": len(candidates),
+                "concurrency": worker_count,
+            },
+        )
+    results_by_id: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="manual-stage2-migration",
+    ) as executor:
+        futures = {
+            executor.submit(
+                _evaluate_stage2,
+                store,
+                candidate,
+                data_dir=data_dir,
+                max_history_sectors=max_history_sectors,
+                publish_lock=publish_lock,
+            ): str(candidate["candidate_id"])
+            for candidate in candidates
+        }
+        for future in as_completed(futures):
+            candidate_id = futures[future]
+            try:
+                results_by_id[candidate_id] = future.result()
+            except Exception as exc:
+                results_by_id[candidate_id] = {
+                    "candidate_id": candidate_id,
+                    "status": "error",
+                    "error": repr(exc),
+                }
+                if status_callback:
+                    status_callback(
+                        "processing_stage2",
+                        {
+                            "reason": "manual_stage2_migration_error",
+                            "candidate_id": candidate_id,
+                            "error": repr(exc),
+                        },
+                    )
+    return [results_by_id[candidate_id] for candidate_id in candidate_ids]
 
 
 def _evaluate_stage3(
@@ -921,6 +993,7 @@ def run_live_cycle(
     stage2_capacity: int | None = None,
     stage3_initial_intake_size: int = 100,
     stage3_reassessment_concurrency: int = 4,
+    manual_migrations: list[dict[str, Any]] | None = None,
     status_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run one bounded archive poll and publish only changed pipeline state.
@@ -1109,9 +1182,11 @@ def run_live_cycle(
     stage3_results: list[dict[str, Any]] = []
     stage1_requests: list[dict[str, Any]] = []
     stage3_publish_lock = Lock()
+    manual_migration_results: list[dict[str, Any]] = []
     attempted_stage1: set[str] = set()
     attempted_stage2: set[str] = set()
     attempted_stage2_reassessments: set[str] = set()
+    attempted_stage3: set[str] = set()
     def request_stage1_reassessment() -> dict[str, Any]:
         """Ask Stage 1 for more data only after Stage 3 requests a handoff."""
 
@@ -1315,6 +1390,158 @@ def run_live_cycle(
                 return None
         return None
 
+    def run_manual_migration(request: dict[str, Any]) -> dict[str, Any]:
+        """Apply one bounded operator request through normal publish paths."""
+
+        request_id = str(request.get("request_id") or "")
+        from_stage = str(request.get("from_stage") or "")
+        to_stage = str(request.get("to_stage") or "")
+        requested_count = max(1, min(100, int(request.get("requested_count") or 1)))
+        result: dict[str, Any] = {
+            "request_id": request_id,
+            "from_stage": from_stage,
+            "to_stage": to_stage,
+            "requested_count": requested_count,
+            "selected_count": 0,
+            "completed_count": 0,
+            "candidate_ids": [],
+            "status": "completed",
+        }
+        if (from_stage, to_stage) == ("universe", "stage1"):
+            intake = fill_stage1(
+                requested_count,
+                intake_reason="manual_universe_stage1_migration",
+            )
+            completed_count = int(intake.get("evaluated_count") or intake.get("selected_count") or 0)
+            result["selected_count"] = int(intake.get("selected_count") or completed_count)
+            result["completed_count"] = completed_count
+            if intake.get("status") == "error":
+                result["status"] = "failed"
+                result["message"] = intake.get("message") or "Stage 1 intake failed."
+            else:
+                result["message"] = f"Evaluated {completed_count} new target{'' if completed_count == 1 else 's'} in Stage 1."
+            return result
+
+        if (from_stage, to_stage) == ("stage1", "stage2"):
+            selected = promotable_candidates(
+                store,
+                stage="stage1",
+                threshold=max(stage1_threshold, requested_count),
+            )[:requested_count]
+            result["candidate_ids"] = [str(candidate["candidate_id"]) for candidate in selected]
+            result["selected_count"] = len(selected)
+            if selected:
+                migrated = _run_stage2_manual_batch(
+                    store,
+                    selected,
+                    data_dir=data_dir,
+                    max_history_sectors=max_history_sectors,
+                    concurrency=max_workers,
+                    status_callback=status_callback,
+                    publish_lock=stage3_publish_lock,
+                )
+                stage2_results.extend(
+                    {
+                        **item,
+                        "queue_kind": "manual_handoff",
+                        "queue_status": "Promising",
+                        "queue_reason": "operator_requested_stage1_to_stage2_migration",
+                    }
+                    for item in migrated
+                )
+                completed = [item for item in migrated if item.get("publish_version") is not None]
+                result["completed_count"] = len(completed)
+                if completed:
+                    replacement = fill_stage1(
+                        len(completed),
+                        intake_reason="manual_stage2_migration",
+                    )
+                    if replacement.get("status") != "idle":
+                        stage1_requests.append(replacement)
+                if len(completed) < len(selected):
+                    result["status"] = "failed"
+                    result["message"] = "Some selected candidates could not be evaluated; inspect the worker cycle for per-candidate errors."
+                else:
+                    result["message"] = f"Migrated {len(completed)} Stage 1 candidates to Stage 2."
+            else:
+                result["message"] = "No eligible Promising Stage 1 candidates were available."
+            return result
+
+        if (from_stage, to_stage) == ("stage2", "stage3"):
+            selected = sorted(
+                (
+                    candidate
+                    for candidate in active_candidates(store)
+                    if candidate["current_stage"] == "stage2"
+                    and candidate["status"] == "Promising"
+                    and candidate["promotion_eligible"]
+                    and candidate["rank_stage"] is not None
+                ),
+                key=lambda item: (int(item["rank_stage"]), str(item["candidate_id"])),
+            )[:requested_count]
+            result["candidate_ids"] = [str(candidate["candidate_id"]) for candidate in selected]
+            result["selected_count"] = len(selected)
+            if selected:
+                migrated = _run_stage3_reassessment_batch(
+                    store,
+                    selected,
+                    data_dir=data_dir,
+                    max_history_sectors=max_history_sectors,
+                    concurrency=stage3_reassessment_concurrency,
+                    status_callback=status_callback,
+                    publish_lock=stage3_publish_lock,
+                )
+                for item in migrated:
+                    item.update(
+                        {
+                            "queue_kind": "manual_handoff",
+                            "queue_status": "Promising",
+                            "queue_reason": "operator_requested_stage2_to_stage3_migration",
+                        }
+                    )
+                    stage3_results.append(item)
+                    if item.get("publish_version") is not None:
+                        check_catalog("stage3")
+                completed = [item for item in migrated if item.get("publish_version") is not None]
+                result["completed_count"] = len(completed)
+                attempted_stage2.update(str(item["candidate_id"]) for item in completed)
+                attempted_stage3.update(str(item["candidate_id"]) for item in completed)
+                for _ in completed:
+                    replacement = request_stage2_replacement()
+                    if replacement is None:
+                        break
+                if len(completed) < len(selected):
+                    result["status"] = "failed"
+                    result["message"] = "Some selected candidates could not be evaluated; inspect the worker cycle for per-candidate errors."
+                else:
+                    result["message"] = f"Migrated {len(completed)} Stage 2 candidates to Stage 3."
+            else:
+                result["message"] = "No eligible Promising Stage 2 candidates were available."
+            return result
+
+        result["status"] = "failed"
+        result["message"] = "Unsupported manual migration request."
+        return result
+
+    for migration in manual_migrations or []:
+        try:
+            manual_migration_results.append(run_manual_migration(migration))
+        except Exception as exc:
+            manual_migration_results.append(
+                {
+                    "request_id": migration.get("request_id"),
+                    "from_stage": migration.get("from_stage"),
+                    "to_stage": migration.get("to_stage"),
+                    "requested_count": migration.get("requested_count"),
+                    "selected_count": 0,
+                    "completed_count": 0,
+                    "candidate_ids": [],
+                    "status": "failed",
+                    "message": "Manual migration failed before completion.",
+                    "error": repr(exc),
+                }
+            )
+
     # Stage 3 is the dispatcher. It first walks the ranked Needs More Data
     # queue without allowing one unchanged candidate to block the rest. Then
     # it spends durable replacement debt: every legacy/current Prime,
@@ -1327,7 +1554,6 @@ def run_live_cycle(
         "pending": [],
     }
     reassessment_budget = max(1, int(os.getenv("STAGE3_REASSESSMENTS_PER_CYCLE", "4")))
-    attempted_stage3: set[str] = set()
     if waterfall_ready:
         # Stage 2 owns this rolling window even when Promising candidates are
         # available. This is the part that prevents a healthy-looking Stage 2
@@ -1617,6 +1843,7 @@ def run_live_cycle(
                 if result.get("queue_reason") == "stage2_top_window_reassessment"
             ),
         },
+        "manual_migrations": manual_migration_results,
         "timings": {key: round(value, 3) for key, value in timings.items()},
         "catalog": catalog,
     }

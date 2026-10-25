@@ -297,6 +297,22 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .ops-mini-control .operations-control-actions { justify-content: stretch; margin-top: 7px; }
 .ops-mini-control .operations-control-actions .button { flex: 1; font-size: 9px; padding: 7px 8px; }
 .ops-mini-control .operations-control-message, .ops-mini-control .operations-control-note { font-size: 9px; max-width: none; text-align: left; }
+.ops-migration-control { display: flex; flex-direction: column; gap: 6px; }
+.ops-control-label { color: var(--faint); font-size: 9px; }
+.ops-control-select, .ops-control-input { background: rgba(3, 8, 17, 0.55); border: 1px solid rgba(146, 169, 205, 0.2); border-radius: 6px; color: var(--text); font: inherit; font-size: 10px; padding: 7px 8px; width: 100%; }
+.ops-control-input { appearance: textfield; }
+.ops-control-input::-webkit-inner-spin-button, .ops-control-input::-webkit-outer-spin-button { appearance: none; margin: 0; }
+.ops-migration-control .button { font-size: 9px; margin-top: 3px; padding: 7px 8px; }
+.ops-control-help { color: var(--faint); font-size: 9px; line-height: 1.35; }
+.manual-migration-list { border-top: 1px solid rgba(146, 169, 205, 0.1); }
+.manual-migration-row { align-items: center; border-bottom: 1px solid rgba(146, 169, 205, 0.1); display: grid; gap: 12px; grid-template-columns: minmax(150px, 0.8fr) auto minmax(200px, 1.4fr); padding: 10px 0; }
+.manual-migration-row > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.manual-migration-row strong { font-size: 10px; }
+.manual-migration-row small, .manual-migration-row em { color: var(--muted); font-size: 9px; font-style: normal; }
+.manual-migration-status { border: 1px solid rgba(118, 228, 237, 0.25); border-radius: 99px; color: var(--cyan); font-size: 9px; padding: 4px 7px; text-transform: capitalize; }
+.manual-migration-status.processing { color: var(--gold); border-color: rgba(242, 198, 109, 0.3); }
+.manual-migration-status.completed { color: var(--green); border-color: rgba(116, 214, 172, 0.3); }
+.manual-migration-status.failed { color: var(--red); border-color: rgba(255, 117, 117, 0.35); }
 .operations-grid { display: grid; gap: 10px; padding: 18px 22px 0; }
 .operations-grid-primary { grid-template-columns: minmax(0, 2fr) repeat(2, minmax(160px, 1fr)); }
 .operations-grid-secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-top: 0; }

@@ -1,6 +1,7 @@
 import json
 import os
 import secrets
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -96,6 +97,34 @@ def _write_pipeline_control(paused: bool) -> dict:
     return payload
 
 
+def _manual_migration_dir() -> Path:
+    return Path(os.getenv("DATA_DIR", "/app/data")) / "manual-migrations"
+
+
+def _write_json_atomically(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, indent=2) + "\n")
+    temporary.replace(path)
+
+
+def _manual_migration_requests(limit: int = 20) -> list[dict]:
+    directory = _manual_migration_dir()
+    if not directory.exists():
+        return []
+    requests: list[dict] = []
+    for path in sorted(directory.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            requests.append(payload)
+        if len(requests) >= limit:
+            break
+    return requests
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok", "service": "api", "version": app.version}
@@ -118,7 +147,9 @@ def monitoring_overview(request: Request) -> dict:
     """
 
     _require_ops_token(request)
-    return ReadOnlyStore().monitoring(worker_status())
+    response = ReadOnlyStore().monitoring(worker_status())
+    response["manual_migrations"] = _manual_migration_requests()
+    return response
 
 
 @app.post("/api/monitoring/control")
@@ -138,6 +169,58 @@ def monitoring_control(request: Request, payload: dict) -> dict:
 
     control = _write_pipeline_control(action == "pause")
     return {"action": action, "control": ReadOnlyStore().monitoring(worker_status())["control"], "updated_at": control["updated_at"]}
+
+
+@app.post("/api/monitoring/migrations")
+def monitoring_migration(request: Request, payload: dict) -> dict:
+    """Queue an authenticated, bounded manual stage handoff.
+
+    The API never writes DuckDB directly. The live worker claims this durable
+    request and uses the same evaluation/publish paths as the normal
+    waterfall, which keeps replay history and ranking updates consistent.
+    """
+
+    _require_ops_token(request)
+    from_stage = payload.get("from_stage") if isinstance(payload, dict) else None
+    to_stage = payload.get("to_stage") if isinstance(payload, dict) else None
+    requested_count = payload.get("count", 1) if isinstance(payload, dict) else 1
+    if (from_stage, to_stage) not in {
+        ("universe", "stage1"),
+        ("stage1", "stage2"),
+        ("stage2", "stage3"),
+    }:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_migration", "message": "Only Candidate Universe → Stage 1, Stage 1 → Stage 2, and Stage 2 → Stage 3 migrations are supported."},
+        )
+    try:
+        requested_count = int(requested_count)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail={"code": "invalid_count", "message": "Migration count must be an integer."}) from exc
+    if not 1 <= requested_count <= 100:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_count", "message": "Manual migrations are limited to 1–100 candidates per request."},
+        )
+
+    requested_at = utc_now()
+    request_id = f"manual-migration-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}-{uuid.uuid4().hex[:8]}"
+    migration = {
+        "request_id": request_id,
+        "from_stage": from_stage,
+        "to_stage": to_stage,
+        "requested_count": requested_count,
+        "status": "pending",
+        "created_at": requested_at,
+        "updated_at": requested_at,
+        "requested_by": "ops-dashboard",
+        "selected_count": 0,
+        "completed_count": 0,
+        "candidate_ids": [],
+        "message": "Queued for the next worker cycle.",
+    }
+    _write_json_atomically(_manual_migration_dir() / f"{request_id}.json", migration)
+    return migration
 
 
 def not_found(code: str, message: str) -> HTTPException:

@@ -61,6 +61,56 @@ def read_pipeline_control(data_dir: Path) -> dict:
     return payload if isinstance(payload, dict) else {"pipeline_paused": False}
 
 
+def _manual_migration_dir(data_dir: Path) -> Path:
+    return data_dir / "manual-migrations"
+
+
+def _write_manual_migration(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, indent=2) + "\n")
+    temporary.replace(path)
+
+
+def claim_manual_migrations(data_dir: Path) -> list[dict]:
+    """Claim pending operator requests exactly once for the next cycle."""
+
+    directory = _manual_migration_dir(data_dir)
+    if not directory.exists():
+        return []
+    claimed: list[dict] = []
+    for path in sorted(directory.glob("*.json"), key=lambda item: item.stat().st_mtime):
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or payload.get("status") != "pending":
+            continue
+        payload["status"] = "processing"
+        payload["updated_at"] = utc_now()
+        payload["message"] = "Claimed by the worker; evaluating the requested eligible candidates."
+        try:
+            _write_manual_migration(path, payload)
+        except OSError:
+            continue
+        claimed.append(payload)
+    return claimed
+
+
+def update_manual_migration(data_dir: Path, request_id: str, **updates: object) -> None:
+    path = _manual_migration_dir(data_dir) / f"{request_id}.json"
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        payload = {"request_id": request_id}
+    payload.update(updates)
+    payload["updated_at"] = utc_now()
+    try:
+        _write_manual_migration(path, payload)
+    except OSError:
+        pass
+
+
 def queue_snapshot(store: DuckDBStore) -> dict[str, dict[str, int]]:
     """Capture the active stage/status queues at a cycle boundary."""
 
@@ -475,6 +525,7 @@ def main() -> None:
                     continue
             cycle_started_at = datetime.now(timezone.utc)
             cycle_started_monotonic = time.perf_counter()
+            manual_migrations = claim_manual_migrations(data_dir)
             try:
                 result = run_live_cycle(
                     data_dir=data_dir,
@@ -493,6 +544,7 @@ def main() -> None:
                     stage3_reassessment_concurrency=int(
                         os.getenv("STAGE3_REASSESSMENT_CONCURRENCY", "4")
                     ),
+                    manual_migrations=manual_migrations,
                     status_callback=lambda state, details: write_status(data_dir, state, details),
                 )
                 cycle_finished_at = datetime.now(timezone.utc)
@@ -507,6 +559,23 @@ def main() -> None:
                         "payload": cycle_metrics,
                     }
                 )
+                for migration in result.get("manual_migrations", []):
+                    request_id = str(migration.get("request_id") or "")
+                    if not request_id:
+                        continue
+                    completed = int(migration.get("completed_count") or 0)
+                    selected = int(migration.get("selected_count") or 0)
+                    status = "completed" if migration.get("status") == "completed" else "failed"
+                    update_manual_migration(
+                        data_dir,
+                        request_id,
+                        status=status,
+                        selected_count=selected,
+                        completed_count=completed,
+                        candidate_ids=migration.get("candidate_ids", []),
+                        message=migration.get("message") or ("Migration completed." if status == "completed" else "Migration failed."),
+                        error=migration.get("error"),
+                    )
                 poll_seconds = float(os.getenv("LIVE_POLL_SECONDS", "300"))
                 catalog = result.get("catalog") if isinstance(result, dict) else None
                 catalog_health = {
@@ -529,6 +598,14 @@ def main() -> None:
                     },
                 )
             except Exception as exc:  # keep the worker alive and make the error inspectable
+                for migration in manual_migrations:
+                    update_manual_migration(
+                        data_dir,
+                        str(migration.get("request_id") or ""),
+                        status="failed",
+                        message="The worker cycle failed before the manual migration completed.",
+                        error=repr(exc),
+                    )
                 cycle_finished_at = datetime.now(timezone.utc)
                 try:
                     store.record_pipeline_cycle(
