@@ -1157,14 +1157,10 @@ def run_live_cycle(
 
     Stage 1 has a ranking window for its own reassessment/promotion policy.
     Stage 2 has a separate top-X reassessment window for ``Needs More Data``;
-    it is not a promotion cutoff. After the initial Stage 1 baseline, Stage 3
-    is the durable waterfall dispatcher: it keeps Stage 2's reassessment
-    queue moving, performs one durable initial intake of the top eligible
-    Promising Stage 2 candidates, then calls the highest-ranked eligible
-    Promising Stage 2 candidate without a rank cutoff and asks Stage 2 to
-    request Stage 1 replacements. Needs More Data no longer freezes the
-    waterfall: it remains retained and reassessable, while Promising work is
-    always selected first.
+    it is not a promotion cutoff. After the initial Stage 1 baseline, fresh
+    Stage 1 -> Stage 2 intake has priority. The retained Stage 2 Needs More
+    Data backlog is deferred until the operator re-enables that work, while
+    Stage 3 continues to consume eligible Promising candidates.
     """
 
     from batching import BatchConfig, run_batch, run_stage1_refresh
@@ -1183,6 +1179,13 @@ def run_live_cycle(
     )
     stage2_waterfall_gate_enabled = os.getenv(
         "STAGE2_WATERFALL_GATE_ENABLED", "false"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    # Stage 1 -> Stage 2 intake is the current priority. Stage 2 Needs More
+    # Data rows remain ranked and retained, but their expensive reassessment
+    # jobs are deferred until an operator explicitly re-enables them after
+    # enough new Stage 1 evidence has been processed.
+    stage2_reassessment_enabled = os.getenv(
+        "STAGE2_REASSESSMENT_ENABLED", "false"
     ).strip().lower() in {"1", "true", "yes", "on"}
     if min(stage1_threshold, stage2_reassessment_threshold) < 1:
         raise ValueError("stage priority thresholds must be positive")
@@ -1407,8 +1410,12 @@ def run_live_cycle(
         result["intake_reason"] = "stage1_needs_more_data_reassessment"
         return result
 
-    def request_stage2_replacement() -> dict[str, Any] | None:
-        """Have a Stage 3 call cascade into one Stage 1 -> Stage 2 request."""
+    def request_stage2_replacement(
+        *,
+        request_reason: str = "stage3_waterfall_request",
+        queue_reason: str = "stage3_called_stage1_promising_candidate",
+    ) -> dict[str, Any] | None:
+        """Request one Stage 1 -> Stage 2 candidate for downstream work."""
 
         before_targets = occupied_stage1_target_ids()
         candidates_now = [
@@ -1447,7 +1454,7 @@ def run_live_cycle(
         if status_callback:
             status_callback(
                 "processing_stage2",
-                {"candidate_id": candidate_id, "reason": "stage3_waterfall_request"},
+                {"candidate_id": candidate_id, "reason": request_reason},
             )
         stage2_started = time.perf_counter()
         result = _evaluate_stage2(
@@ -1460,7 +1467,7 @@ def run_live_cycle(
             {
                 "queue_kind": "handoff",
                 "queue_status": "Promising",
-                "queue_reason": "stage3_called_stage1_promising_candidate",
+                "queue_reason": queue_reason,
             }
         )
         elapsed = add_timing("stage2_seconds", stage2_started)
@@ -1483,7 +1490,35 @@ def run_live_cycle(
             )
         ),
     )
+    stage2_intake_budget = max(
+        0,
+        int(
+            os.getenv(
+                "STAGE2_NEW_CANDIDATES_PER_CYCLE",
+                str(stage2_reassessment_budget),
+            )
+        ),
+    )
+    stage2_intake_telemetry: dict[str, Any] = {
+        "status": "deferred" if not initial_stage1_ready else "waiting",
+        "priority": "stage1_to_stage2_intake",
+        "requested_count": stage2_intake_budget,
+        "evaluated_count": 0,
+        "candidate_ids": [],
+        "message": (
+            "Stage 1 -> Stage 2 intake is prioritized; Stage 2 Needs More Data reassessments are deferred."
+            if initial_stage1_ready
+            else "Waiting for the initial Stage 1 baseline before Stage 2 intake."
+        ),
+    }
     stage2_reassessment_telemetry: dict[str, Any] = {
+        "status": "deferred" if not stage2_reassessment_enabled else "waiting",
+        "deferred": not stage2_reassessment_enabled,
+        "deferred_reason": (
+            "stage1_to_stage2_intake_priority"
+            if not stage2_reassessment_enabled
+            else None
+        ),
         "queue_order": "stage2_rank_ascending",
         "queue_threshold": stage2_reassessment_threshold,
         "initial_queue_count": 0,
@@ -1516,6 +1551,19 @@ def run_live_cycle(
         """
 
         nonlocal stage2_reassessments_used
+        if not stage2_reassessment_enabled:
+            stage2_reassessment_telemetry.update(
+                {
+                    "status": "deferred",
+                    "deferred": True,
+                    "deferred_reason": "stage1_to_stage2_intake_priority",
+                    "message": (
+                        "Stage 2 Needs More Data reassessments are deferred while new Stage 1 candidates are prioritized."
+                    ),
+                }
+            )
+            return 0
+        stage2_reassessment_telemetry["status"] = "running"
         processed = 0
         replacement_slots = 0
         remaining_budget = max(0, stage2_reassessment_budget - stage2_reassessments_used)
@@ -1707,6 +1755,63 @@ def run_live_cycle(
         remaining_ids = [str(candidate["candidate_id"]) for candidate in remaining_queue]
         stage2_reassessment_telemetry["remaining_queue_count"] = len(remaining_queue)
         stage2_reassessment_telemetry["remaining_queue_candidate_ids"] = remaining_ids[:stage2_reassessment_threshold]
+        stage2_reassessment_telemetry["status"] = "complete"
+        return processed
+
+    def intake_stage2_from_stage1() -> int:
+        """Spend this cycle's Stage 2 work budget on fresh Stage 1 candidates.
+
+        This deliberately runs before any Stage 2 Needs More Data sweep. It
+        keeps Stage 2 supplied with new candidates from Stage 1 while the
+        retained Needs More Data backlog waits for a later operator-approved
+        reassessment phase.
+        """
+
+        if not waterfall_ready:
+            stage2_intake_telemetry.update(
+                {
+                    "status": "waiting",
+                    "message": "Waiting for the initial Stage 1 baseline before Stage 2 intake.",
+                }
+            )
+            return 0
+        if not stage2_gate_open:
+            stage2_intake_telemetry.update(
+                {
+                    "status": "paused",
+                    "message": "Stage 2 intake is waiting for the configured Stage 2 gate.",
+                }
+            )
+            return 0
+        if stage2_intake_budget == 0:
+            stage2_intake_telemetry.update(
+                {
+                    "status": "disabled",
+                    "message": "Stage 1 -> Stage 2 intake budget is zero.",
+                }
+            )
+            return 0
+
+        processed = 0
+        stage2_intake_telemetry["status"] = "running"
+        while processed < stage2_intake_budget:
+            result = request_stage2_replacement(
+                request_reason="stage1_to_stage2_priority_intake",
+                queue_reason="stage1_to_stage2_priority_intake",
+            )
+            if result is None:
+                break
+            processed += 1
+            stage2_intake_telemetry["candidate_ids"].append(str(result["candidate_id"]))
+        stage2_intake_telemetry.update(
+            {
+                "status": "complete",
+                "evaluated_count": processed,
+                "message": (
+                    "Stage 1 -> Stage 2 intake completed before the deferred Stage 2 Needs More Data backlog."
+                ),
+            }
+        )
         return processed
 
     def bootstrap_stage2_gate_cohort() -> int:
@@ -1786,13 +1891,15 @@ def run_live_cycle(
     def select_stage2_candidate() -> dict[str, Any] | None:
         """Return the highest-ranked Stage 2 Promising candidate for Stage 3.
 
-        Stage 2's top-window reassessment sweep runs before every selection.
-        The fallback replacement loop is only for the case where that sweep
-        still leaves Stage 3 without an eligible Promising candidate.
+        Stage 2's reassessment sweep is optional and disabled while fresh
+        Stage 1 -> Stage 2 intake has priority. The fallback replacement loop
+        is only for the case where Stage 3 still lacks an eligible Promising
+        candidate.
         """
 
         for _ in range(3):
-            run_stage2_reassessment_queue()
+            if stage2_reassessment_enabled:
+                run_stage2_reassessment_queue()
             candidates_now = [
                 candidate
                 for candidate in active_candidates(store)
@@ -2009,6 +2116,14 @@ def run_live_cycle(
             "message": "Stage 2's release gate will be evaluated after the initial Stage 1 baseline is ready.",
             "paused_stages": ["stage1", "stage3"],
         }
+
+    # Current policy: use the cycle's Stage 2 work budget to bring fresh
+    # Stage 1 candidates into Stage 2 before considering any retained Stage 2
+    # Needs More Data rows. The reassessment function is intentionally still
+    # called elsewhere for compatibility, but returns a deferred telemetry
+    # record unless explicitly enabled by the operator.
+    if waterfall_ready and stage2_gate_open:
+        intake_stage2_from_stage1()
 
     if waterfall_ready and not stage2_gate_open:
         stage3_intake = {
@@ -2309,6 +2424,7 @@ def run_live_cycle(
         "stage1_requests": stage1_requests,
         "continuous_stage1_intake": continuous_stage1_intake,
         "exploration_batch": continuous_stage1_intake,
+        "stage2_intake": stage2_intake_telemetry,
         "stage2": stage2_results,
         "stage3": stage3_results,
         "stage3_intake": {
@@ -2336,13 +2452,17 @@ def run_live_cycle(
         },
         "stage2_reassessment": {
             "threshold": stage2_reassessment_threshold,
-            "requested_count": stage2_reassessment_budget if waterfall_ready else 0,
-            "evaluated_count": stage2_reassessments_used if waterfall_ready else 0,
+            "requested_count": stage2_reassessment_budget if waterfall_ready and stage2_reassessment_enabled else 0,
+            "evaluated_count": stage2_reassessments_used if waterfall_ready and stage2_reassessment_enabled else 0,
             "concurrency": stage2_reassessment_concurrency,
             "priority": (
                 "strict_top_window_gate"
                 if stage2_waterfall_gate_enabled
-                else "promising_first_needs_more_data_backlog"
+                else (
+                    "stage1_to_stage2_intake"
+                    if not stage2_reassessment_enabled
+                    else "stage2_needs_more_data_backlog"
+                )
             ),
             "waterfall_gate": stage2_gate_snapshot,
             "waterfall_gate_open": stage2_gate_open,
