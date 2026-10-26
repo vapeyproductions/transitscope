@@ -1635,6 +1635,7 @@ def run_live_cycle(
         "queued_count": 0,
         "pending": [],
     }
+    stage3_steady_state_intakes = 0
     reassessment_budget = max(1, int(os.getenv("STAGE3_REASSESSMENTS_PER_CYCLE", "4")))
     if waterfall_ready:
         # Stage 2 owns this rolling window even when Promising candidates are
@@ -1780,6 +1781,12 @@ def run_live_cycle(
 
         dispatch_sources: list[str] = []
         dispatch_seen: set[str] = set()
+        steady_state_source = "__stage3_steady_state_intake__"
+        steady_state_intake_budget = max(
+            0,
+            int(os.getenv("STAGE3_STEADY_INTAKE_PER_CYCLE", "1")),
+        )
+        steady_state_intakes_used = 0
 
         def enqueue_sources(values: list[str]) -> None:
             for value in values:
@@ -1791,6 +1798,19 @@ def run_live_cycle(
         dispatch_budget = max(1, int(os.getenv("STAGE3_DISPATCHES_PER_CYCLE", "4")))
         for _ in range(dispatch_budget):
             enqueue_sources([str(item["candidate_id"]) for item in stage3_replacement_debt(store)])
+            # Initial intake is intentionally durable and one-time, but Stage 2
+            # candidates can become Promising later as the waterfall runs. Do
+            # not leave those candidates stranded just because Stage 3 has no
+            # unresolved replacement-debt event at this exact moment. Admit a
+            # small steady-state slice; replacement debt still has priority.
+            if (
+                not dispatch_sources
+                and steady_state_intakes_used < steady_state_intake_budget
+            ):
+                candidate = select_stage2_candidate()
+                if candidate is not None:
+                    dispatch_sources.append(steady_state_source)
+                    steady_state_intakes_used += 1
             if not dispatch_sources:
                 break
             source_candidate_id = dispatch_sources.pop(0)
@@ -1815,14 +1835,22 @@ def run_live_cycle(
                 candidate,
                 data_dir=data_dir,
                 max_history_sectors=max_history_sectors,
-                dispatch_source_candidate_id=source_candidate_id,
+                dispatch_source_candidate_id=(
+                    None
+                    if source_candidate_id == steady_state_source
+                    else source_candidate_id
+                ),
                 publish_lock=stage3_publish_lock,
             )
             result.update(
                 {
                     "queue_kind": "handoff",
                     "queue_status": "Promising",
-                    "queue_reason": "stage3_called_stage2_promising_candidate",
+                    "queue_reason": (
+                        "stage3_steady_state_intake"
+                        if source_candidate_id == steady_state_source
+                        else "stage3_called_stage2_promising_candidate"
+                    ),
                 }
             )
             dispatch_elapsed = add_timing("stage3_seconds", stage3_started)
@@ -1839,6 +1867,7 @@ def run_live_cycle(
                 run_stage2_reassessment_queue()
             if result.get("status") in {"Promising", "Inconclusive"}:
                 enqueue_sources([candidate_id])
+        stage3_steady_state_intakes = steady_state_intakes_used
 
     # Stage 3 is the final assessment stage, so a catalog match here is a
     # legitimate Stage 3 removal and is retained in the identified/replay
@@ -1900,6 +1929,7 @@ def run_live_cycle(
             "queued_count": stage3_intake["queued_count"],
             "pending_count": len(stage3_intake["pending"]),
             "selection_size": stage3_initial_intake_size,
+            "steady_state_intakes": stage3_steady_state_intakes,
         },
         "stage3_reassessment": {
             "concurrency": stage3_reassessment_concurrency,

@@ -12,7 +12,7 @@ from storage.duckdb_store import DuckDBStore
 
 
 CATALOG_MODEL_VERSION = "exoplanet-archive-match-v1"
-OVERALL_RANKING_VERSION = "overall-ranking-v3-maturity-aware"
+OVERALL_RANKING_VERSION = "overall-ranking-v4-evidence-and-maturity"
 RANKING_VIEWS = ("overall", "stage1", "stage2", "stage3")
 STATUS_PRIORITY = {
     "Promising": 3,
@@ -950,34 +950,64 @@ def _sort_pool(candidates: Sequence[Mapping[str, Any]], *, score_key: str) -> li
     )
 
 
-def overall_sort_key(candidate: Mapping[str, Any]) -> tuple[int, int, float, float, str]:
-    """Rank the overall board by maturity first, then accumulated evidence.
+def _bounded_score(value: Any) -> float:
+    try:
+        return max(0.0, min(100.0, float(value or 0.0)))
+    except (TypeError, ValueError):
+        return 0.0
 
-    The overall board is meant to answer "what deserves attention next?", not
-    "which single Stage 1 score is largest?" A Stage 3 Promising result is a
-    Prime Candidate and has survived the most demanding test, so it receives a
-    dedicated top band. Other Promising candidates are ordered by how far they
-    have progressed, followed by Needs More Data and then Inconclusive results.
-    Accumulated evidence remains the tie-breaker within each maturity band.
 
-    This prevents a strong but unvalidated Stage 1 signal from crowding every
-    candidate that has already produced evidence at a later stage, while still
-    preserving meaningful score-based ordering inside each group.
+def overall_priority_score(candidate: Mapping[str, Any]) -> float:
+    """Combine evidence, status, and maturity into one comparable priority.
+
+    Maturity is a meaningful advantage, not an absolute stage band. A Prime
+    Candidate normally rises above earlier-stage work because it has survived
+    additional tests, but a very strong Stage 1/2 result can still outrank a
+    weak later-stage result. This prevents the overall board from becoming a
+    simple list grouped by stage while preserving the value of surviving more
+    rounds.
     """
 
     stage = str(candidate.get("current_stage") or "stage1")
     status = str(candidate.get("status") or "")
-    stage_depth = {"stage1": 1, "stage2": 2, "stage3": 3}.get(stage, 0)
+    maturity_bonus = {
+        "stage1": 0.0,
+        "stage2": 18.0,
+        "stage3": 32.0,
+    }.get(stage, 0.0)
+    status_bonus = {
+        "Promising": 8.0,
+        "Needs More Data": 2.0,
+        "Inconclusive": -8.0,
+        "Known Match": -20.0,
+        "Duplicate Signal": -20.0,
+    }.get(status, 0.0)
+    # The accumulated score carries most of the signal. The current-stage
+    # score keeps a recent strong result visible, while the bounded maturity
+    # bonus rewards candidates that have actually survived later evaluations.
+    return round(
+        0.65 * _bounded_score(candidate.get("overall_score"))
+        + 0.25 * _bounded_score(candidate.get("stage_score"))
+        + maturity_bonus
+        + status_bonus,
+        6,
+    )
 
-    # Prime Candidates are the only candidates with a completed Stage 3 result
-    # that is still positive. They should dominate the overall board.
-    maturity_band = 4 if stage == "stage3" and status == "Promising" else STATUS_PRIORITY.get(status, 0)
+
+def overall_sort_key(candidate: Mapping[str, Any]) -> tuple[float, float, float, float, str]:
+    """Rank by comparable priority rather than by a hard stage ordering.
+
+    Prime Candidates receive a substantial maturity advantage, but evidence
+    remains strong enough to let an exceptional earlier-stage candidate beat a
+    weak later-stage candidate. The remaining values make ties deterministic
+    and retain the raw evidence values for readable, stable ordering.
+    """
 
     return (
-        -maturity_band,
-        -stage_depth,
-        -float(candidate.get("overall_score") or 0.0),
-        -float(candidate.get("stage_score") or 0.0),
+        -overall_priority_score(candidate),
+        -_bounded_score(candidate.get("overall_score")),
+        -_bounded_score(candidate.get("stage_score")),
+        -float(STATUS_PRIORITY.get(str(candidate.get("status") or ""), 0)),
         str(candidate["candidate_id"]),
     )
 
@@ -1092,6 +1122,7 @@ __all__ = [
     "candidate_match_inputs",
     "stage3_replacement_debt",
     "movement_for_ranks",
+    "overall_priority_score",
     "overall_sort_key",
     "rebuild_overall_ranking",
     "processed_target_count",

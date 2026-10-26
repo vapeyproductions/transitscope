@@ -123,7 +123,7 @@ class CatalogTests(unittest.TestCase):
             )
             self.assertFalse(adapter._cache_is_fresh(cache_path))
 
-    def test_overall_ranking_puts_prime_candidates_above_stage1_scores(self) -> None:
+    def test_overall_ranking_allows_exceptional_stage1_to_beat_weak_stage3(self) -> None:
         candidates = [
             {
                 "candidate_id": "stage3-prime",
@@ -145,10 +145,10 @@ class CatalogTests(unittest.TestCase):
 
         self.assertEqual(
             [candidate["candidate_id"] for candidate in ordered],
-            ["stage3-prime", "stage1-promising"],
+            ["stage1-promising", "stage3-prime"],
         )
 
-    def test_overall_ranking_uses_stage_depth_within_promising_band(self) -> None:
+    def test_overall_ranking_prime_candidate_beats_merely_strong_stage1(self) -> None:
         candidates = [
             {
                 "candidate_id": "stage1-promising",
@@ -158,11 +158,11 @@ class CatalogTests(unittest.TestCase):
                 "stage_score": 98.0,
             },
             {
-                "candidate_id": "stage2-promising",
-                "current_stage": "stage2",
+                "candidate_id": "stage3-prime",
+                "current_stage": "stage3",
                 "status": "Promising",
-                "overall_score": 72.0,
-                "stage_score": 70.0,
+                "overall_score": 84.0,
+                "stage_score": 90.0,
             },
         ]
 
@@ -170,7 +170,7 @@ class CatalogTests(unittest.TestCase):
 
         self.assertEqual(
             [candidate["candidate_id"] for candidate in ordered],
-            ["stage2-promising", "stage1-promising"],
+            ["stage3-prime", "stage1-promising"],
         )
 
     def test_archive_projection_is_cached_and_matching_is_conservative(self) -> None:
