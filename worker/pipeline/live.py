@@ -314,15 +314,14 @@ def _stage2_waterfall_gate_snapshot(
     candidates: list[dict[str, Any]],
     *,
     threshold: int,
+    enforced: bool = True,
 ) -> dict[str, Any]:
-    """Describe whether normal downstream work may resume.
+    """Describe the Stage 2 release policy and its current ranked window.
 
-    The gate is deliberately separate from Stage 2's reassessment window.
-    The window decides which ``Needs More Data`` rows receive work; this gate
-    decides whether Stage 1 intake and Stage 3 jobs may run at all.  Requiring
-    a complete ranked cohort prevents a short or mixed Stage 2 list from
-    making the downstream waterfall look healthy while it is still carrying
-    unresolved work.
+    The strict gate remains available for diagnostics and rollback, but the
+    live default is now a Promising-first policy: ``Needs More Data`` stays in
+    the ranking and reassessment pool, behind Promising and ahead of
+    Inconclusive, without pausing Stage 1 or Stage 3.
     """
 
     if threshold < 1:
@@ -344,18 +343,31 @@ def _stage2_waterfall_gate_snapshot(
         status_counts[status] = status_counts.get(status, 0) + 1
     promising_count = status_counts.get("Promising", 0)
     complete_cohort = len(top_window) >= threshold
-    gate_open = complete_cohort and promising_count == threshold
-    if not complete_cohort:
+    strict_gate_open = complete_cohort and promising_count == threshold
+    if not enforced:
+        reason = "promising_first_needs_more_data_backlog"
+        message = (
+            "Promising candidates have priority; Needs More Data remains retained "
+            "for reassessment behind Promising and ahead of Inconclusive."
+        )
+        policy_open = True
+    elif not complete_cohort:
         reason = "waiting_for_stage2_cohort"
         message = f"Stage 2 has {len(top_window)} ranked candidates; {threshold} are required before normal downstream work can resume."
-    elif gate_open:
+        policy_open = False
+    elif strict_gate_open:
         reason = "top_stage2_window_is_promising"
         message = f"The top {threshold} Stage 2 candidates are Promising; normal Stage 1 and Stage 3 operations may run."
+        policy_open = True
     else:
         reason = "top_stage2_window_needs_resolution"
         message = f"{threshold - promising_count} of the top {threshold} Stage 2 candidates are not Promising; Stage 1 and Stage 3 jobs remain paused while Stage 2 works the window."
+        policy_open = False
     return {
-        "open": gate_open,
+        "open": policy_open,
+        "enforced": enforced,
+        "strict_gate_open": strict_gate_open,
+        "policy": "promising_first" if not enforced else "strict_top_window",
         "threshold": threshold,
         "ranked_count": len(ranked),
         "top_count": len(top_window),
@@ -365,7 +377,7 @@ def _stage2_waterfall_gate_snapshot(
         "top_candidate_ids": [str(candidate["candidate_id"]) for candidate in top_window],
         "reason": reason,
         "message": message,
-        "paused_stages": [] if gate_open else ["stage1", "stage3"],
+        "paused_stages": [] if policy_open else ["stage1", "stage3"],
     }
 
 
@@ -1150,9 +1162,9 @@ def run_live_cycle(
     queue moving, performs one durable initial intake of the top eligible
     Promising Stage 2 candidates, then calls the highest-ranked eligible
     Promising Stage 2 candidate without a rank cutoff and asks Stage 2 to
-    request Stage 1 replacements. A separate Stage 2 waterfall gate pauses
-    Stage 1 intake and all Stage 3 work until the ranked Stage 2 top window is
-    complete and every slot in it is Promising.
+    request Stage 1 replacements. Needs More Data no longer freezes the
+    waterfall: it remains retained and reassessable, while Promising work is
+    always selected first.
     """
 
     from batching import BatchConfig, run_batch, run_stage1_refresh
@@ -1169,6 +1181,9 @@ def run_live_cycle(
     stage2_waterfall_gate_threshold = int(
         os.getenv("STAGE2_WATERFALL_GATE_THRESHOLD", "100")
     )
+    stage2_waterfall_gate_enabled = os.getenv(
+        "STAGE2_WATERFALL_GATE_ENABLED", "false"
+    ).strip().lower() in {"1", "true", "yes", "on"}
     if min(stage1_threshold, stage2_reassessment_threshold) < 1:
         raise ValueError("stage priority thresholds must be positive")
     if stage2_waterfall_gate_threshold < 1:
@@ -1349,6 +1364,7 @@ def run_live_cycle(
     stage2_gate_snapshot = _stage2_waterfall_gate_snapshot(
         active_candidates(store),
         threshold=stage2_waterfall_gate_threshold,
+        enforced=stage2_waterfall_gate_enabled,
     )
     stage2_gate_bootstrap_used = 0
 
@@ -1719,6 +1735,7 @@ def run_live_cycle(
             gate_now = _stage2_waterfall_gate_snapshot(
                 active_candidates(store),
                 threshold=stage2_waterfall_gate_threshold,
+                enforced=stage2_waterfall_gate_enabled,
             )
             if gate_now["open"]:
                 break
@@ -1962,23 +1979,26 @@ def run_live_cycle(
     reassessment_budget = max(1, int(os.getenv("STAGE3_REASSESSMENTS_PER_CYCLE", "4")))
     reassessment_candidates: list[dict[str, Any]] = []
     # Stage 2 is the release valve for the entire waterfall. Reassess its
-    # priority window first, then optionally bootstrap a missing cohort from
-    # already-promising Stage 1 rows. Stage 1 intake and all Stage 3 work stay
-    # paused until the ranked Stage 2 window is fully Promising.
+    # Needs More Data priority window, then let Stage 3 consume any Promising
+    # rows without making the unresolved backlog a global stop condition. The
+    # legacy strict gate can still be enabled explicitly for rollback.
     if waterfall_ready:
         run_stage2_reassessment_queue()
         stage2_gate_snapshot = _stage2_waterfall_gate_snapshot(
             active_candidates(store),
             threshold=stage2_waterfall_gate_threshold,
+            enforced=stage2_waterfall_gate_enabled,
         )
         if (
-            not stage2_gate_snapshot["open"]
+            stage2_waterfall_gate_enabled
+            and not stage2_gate_snapshot["open"]
             and stage2_gate_snapshot["top_count"] < stage2_waterfall_gate_threshold
         ):
             bootstrap_stage2_gate_cohort()
             stage2_gate_snapshot = _stage2_waterfall_gate_snapshot(
                 active_candidates(store),
                 threshold=stage2_waterfall_gate_threshold,
+                enforced=stage2_waterfall_gate_enabled,
             )
         stage2_gate_open = bool(stage2_gate_snapshot["open"])
     else:
@@ -2235,7 +2255,9 @@ def run_live_cycle(
             "Continuous Stage 1 intake is disabled"
             if stage1_continuous_intake_per_cycle == 0
             else "Paused until the top Stage 2 gate window is fully Promising"
-            if not stage2_gate_open
+            if stage2_waterfall_gate_enabled and not stage2_gate_open
+            else "Promising-first intake is active; Stage 2 Needs More Data remains backlogged"
+            if baseline_ready_at_cycle_start
             else "Waiting for the initial Stage 1 baseline"
         ),
         "selected_count": 0,
@@ -2317,7 +2339,11 @@ def run_live_cycle(
             "requested_count": stage2_reassessment_budget if waterfall_ready else 0,
             "evaluated_count": stage2_reassessments_used if waterfall_ready else 0,
             "concurrency": stage2_reassessment_concurrency,
-            "priority": "first_stage2_job_budget_in_cycle",
+            "priority": (
+                "strict_top_window_gate"
+                if stage2_waterfall_gate_enabled
+                else "promising_first_needs_more_data_backlog"
+            ),
             "waterfall_gate": stage2_gate_snapshot,
             "waterfall_gate_open": stage2_gate_open,
             "gate_bootstrap_evaluated_count": stage2_gate_bootstrap_used,

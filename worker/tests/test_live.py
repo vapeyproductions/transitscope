@@ -125,6 +125,35 @@ class LiveQueueTests(unittest.TestCase):
         self.assertTrue(opened["open"])
         self.assertEqual(opened["paused_stages"], [])
 
+    def test_promising_first_policy_does_not_pause_for_needs_more_data(self) -> None:
+        candidates = [
+            {
+                "candidate_id": "rank-1",
+                "current_stage": "stage2",
+                "active": True,
+                "rank_stage": 1,
+                "status": "Needs More Data",
+            },
+            {
+                "candidate_id": "rank-2",
+                "current_stage": "stage2",
+                "active": True,
+                "rank_stage": 2,
+                "status": "Needs More Data",
+            },
+        ]
+
+        policy = _stage2_waterfall_gate_snapshot(
+            candidates,
+            threshold=2,
+            enforced=False,
+        )
+
+        self.assertTrue(policy["open"])
+        self.assertFalse(policy["enforced"])
+        self.assertEqual(policy["policy"], "promising_first")
+        self.assertEqual(policy["paused_stages"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
