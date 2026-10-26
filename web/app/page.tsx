@@ -278,6 +278,29 @@ type MonitoringRankedSample = {
   candidate_id?: string;
   status?: string;
   rank?: number;
+  status_since?: string | null;
+};
+
+type MonitoringTop100Point = {
+  finished_at: string | null;
+  sequence_number?: number | null;
+  sample_size: number;
+  counts: Record<string, number>;
+  percentages: Record<string, number>;
+  average_time_seconds: Record<string, number | null>;
+};
+
+type MonitoringTop100View = {
+  top_n: number;
+  status_order: string[];
+  current: MonitoringTop100Point;
+  rolling_average: {
+    sample_count: number;
+    percentages: Record<string, number>;
+    average_time_seconds: Record<string, number | null>;
+  };
+  series: MonitoringTop100Point[];
+  note: string;
 };
 
 type MonitoringQueueEvent = {
@@ -332,6 +355,7 @@ type MonitoringCycleActivity = {
     current: Record<string, Record<string, number>>;
     series: Array<{ finished_at: string; stage1: number; stage2: number; stage3: number }>;
   };
+  top100_status: Record<string, MonitoringTop100View>;
   note: string;
 };
 
@@ -798,6 +822,63 @@ function monitoringDotClass(status: string | undefined): string {
   return "neutral";
 }
 
+function MonitoringTop100StatusPanel({ activity }: { activity: MonitoringCycleActivity }) {
+  const views = ["overall", ...assessmentStages];
+  const fallbackStatuses = ["Promising", "Needs More Data", "Inconclusive", "Known Match", "Duplicate Signal"];
+
+  const chartPath = (series: MonitoringTop100Point[], status: string, width: number, height: number): string => {
+    if (!series.length) return "";
+    const padding = 10;
+    const maxIndex = Math.max(1, series.length - 1);
+    return series.map((point, index) => {
+      const x = padding + (index / maxIndex) * (width - padding * 2);
+      const percentage = Math.max(0, Math.min(100, point.percentages?.[status] ?? 0));
+      const y = height - padding - (percentage / 100) * (height - padding * 2);
+      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    }).join(" ");
+  };
+  const dwellPath = (series: MonitoringTop100Point[], status: string, width: number, height: number): string => {
+    if (!series.length) return "";
+    const padding = 10;
+    const maxValue = Math.max(1, ...series.map((point) => point.average_time_seconds?.[status] ?? 0));
+    const maxIndex = Math.max(1, series.length - 1);
+    return series.map((point, index) => {
+      const x = padding + (index / maxIndex) * (width - padding * 2);
+      const seconds = point.average_time_seconds?.[status] ?? 0;
+      const y = height - padding - (seconds / maxValue) * (height - padding * 2);
+      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    }).join(" ");
+  };
+
+  return <section className="ops-section top100-status-section" aria-labelledby="top100-status-title">
+    <div className="ops-section-heading"><div><p className="eyebrow">Leaderboard composition</p><h4 id="top100-status-title">Top-100 status balance and dwell</h4></div><span className="section-note">Each point is one completed worker cycle · rolling average uses the latest hour</span></div>
+    <div className="top100-metrics-grid">
+      {views.map((view) => {
+        const metric = activity.top100_status?.[view];
+        if (!metric) return <article className="top100-metric-card" key={view}><div className="ops-empty">No top-100 telemetry for {view === "overall" ? "Overall" : stageName(view)} yet.</div></article>;
+        const current = metric.current ?? { sample_size: 0, counts: {}, percentages: {}, average_time_seconds: {} };
+        const rolling = metric.rolling_average ?? { sample_count: 0, percentages: {}, average_time_seconds: {} };
+        const statuses = metric.status_order?.length ? metric.status_order : fallbackStatuses;
+        const series = metric.series ?? [];
+        const chartWidth = 520;
+        const chartHeight = 150;
+        return <article className="top100-metric-card" key={view}>
+          <div className="top100-card-heading"><div><strong>{view === "overall" ? "Overall" : stageName(view)}</strong><small>Current top {metric.top_n}</small></div><span>{current.sample_size.toLocaleString()} sampled</span></div>
+          <div className="top100-status-table" role="table" aria-label={`${view} top 100 status metrics`}>
+            <div className="top100-status-header" role="row"><span>Status</span><span>Now</span><span>1h avg</span><span>Avg dwell</span></div>
+            {statuses.map((status) => <div className="top100-status-row" role="row" key={status}><span><i className={`top100-status-swatch status-${statusClass(status)}`} />{monitoringStatusLabel(status)}</span><strong>{numberLabel(current.percentages?.[status] ?? 0, 1)}%</strong><span>{numberLabel(rolling.percentages?.[status] ?? 0, 1)}%</span><span>{durationLabel(rolling.average_time_seconds?.[status])}</span></div>)}
+          </div>
+          <div className="top100-chart-heading"><span>All-time percentage trend</span><small>{series.length ? `${series.length} cycles` : "Waiting for cycle history"}</small></div>
+          {series.length ? <div className="top100-chart-wrap"><svg aria-label={`${view} top 100 status percentages over time`} role="img" viewBox={`0 0 ${chartWidth} ${chartHeight}`}><line className="top100-chart-guide" x1="10" x2={chartWidth - 10} y1="10" y2="10" /><line className="top100-chart-guide" x1="10" x2={chartWidth - 10} y1={chartHeight / 2} y2={chartHeight / 2} /><line className="top100-chart-guide" x1="10" x2={chartWidth - 10} y1={chartHeight - 10} y2={chartHeight - 10} />{statuses.map((status) => <path className={`top100-chart-line status-${statusClass(status)}`} d={chartPath(series, status, chartWidth, chartHeight)} key={status} />)}</svg><div className="top100-chart-axis"><span>0%</span><span>50%</span><span>100%</span><span>{formatDate(series[series.length - 1]?.finished_at)}</span></div></div> : <div className="top100-chart-empty">Cycle-level top-100 telemetry will appear after the next completed worker cycle.</div>}
+          <div className="top100-chart-heading"><span>Average dwell by status</span><small>time continuously represented in the top 100</small></div>
+          {series.length ? <div className="top100-chart-wrap"><svg aria-label={`${view} top 100 average status dwell over time`} role="img" viewBox={`0 0 ${chartWidth} ${chartHeight}`}><line className="top100-chart-guide" x1="10" x2={chartWidth - 10} y1="10" y2="10" /><line className="top100-chart-guide" x1="10" x2={chartWidth - 10} y1={chartHeight / 2} y2={chartHeight / 2} /><line className="top100-chart-guide" x1="10" x2={chartWidth - 10} y1={chartHeight - 10} y2={chartHeight - 10} />{statuses.map((status) => <path className={`top100-chart-line status-${statusClass(status)}`} d={dwellPath(series, status, chartWidth, chartHeight)} key={status} />)}</svg><div className="top100-chart-axis"><span>0</span><span>Higher dwell</span><span>{formatDate(series[series.length - 1]?.finished_at)}</span></div></div> : <div className="top100-chart-empty">Dwell-time history will appear after the next completed worker cycle.</div>}
+          <div className="top100-card-footer"><span>Rolling window: {rolling.sample_count} cycles</span><span>Average dwell is time continuously held in the status while represented in the top 100.</span></div>
+        </article>;
+      })}
+    </div>
+  </section>;
+}
+
 function MonitoringCycleActivityPanel({ activity }: { activity: MonitoringCycleActivity }) {
   const runs = activity.runs ?? [];
   const stages: AssessmentStage[] = ["stage1", "stage2", "stage3"];
@@ -1057,6 +1138,7 @@ export function MonitoringPanel({ refreshKey }: { refreshKey: number }) {
     </div>
     <section className="ops-section manual-migrations-section"><div className="ops-section-heading"><div><p className="eyebrow">Operator requests</p><h4>Manual migrations</h4></div><span className="section-note">Requests are claimed by the worker and use normal evaluation and replay publishing.</span></div>{overview.manual_migrations?.length ? <div className="manual-migration-list">{overview.manual_migrations.slice(0, 8).map((migration) => <div className="manual-migration-row" key={migration.request_id}><div><strong>{migration.from_stage === "universe" ? "Candidate Universe" : stageName(migration.from_stage)} → {stageName(migration.to_stage)}</strong><small>{migration.completed_count ?? 0} / {migration.requested_count} completed · {formatDate(migration.updated_at)}</small></div><span className={`manual-migration-status ${migration.status}`}>{migration.status}</span><em>{migration.message ?? "Waiting for worker"}</em></div>)}</div> : <div className="ops-empty">No manual migration requests yet.</div>}</section>
     <MonitoringCycleActivityPanel activity={overview.cycle_activity} />
+    <MonitoringTop100StatusPanel activity={overview.cycle_activity} />
     <section className="ops-section"><div className="ops-section-heading"><div><p className="eyebrow">Stage prioritization</p><h4>Queue policy and classifications</h4></div><span className="section-note">Stage 1 and 2 use ranking windows; Stage 3 works its Needs More Data queue in rank order.</span></div><div className="stage-ops-grid">{stages.map((stage) => <article className="stage-ops-card" key={stage.stage}><div className="stage-ops-card-heading"><strong>{stageName(stage.stage)}</strong><span>{stage.priority_label}</span></div><div className="stage-ops-inline-note">{stage.priority_candidates.toLocaleString()} currently prioritized · {stage.total_candidates.toLocaleString()} candidate signals retained</div><div className="stage-counts">{["Promising", "Needs More Data", "Inconclusive", "Known Match"].map((status) => <span key={status}><strong>{stage.counts[status] ?? 0}</strong>{monitoringStatusLabel(status)}</span>)}</div><small>Last evaluation: {formatDate(stage.last_evaluated_at)}</small></article>)}</div></section>
     <section className="ops-section"><div className="ops-section-heading"><div><p className="eyebrow">Model registry</p><h4>Algorithms and evidence quality</h4></div><span className="section-note">Metrics are aggregates of persisted evaluations, not new runs.</span></div>{overview.models.length ? <div className="model-registry">{overview.models.map((model) => <article className="model-card" key={`${model.stage}-${model.model_version}`}><div className="model-card-heading"><span className="stage-badge">{stageName(model.stage)}</span><strong>{stageName(model.stage)} model</strong></div><div className="model-stat-grid"><span><small>Evaluations</small><strong>{model.evaluation_count}</strong></span><span><small>Evidence</small><strong>{numberLabel(model.mean_evidence_score, 3)}</strong></span><span><small>Holdout F1</small><strong>{numberLabel(model.mean_holdout_f1, 2)}</strong></span><span><small>Model lift</small><strong>{numberLabel(model.mean_model_lift, 2)}</strong></span></div><p>{Object.entries(model.status_counts).map(([status, count]) => `${status}: ${count}`).join(" · ") || "No classifications recorded"}</p><small>Last evaluated {formatDate(model.last_evaluated_at)}</small></article>)}</div> : <div className="ops-empty">No model evaluations are persisted yet.</div>}</section>
     <div className="operations-grid operations-grid-secondary"><section className="ops-section ops-section-half"><div className="ops-section-heading"><div><p className="eyebrow">Adaptive sampling</p><h4>Replacement-target intelligence</h4></div></div><p className="ops-explanation">{overview.sampling.explanation}</p><div className="sampling-summary"><span><strong>{overview.sampling.cursor.toLocaleString()}</strong> cursor</span><span><strong>{overview.sampling.remaining_count.toLocaleString()}</strong> remaining</span><span><strong>{overview.sampling.adaptive_enabled ? "On" : "Observed only"}</strong> adaptive policy</span></div>{overview.sampling.buckets.length ? <div className="sampling-list">{overview.sampling.buckets.slice(0, 8).map((bucket) => <div className="sampling-row" key={bucket.bucket}><div><strong>{bucket.bucket}</strong><small>{bucket.observed} observed · {bucket.processed} processed</small></div><span>{bucket.promising} promising · {bucket.needs_more_data} needs data · {bucket.known_match} known</span><em>{bucket.recommendation}</em></div>)}</div> : <div className="ops-empty">No selection buckets have been observed yet.</div>}</section><section className="ops-section ops-section-half"><div className="ops-section-heading"><div><p className="eyebrow">Sky-cell outcomes</p><h4>Where to explore next</h4></div></div><p className="ops-explanation">Ten-degree RA/Dec cells summarize observed outcomes. They are guidance for the sampler, not a scientific claim about neighboring stars.</p>{overview.sampling.spatial_clusters.length ? <div className="sampling-list">{overview.sampling.spatial_clusters.slice(0, 8).map((cluster) => <div className="sampling-row" key={`${cluster.ra_min_deg}-${cluster.dec_min_deg}`}><div><strong>RA {cluster.ra_min_deg.toFixed(0)}° · Dec {cluster.dec_min_deg.toFixed(0)}°</strong><small>{cluster.observed} observed · {cluster.promising} promising</small></div><span>{cluster.needs_more_data} needs data · {cluster.inconclusive} inconclusive · {cluster.known_match} known</span><em>{cluster.recommendation}</em></div>)}</div> : <div className="ops-empty">Spatial signals will appear after targets with coordinates are assessed.</div>}</section></div>

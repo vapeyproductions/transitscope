@@ -130,16 +130,38 @@ def queue_snapshot(store: DuckDBStore) -> dict[str, dict[str, int]]:
     return snapshot
 
 
-def ranked_queue_samples(store: DuckDBStore, limit: int = 42) -> dict[str, list[dict[str, object]]]:
-    """Capture a compact rank-ordered sample for the animated ML Ops view."""
+def ranked_queue_samples(store: DuckDBStore, limit: int = 100) -> dict[str, list[dict[str, object]]]:
+    """Capture rank/status telemetry for the ML Ops view.
+
+    The motion view still renders a smaller representative subset, but the
+    persisted cycle sample keeps the top 100 available for status composition
+    and dwell-time metrics without querying the full ranking on every refresh.
+    """
 
     samples: dict[str, list[dict[str, object]]] = {}
     with store.connect() as connection:
         for stage in ("stage1", "stage2", "stage3"):
             rows = connection.execute(
                 """
-                SELECT candidate_id, status, rank_stage, stage_score
-                FROM candidates
+                SELECT candidate_id, status, rank_stage, stage_score,
+                       COALESCE(
+                           (
+                               SELECT MAX(event.occurred_at)
+                               FROM pipeline_events AS event
+                               WHERE event.candidate_id = c.candidate_id
+                                 AND event.event_type IN (
+                                     'stage1_evaluated',
+                                     'stage2_evaluated',
+                                     'stage3_evaluated',
+                                     'known_match',
+                                     'signal_alias_held',
+                                     'signal_alias_released',
+                                     'signal_independence_assessed'
+                                 )
+                           ),
+                           c.last_evaluated_at
+                       ) AS status_since
+                FROM candidates AS c
                 WHERE active = true AND current_stage = ?
                 ORDER BY rank_stage NULLS LAST, stage_score DESC NULLS LAST, candidate_id ASC
                 LIMIT ?
@@ -151,6 +173,7 @@ def ranked_queue_samples(store: DuckDBStore, limit: int = 42) -> dict[str, list[
                     "candidate_id": str(row[0]),
                     "status": str(row[1] or "unknown"),
                     "rank": int(row[2]) if row[2] is not None else index + 1,
+                    "status_since": row[4].isoformat() if row[4] is not None else None,
                 }
                 for index, row in enumerate(rows)
             ]

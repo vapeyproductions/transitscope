@@ -477,6 +477,34 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .timing-stat-row strong { font-size: 13px; }
 .timing-card p { color: var(--muted); font-size: 10px; line-height: 1.45; margin: 12px 0 0; }
 .timing-card p strong { color: var(--cyan); }
+.top100-metrics-grid { display: grid; gap: 9px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.top100-metric-card { background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(146, 169, 205, 0.14); border-radius: 9px; min-width: 0; padding: 13px; }
+.top100-card-heading, .top100-chart-heading, .top100-card-footer { align-items: center; display: flex; justify-content: space-between; }
+.top100-card-heading { margin-bottom: 12px; }
+.top100-card-heading > div { display: flex; flex-direction: column; gap: 4px; }
+.top100-card-heading strong { font-size: 12px; }
+.top100-card-heading small, .top100-card-heading > span, .top100-chart-heading small, .top100-card-footer { color: var(--muted); font-size: 9px; }
+.top100-status-table { border-top: 1px solid rgba(146, 169, 205, 0.1); }
+.top100-status-header, .top100-status-row { align-items: center; display: grid; gap: 8px; grid-template-columns: minmax(120px, 1.5fr) 50px 55px 75px; padding: 7px 0; }
+.top100-status-header { color: var(--faint); font-size: 8px; text-transform: uppercase; }
+.top100-status-row { border-top: 1px solid rgba(146, 169, 205, 0.07); color: var(--muted); font-size: 9px; }
+.top100-status-row > span:first-child { align-items: center; display: flex; gap: 6px; }
+.top100-status-row strong { color: var(--text); font-size: 10px; }
+.top100-status-swatch { background: var(--faint); border-radius: 50%; display: inline-block; height: 7px; width: 7px; }
+.top100-status-swatch.status-promising, .top100-chart-line.status-promising { background: var(--green); stroke: var(--green); }
+.top100-status-swatch.status-needs-more-data, .top100-chart-line.status-needs-more-data { background: var(--blue); stroke: var(--blue); }
+.top100-status-swatch.status-inconclusive, .top100-chart-line.status-inconclusive { background: var(--purple); stroke: var(--purple); }
+.top100-status-swatch.status-known-match, .top100-chart-line.status-known-match { background: var(--muted); stroke: var(--muted); }
+.top100-status-swatch.status-duplicate-signal, .top100-chart-line.status-duplicate-signal { background: var(--gold); stroke: var(--gold); }
+.top100-status-swatch.status-unknown, .top100-chart-line.status-unknown { background: var(--faint); stroke: var(--faint); }
+.top100-chart-heading { color: var(--muted); font-size: 9px; margin: 14px 0 5px; }
+.top100-chart-wrap { background: rgba(3, 8, 17, 0.45); border: 1px solid rgba(146, 169, 205, 0.1); border-radius: 7px; padding: 7px 8px 4px; }
+.top100-chart-wrap svg { display: block; height: auto; width: 100%; }
+.top100-chart-guide { stroke: rgba(146, 169, 205, 0.14); stroke-dasharray: 3 4; stroke-width: 1; }
+.top100-chart-line { fill: none; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.top100-chart-axis { color: var(--faint); display: flex; font-size: 8px; justify-content: space-between; padding-top: 4px; }
+.top100-chart-empty { align-items: center; background: rgba(3, 8, 17, 0.45); border: 1px solid rgba(146, 169, 205, 0.1); border-radius: 7px; color: var(--muted); display: flex; font-size: 9px; min-height: 89px; padding: 12px; }
+.top100-card-footer { align-items: flex-start; flex-direction: column; gap: 4px; line-height: 1.35; margin-top: 9px; }
 .flow-monitor-grid { display: grid; gap: 9px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 9px; }
 .flow-panel .ops-section-heading { margin-bottom: 10px; }
 .flow-panel h5 { font-size: 12px; margin: 0; }
@@ -518,7 +546,7 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
   .pipeline-motion-track { grid-template-columns: repeat(4, minmax(170px, 1fr)); min-width: 720px; }
   .pipeline-motion-footer { align-items: flex-start; flex-direction: column; }
   .motion-scrubber { flex-basis: auto; width: 100%; }
-  .stage-ops-grid, .model-registry, .provider-grid, .cycle-summary-grid, .timing-card-grid, .flow-monitor-grid { grid-template-columns: 1fr; }
+  .stage-ops-grid, .model-registry, .provider-grid, .cycle-summary-grid, .timing-card-grid, .top100-metrics-grid, .flow-monitor-grid { grid-template-columns: 1fr; }
   .ops-section-heading { align-items: flex-start; flex-direction: column; }
   .ops-section-heading .section-note { text-align: left; }
   .replay-dock-wrap { align-self: stretch; flex-basis: auto; width: 100%; }

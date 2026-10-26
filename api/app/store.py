@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import fcntl
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1130,6 +1130,7 @@ class ReadOnlyStore:
                 "throughput": {},
                 "timings": {},
                 "queue": {"current": {}, "series": []},
+                "top100_status": {},
                 "note": "Cycle history will appear after the worker records its first completed cycle.",
             },
             "data_health": {
@@ -1711,6 +1712,7 @@ class ReadOnlyStore:
                 }
             )
 
+        top100_status = self._monitoring_top100_metrics(connection, runs)
         return {
             "window_minutes": metrics_window_minutes,
             "expected_runs": 12,
@@ -1721,10 +1723,188 @@ class ReadOnlyStore:
             "throughput": throughput,
             "timings": timings,
             "queue": {"current": latest_queue, "series": queue_series},
+            "top100_status": top100_status,
             "note": (
-                "Every completed worker cycle is retained for chronological replay. Throughput, timing, and queue summaries use the latest twelve cycles (approximately one hour). A cycle can contain several serialized publishes, so timing is wall-clock worker time, not dashboard refresh time."
+                "Every completed worker cycle is retained for chronological replay. Throughput, timing, and rolling top-100 summaries use the latest twelve cycles (approximately one hour). All-time status and dwell charts use every saved cycle. Older cycles may contain fewer than 100 sampled rows because top-100 telemetry was added after they were recorded."
             ),
         }
+
+    @staticmethod
+    def _monitoring_top100_metrics(
+        connection: duckdb.DuckDBPyConnection,
+        runs: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """Build top-100 status composition and status-dwell telemetry.
+
+        Cycle payloads contain a bounded rank-ordered sample, so this remains
+        cheap for the API to calculate even as the universe grows. ``status_since``
+        is captured by the worker from the persisted evaluation/event history;
+        the resulting dwell value is the time a candidate has continuously
+        remained in its current status while represented in the top-100 sample.
+        """
+
+        views = ("overall", "stage1", "stage2", "stage3")
+        base_statuses = (
+            "Promising",
+            "Needs More Data",
+            "Inconclusive",
+            "Known Match",
+            "Duplicate Signal",
+        )
+
+        def parse_time(value: object) -> datetime | None:
+            if value is None:
+                return None
+            if isinstance(value, datetime):
+                parsed = value
+            else:
+                try:
+                    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                except (TypeError, ValueError):
+                    return None
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+        def point(samples: list[dict[str, Any]], observed_at: object) -> dict[str, Any]:
+            observed_time = parse_time(observed_at)
+            counts: dict[str, int] = {}
+            duration_totals: dict[str, float] = {}
+            duration_counts: dict[str, int] = {}
+            for sample in samples[:100]:
+                status = str(sample.get("status") or "Unknown")
+                counts[status] = counts.get(status, 0) + 1
+                status_since = parse_time(sample.get("status_since"))
+                if observed_time is not None and status_since is not None:
+                    duration = max(0.0, (observed_time - status_since).total_seconds())
+                    duration_totals[status] = duration_totals.get(status, 0.0) + duration
+                    duration_counts[status] = duration_counts.get(status, 0) + 1
+            status_order = list(base_statuses)
+            status_order.extend(sorted(status for status in counts if status not in status_order))
+            sample_size = len(samples[:100])
+            percentages = {
+                status: round((counts.get(status, 0) / sample_size) * 100, 2)
+                if sample_size
+                else 0.0
+                for status in status_order
+            }
+            average_time_seconds = {
+                status: round(duration_totals[status] / duration_counts[status], 2)
+                if duration_counts.get(status)
+                else None
+                for status in status_order
+            }
+            return {
+                "sample_size": sample_size,
+                "counts": {status: counts.get(status, 0) for status in status_order},
+                "percentages": percentages,
+                "average_time_seconds": average_time_seconds,
+            }
+
+        series_by_view: dict[str, list[dict[str, Any]]] = {view: [] for view in views}
+        for run in runs:
+            for view in views:
+                samples = run.get("ranked_samples", {}).get(view, [])
+                if not isinstance(samples, list):
+                    samples = []
+                samples = [sample for sample in samples if isinstance(sample, dict)]
+                if not samples:
+                    continue
+                metrics = point(samples, run.get("finished_at"))
+                series_by_view[view].append(
+                    {
+                        "finished_at": run.get("finished_at"),
+                        "sequence_number": run.get("sequence_number"),
+                        **metrics,
+                    }
+                )
+
+        current_samples_by_view: dict[str, list[dict[str, Any]]] = {}
+        for view in views:
+            stage_filter = VIEW_STAGE.get(view)
+            where = "c.active = true"
+            params: list[Any] = []
+            if stage_filter:
+                where += " AND c.current_stage = ?"
+                params.append(stage_filter)
+            order = (
+                "c.rank_stage NULLS LAST, c.stage_score DESC NULLS LAST"
+                if stage_filter
+                else "c.rank_overall NULLS LAST, c.overall_score DESC NULLS LAST"
+            )
+            rows = connection.execute(
+                f"""
+                SELECT c.candidate_id, c.status,
+                       COALESCE(
+                           (
+                               SELECT MAX(event.occurred_at)
+                               FROM pipeline_events AS event
+                               WHERE event.candidate_id = c.candidate_id
+                                 AND event.event_type IN (
+                                     'stage1_evaluated',
+                                     'stage2_evaluated',
+                                     'stage3_evaluated',
+                                     'known_match',
+                                     'signal_alias_held',
+                                     'signal_alias_released',
+                                     'signal_independence_assessed'
+                                 )
+                           ),
+                           c.last_evaluated_at
+                       ) AS status_since
+                FROM candidates AS c
+                WHERE {where}
+                ORDER BY {order}, c.candidate_id ASC
+                LIMIT 100
+                """,
+                params,
+            ).fetchall()
+            current_samples_by_view[view] = [
+                {"candidate_id": row[0], "status": row[1], "status_since": isoformat(row[2])}
+                for row in rows
+            ]
+
+        result: dict[str, dict[str, Any]] = {}
+        for view in views:
+            series = series_by_view[view]
+            rolling = series[-12:]
+            rolling_statuses = list(base_statuses)
+            for item in series:
+                for status in (item.get("percentages") or {}):
+                    if status not in rolling_statuses:
+                        rolling_statuses.append(status)
+
+            def average_metric(metric_name: str, status: str) -> float | None:
+                values = [
+                    float(item[metric_name][status])
+                    for item in rolling
+                    if isinstance(item.get(metric_name), dict)
+                    and isinstance(item[metric_name].get(status), (int, float))
+                ]
+                return round(sum(values) / len(values), 2) if values else None
+
+            rolling_average = {
+                "sample_count": len(rolling),
+                "percentages": {
+                    status: average_metric("percentages", status) or 0.0
+                    for status in rolling_statuses
+                },
+                "average_time_seconds": {
+                    status: average_metric("average_time_seconds", status)
+                    for status in rolling_statuses
+                },
+            }
+            current = point(
+                current_samples_by_view[view],
+                datetime.now(timezone.utc),
+            )
+            result[view] = {
+                "top_n": 100,
+                "status_order": rolling_statuses,
+                "current": current,
+                "rolling_average": rolling_average,
+                "series": series,
+                "note": "Average time is current-status dwell for candidates represented in the top-100 sample; it resets when a candidate leaves the top 100 or changes status.",
+            }
+        return result
 
     def _version(self) -> int | None:
         connection = self.connect()
