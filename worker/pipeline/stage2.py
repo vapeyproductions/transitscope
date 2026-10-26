@@ -25,7 +25,7 @@ from storage.duckdb_store import DuckDBStore
 
 
 MODEL_VERSION = "stage2-repeatability-v3-signal-isolated"
-RANKING_VERSION = "stage2-overall-v2-score-first"
+RANKING_VERSION = "overall-ranking-v3-maturity-aware"
 
 
 @dataclass(frozen=True)

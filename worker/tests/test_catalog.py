@@ -123,17 +123,21 @@ class CatalogTests(unittest.TestCase):
             )
             self.assertFalse(adapter._cache_is_fresh(cache_path))
 
-    def test_overall_ranking_uses_combined_score_before_current_status(self) -> None:
+    def test_overall_ranking_puts_prime_candidates_above_stage1_scores(self) -> None:
         candidates = [
             {
-                "candidate_id": "stage3-inconclusive",
-                "status": "Inconclusive",
-                "overall_score": 78.0,
+                "candidate_id": "stage3-prime",
+                "current_stage": "stage3",
+                "status": "Promising",
+                "overall_score": 48.0,
+                "stage_score": 44.0,
             },
             {
                 "candidate_id": "stage1-promising",
+                "current_stage": "stage1",
                 "status": "Promising",
-                "overall_score": 62.0,
+                "overall_score": 98.0,
+                "stage_score": 98.0,
             },
         ]
 
@@ -141,7 +145,32 @@ class CatalogTests(unittest.TestCase):
 
         self.assertEqual(
             [candidate["candidate_id"] for candidate in ordered],
-            ["stage3-inconclusive", "stage1-promising"],
+            ["stage3-prime", "stage1-promising"],
+        )
+
+    def test_overall_ranking_uses_stage_depth_within_promising_band(self) -> None:
+        candidates = [
+            {
+                "candidate_id": "stage1-promising",
+                "current_stage": "stage1",
+                "status": "Promising",
+                "overall_score": 98.0,
+                "stage_score": 98.0,
+            },
+            {
+                "candidate_id": "stage2-promising",
+                "current_stage": "stage2",
+                "status": "Promising",
+                "overall_score": 72.0,
+                "stage_score": 70.0,
+            },
+        ]
+
+        ordered = sorted(candidates, key=overall_sort_key)
+
+        self.assertEqual(
+            [candidate["candidate_id"] for candidate in ordered],
+            ["stage2-promising", "stage1-promising"],
         )
 
     def test_archive_projection_is_cached_and_matching_is_conservative(self) -> None:

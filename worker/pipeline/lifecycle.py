@@ -12,7 +12,7 @@ from storage.duckdb_store import DuckDBStore
 
 
 CATALOG_MODEL_VERSION = "exoplanet-archive-match-v1"
-OVERALL_RANKING_VERSION = "overall-ranking-v2-score-first"
+OVERALL_RANKING_VERSION = "overall-ranking-v3-maturity-aware"
 RANKING_VIEWS = ("overall", "stage1", "stage2", "stage3")
 STATUS_PRIORITY = {
     "Promising": 3,
@@ -950,19 +950,116 @@ def _sort_pool(candidates: Sequence[Mapping[str, Any]], *, score_key: str) -> li
     )
 
 
-def overall_sort_key(candidate: Mapping[str, Any]) -> tuple[float, int, str]:
-    """Rank the overall board by accumulated evidence across all completed stages.
+def overall_sort_key(candidate: Mapping[str, Any]) -> tuple[int, int, float, float, str]:
+    """Rank the overall board by maturity first, then accumulated evidence.
 
-    Status remains a tie-breaker so an Inconclusive result is not preferred over
-    an otherwise equal Promising result, but the latest stage label cannot erase
-    strong evidence collected earlier in the pipeline.
+    The overall board is meant to answer "what deserves attention next?", not
+    "which single Stage 1 score is largest?" A Stage 3 Promising result is a
+    Prime Candidate and has survived the most demanding test, so it receives a
+    dedicated top band. Other Promising candidates are ordered by how far they
+    have progressed, followed by Needs More Data and then Inconclusive results.
+    Accumulated evidence remains the tie-breaker within each maturity band.
+
+    This prevents a strong but unvalidated Stage 1 signal from crowding every
+    candidate that has already produced evidence at a later stage, while still
+    preserving meaningful score-based ordering inside each group.
     """
 
+    stage = str(candidate.get("current_stage") or "stage1")
+    status = str(candidate.get("status") or "")
+    stage_depth = {"stage1": 1, "stage2": 2, "stage3": 3}.get(stage, 0)
+
+    # Prime Candidates are the only candidates with a completed Stage 3 result
+    # that is still positive. They should dominate the overall board.
+    maturity_band = 4 if stage == "stage3" and status == "Promising" else STATUS_PRIORITY.get(status, 0)
+
     return (
+        -maturity_band,
+        -stage_depth,
         -float(candidate.get("overall_score") or 0.0),
-        -STATUS_PRIORITY.get(str(candidate.get("status")), 0),
+        -float(candidate.get("stage_score") or 0.0),
         str(candidate["candidate_id"]),
     )
+
+
+def rebuild_overall_ranking(store: DuckDBStore) -> dict[str, int]:
+    """Apply the maturity-aware overall policy to the existing active pool.
+
+    This is a ranking repair, not a model run. It updates persisted ranks and
+    saves one overall snapshot only when the new policy changes the order, so
+    the live dashboard reflects the policy immediately after a worker restart.
+    """
+
+    candidates = active_candidates(store)
+    if not candidates:
+        return {"changed": 0, "active_candidates": 0, "publish_version": 0}
+
+    overall_pool = sorted(candidates, key=overall_sort_key)
+    overall_ranks = {
+        str(candidate["candidate_id"]): index
+        for index, candidate in enumerate(overall_pool, 1)
+    }
+    if all(
+        candidate.get("rank_overall") == overall_ranks[str(candidate["candidate_id"])]
+        for candidate in overall_pool
+    ):
+        return {
+            "changed": 0,
+            "active_candidates": len(overall_pool),
+            "publish_version": int(store.latest_published_version() or 0),
+        }
+
+    now = datetime.now(timezone.utc)
+    version = (store.latest_published_version() or 0) + 1
+    candidate_updates: list[dict[str, Any]] = []
+    for candidate in overall_pool:
+        candidate_id = str(candidate["candidate_id"])
+        new_rank = overall_ranks[candidate_id]
+        delta, movement = movement_for_ranks(candidate.get("rank_overall"), new_rank)
+        candidate_updates.append(
+            {
+                "candidate_id": candidate_id,
+                "current_stage": candidate["current_stage"],
+                "rank_overall": new_rank,
+                "rank_stage": candidate.get("rank_stage"),
+                "rank_delta": delta,
+                "movement_kind": movement,
+                "active": True,
+                "activity": candidate.get("activity", "No current activity"),
+                "status": candidate.get("status"),
+                "overall_score": candidate.get("overall_score"),
+                "stage_score": candidate.get("stage_score"),
+                "last_evaluated_at": candidate.get("last_evaluated_at"),
+                "known_match_id": candidate.get("known_match_id"),
+                "processing_slot_occupied": candidate.get("processing_slot_occupied"),
+                "signal_group_id": candidate.get("signal_group_id"),
+                "signal_resolution": candidate.get("signal_resolution"),
+                "alias_of_candidate_id": candidate.get("alias_of_candidate_id"),
+                "promotion_eligible": candidate.get("promotion_eligible"),
+            }
+        )
+
+    store.publish_batch(
+        version=version,
+        snapshots=[
+            {
+                "snapshot_id": f"overall-ranking-policy-snapshot-{version}",
+                "view": "overall",
+                "sequence_number": version,
+                "occurred_at": now,
+                "candidate_order_json": [candidate["candidate_id"] for candidate in overall_pool],
+                "active_candidate_count": len(overall_pool),
+                "processed_target_count": processed_target_count(store),
+            }
+        ],
+        candidate_updates=candidate_updates,
+        note="Rebuild overall ranking with maturity-aware stage priority",
+    )
+    return {
+        "changed": len(candidate_updates),
+        "active_candidates": len(overall_pool),
+        "publish_version": version,
+    }
 
 
 def _first_float(features: Mapping[str, Any], *keys: str) -> float | None:
@@ -996,6 +1093,7 @@ __all__ = [
     "stage3_replacement_debt",
     "movement_for_ranks",
     "overall_sort_key",
+    "rebuild_overall_ranking",
     "processed_target_count",
     "promotable_candidates",
     "publish_known_matches",

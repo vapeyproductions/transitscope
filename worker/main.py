@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pipeline.live import run_live_cycle
-from pipeline.lifecycle import repair_legacy_history
+from pipeline.lifecycle import rebuild_overall_ranking, repair_legacy_history
 from storage.duckdb_store import DuckDBStore
 from storage.paths import DataPaths
 
@@ -495,6 +495,7 @@ def main() -> None:
     store = DuckDBStore(paths.database)
     store.initialize()
     history_repair = repair_legacy_history(store)
+    overall_ranking_rebuild = rebuild_overall_ranking(store)
 
     mode = os.getenv("WORKER_MODE", "bootstrap").lower()
     if mode == "live":
@@ -620,6 +621,7 @@ def main() -> None:
                         "last_cycle": result,
                         "catalog_health": catalog_health,
                         "history_repair": history_repair,
+                        "overall_ranking_rebuild": overall_ranking_rebuild,
                         "next_update_at": (datetime.now(timezone.utc) + timedelta(seconds=poll_seconds)).isoformat(),
                     },
                 )
