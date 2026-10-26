@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import os
 import fcntl
+import copy
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +24,24 @@ STATUS_PRIORITY = {
 }
 RANKING_STATUS_FILTERS = set(STATUS_PRIORITY) | {"Duplicate Signal"}
 RANKING_SORTS = {"rank", "last_assessed_desc", "last_assessed_asc"}
+
+_READ_CACHE_LOCK = threading.Lock()
+_RANKING_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
+_STATUS_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
+_READ_CACHE_LIMIT = 32
+
+
+def _cache_get(cache: dict[str, dict[str, Any]], key: str) -> dict[str, Any] | None:
+    with _READ_CACHE_LOCK:
+        payload = cache.get(key)
+        return copy.deepcopy(payload) if payload is not None else None
+
+
+def _cache_set(cache: dict[str, dict[str, Any]], key: str, payload: dict[str, Any]) -> None:
+    with _READ_CACHE_LOCK:
+        cache[key] = copy.deepcopy(payload)
+        while len(cache) > _READ_CACHE_LIMIT:
+            cache.pop(next(iter(cache)))
 
 
 def isoformat(value: object) -> str | None:
@@ -83,7 +104,7 @@ class ReadOnlyStore:
         self.data_dir = data_dir or Path(os.getenv("DATA_DIR", "/app/data"))
         self.database = self.data_dir / "transitscope.duckdb"
 
-    def connect(self) -> Any | None:
+    def connect(self, *, timeout_seconds: float | None = None) -> Any | None:
         if not self.database.exists():
             return None
         # DuckDB uses a process-level file lock even for a read-only connection.
@@ -92,7 +113,19 @@ class ReadOnlyStore:
         lock_path = self.database.with_suffix(self.database.suffix + ".lock")
         lock_file = lock_path.open("a+")
         try:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH)
+            if timeout_seconds is None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH)
+            else:
+                deadline = time.monotonic() + max(0.0, timeout_seconds)
+                while True:
+                    try:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            lock_file.close()
+                            return None
+                        time.sleep(0.05)
             connection = duckdb.connect(str(self.database), read_only=True)
         except Exception:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
@@ -158,8 +191,16 @@ class ReadOnlyStore:
             "processed_history": [],
             "worker": worker,
         }
-        connection = self.connect()
+        cache_key = str(self.database.resolve())
+        connection = self.connect(timeout_seconds=0.75)
         if connection is None:
+            cached = _cache_get(_STATUS_RESPONSE_CACHE, cache_key)
+            if cached is not None:
+                cached["worker"] = worker
+                cached["served_from_cache"] = True
+                cached["read_state"] = "publication_busy"
+                return cached
+            response["read_state"] = "publication_busy"
             return response
         try:
             version = self.latest_version(connection)
@@ -203,6 +244,8 @@ class ReadOnlyStore:
                 }
                 for row in history_rows
             ]
+            response["served_from_cache"] = False
+            _cache_set(_STATUS_RESPONSE_CACHE, cache_key, response)
             return response
         finally:
             connection.close()
@@ -233,7 +276,19 @@ class ReadOnlyStore:
         if offset >= display_cap:
             offset = display_cap
         effective_limit = max(0, min(limit, display_cap - offset))
-        connection = self.connect()
+        cache_key = json.dumps(
+            {
+                "database": str(self.database.resolve()),
+                "view": view,
+                "limit": limit,
+                "page": page,
+                "stage_filter": stage_filter,
+                "status_filter": status_filter,
+                "sort": sort,
+            },
+            sort_keys=True,
+        )
+        connection = self.connect(timeout_seconds=0.75)
         empty = {
             "view": view,
             "data_version": None,
@@ -251,6 +306,12 @@ class ReadOnlyStore:
             "removed": [],
         }
         if connection is None:
+            cached = _cache_get(_RANKING_RESPONSE_CACHE, cache_key)
+            if cached is not None:
+                cached["served_from_cache"] = True
+                cached["read_state"] = "publication_busy"
+                return cached
+            empty["read_state"] = "publication_busy"
             return empty
         try:
             version = self.latest_version(connection)
@@ -379,6 +440,8 @@ class ReadOnlyStore:
                 "rows": projected_rows,
                 "removed": [],
             }
+            response["served_from_cache"] = False
+            _cache_set(_RANKING_RESPONSE_CACHE, cache_key, response)
             return response
         finally:
             connection.close()
