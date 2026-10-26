@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
@@ -692,7 +692,7 @@ function identifiedPerformanceStats(performance: IdentifiedPerformance): string 
   return stats.join(" · ") || "No secondary stats";
 }
 
-function LightCurveChart({ points, emptyMessage, signalFeatures }: { points: LightCurveResponse["points"]; emptyMessage: string; signalFeatures?: Record<string, unknown> }) {
+function LightCurveChart({ points, emptyMessage, signalFeatures, transitProgress, transitOverlay }: { points: LightCurveResponse["points"]; emptyMessage: string; signalFeatures?: Record<string, unknown>; transitProgress?: number | null; transitOverlay?: ReactNode }) {
   if (!points.length) return <div className="chart-empty">{emptyMessage}</div>;
   const width = 760;
   const height = 220;
@@ -736,13 +736,14 @@ function LightCurveChart({ points, emptyMessage, signalFeatures }: { points: Lig
       marker += period;
     }
   }
-  return <div className="chart-wrap"><svg aria-label="Normalized light curve with selected signal windows" role="img" viewBox={`0 0 ${width} ${height}`}><line className="chart-baseline" x1={padding} x2={width - padding} y1={height / 2} y2={height / 2} />{markerTimes.map((marker) => { const x = padding + ((marker - minTime) / (maxTime - minTime || 1)) * (width - padding * 2); return <line className="chart-transit-marker" key={marker} x1={x} x2={x} y1={padding} y2={height - padding} />; })}{paths.map((path, index) => <path className="chart-line" d={path} key={index} />)}</svg><div className="chart-axis"><span>{minTime.toFixed(2)} BJD−2457000</span><span className="chart-gap-note">{markerTimes.length ? "Vertical markers show this signal's predicted transits" : "Observation gaps are not connected"}</span><span>{maxTime.toFixed(2)}</span></div></div>;
+  const playbackX = typeof transitProgress === "number"
+    ? padding + Math.max(0, Math.min(1, transitProgress)) * (width - padding * 2)
+    : null;
+  return <div className="chart-wrap"><div className="chart-visual-stage"><svg aria-label="Normalized light curve with selected signal windows" role="img" viewBox={`0 0 ${width} ${height}`}><line className="chart-baseline" x1={padding} x2={width - padding} y1={height / 2} y2={height / 2} />{markerTimes.map((marker) => { const x = padding + ((marker - minTime) / (maxTime - minTime || 1)) * (width - padding * 2); return <line className="chart-transit-marker" key={marker} x1={x} x2={x} y1={padding} y2={height - padding} />; })}{paths.map((path, index) => <path className="chart-line" d={path} key={index} />)}{playbackX !== null && <line className="chart-playback-cursor" x1={playbackX} x2={playbackX} y1={padding} y2={height - padding} />}</svg>{transitOverlay}</div><div className="chart-axis"><span>{minTime.toFixed(2)} BJD−2457000</span><span className="chart-gap-note">{markerTimes.length ? "Vertical markers show this signal's predicted transits" : "Observation gaps are not connected"}</span><span>{maxTime.toFixed(2)}</span></div></div>;
 }
 
-function TransitSimulation({ points, signalFeatures }: { points: LightCurveResponse["points"]; signalFeatures: Record<string, unknown> }) {
+function TransitSimulation({ points, signalFeatures, onFrameChange }: { points: LightCurveResponse["points"]; signalFeatures: Record<string, unknown>; onFrameChange?: (index: number, total: number) => void }) {
   const [frameIndex, setFrameIndex] = useState(0);
-  const [playing, setPlaying] = useState(true);
-  const [speed, setSpeed] = useState(1);
   const frames = useMemo(() => {
     const maxFrames = 72;
     const sampledPoints = points.length > maxFrames
@@ -770,20 +771,13 @@ function TransitSimulation({ points, signalFeatures }: { points: LightCurveRespo
     });
   }, [points, signalFeatures]);
   const frame = frames[Math.min(frameIndex, Math.max(0, frames.length - 1))] ?? { time: 0, brightness: 1 };
-  const starX = 130;
-  const starY = 86;
-  const starRadius = 38;
+  const starX = 110;
+  const starY = 66;
+  const starRadius = 28;
   const orbitAngle = (frameIndex / Math.max(1, frames.length)) * Math.PI * 2 - Math.PI / 2;
-  const objectX = starX + 91 * Math.cos(orbitAngle);
-  const objectY = starY + 46 * Math.sin(orbitAngle);
+  const objectX = starX + 68 * Math.cos(orbitAngle);
+  const objectY = starY + 33 * Math.sin(orbitAngle);
   const objectInFront = Math.abs(objectX - starX) < starRadius * 1.25 && Math.abs(objectY - starY) < starRadius * 0.62;
-  const curveWidth = 500;
-  const curveHeight = 92;
-  const curvePoints = frames.map((item, index) => `${12 + (index / Math.max(1, frames.length - 1)) * (curveWidth - 24)},${curveHeight - 12 - item.brightness * (curveHeight - 30)}`).join(" ");
-  const currentCurveX = 12 + (frameIndex / Math.max(1, frames.length - 1)) * (curveWidth - 24);
-  const period = typeof signalFeatures.period_days === "number" && Number.isFinite(signalFeatures.period_days)
-    ? `${signalFeatures.period_days.toFixed(2)} days`
-    : "period not estimated";
   const displayBrightness = Math.max(0, Math.min(100, frame.brightness * 100));
 
   useEffect(() => {
@@ -791,16 +785,20 @@ function TransitSimulation({ points, signalFeatures }: { points: LightCurveRespo
   }, [points, signalFeatures]);
 
   useEffect(() => {
-    if (!playing || frames.length < 2) return undefined;
+    if (frames.length < 2) return undefined;
     const timer = window.setInterval(() => {
       setFrameIndex((current) => (current + 1) % frames.length);
-    }, Math.max(90, 360 / speed));
+    }, 180);
     return () => window.clearInterval(timer);
-  }, [frames.length, playing, speed]);
+  }, [frames.length]);
+
+  useEffect(() => {
+    onFrameChange?.(frameIndex, frames.length);
+  }, [frameIndex, frames.length, onFrameChange]);
 
   const planet = <circle className="transit-simulation-object" cx={objectX} cy={objectY} r="7" />;
   const star = <><circle className="transit-simulation-glow" cx={starX} cy={starY} r={starRadius + 11} opacity={0.14 + frame.brightness * 0.22} /><circle className="transit-simulation-star" cx={starX} cy={starY} r={starRadius} opacity={0.38 + frame.brightness * 0.62} /><circle className="transit-simulation-star-core" cx={starX - 10} cy={starY - 10} r="9" opacity={0.2 + frame.brightness * 0.3} /></>;
-  return <div className="transit-simulation" aria-label="Illustrative transit simulation"><div className="transit-simulation-heading"><div><p className="eyebrow">Illustrative transit model</p><h4>How a dimming pattern can reveal an orbiting object</h4></div><span className="section-note">{points.length ? "Using this candidate's curve" : "Waiting for a curve"}</span></div><svg className="transit-simulation-scene" role="img" aria-label="Animated star and orbiting object synchronized to the candidate light curve" viewBox="0 0 500 188"><defs><radialGradient id="transit-star-gradient"><stop offset="0%" stopColor="#fff6c9" /><stop offset="62%" stopColor="#ffd978" /><stop offset="100%" stopColor="#e99c43" /></radialGradient></defs><ellipse className="transit-simulation-orbit" cx={starX} cy={starY} rx="91" ry="46" />{!objectInFront && planet}{star}{objectInFront && planet}<text className="transit-simulation-label" x="130" y="151" textAnchor="middle">star brightness</text><text className="transit-simulation-label" x={Math.max(35, Math.min(465, objectX))} y={Math.max(18, objectY - 14)} textAnchor="middle">object</text><line className="transit-simulation-divider" x1="250" x2="250" y1="14" y2="174" /><path className="transit-simulation-curve" d={`M ${curvePoints}`} /><line className="transit-simulation-cursor" x1={currentCurveX} x2={currentCurveX} y1="12" y2={curveHeight} /><text className="transit-simulation-axis-label" x="12" y="112">bright</text><text className="transit-simulation-axis-label" x="12" y="129">dim</text><text className="transit-simulation-axis-label" x="270" y="174">observed brightness over time</text></svg><div className="transit-simulation-readout"><span>Frame {frameIndex + 1} / {frames.length}</span><strong>{displayBrightness.toFixed(1)}% relative brightness</strong><span>{period}</span></div><div className="transit-simulation-controls"><button className="button button-quiet" type="button" onClick={() => setPlaying((current) => !current)}>{playing ? "Ⅱ Pause" : "▶ Play"}</button><label><span>Speed</span><select aria-label="Transit simulation speed" value={speed} onChange={(event) => setSpeed(Number(event.target.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select></label><input aria-label="Transit simulation position" type="range" min="0" max={Math.max(0, frames.length - 1)} value={frameIndex} onChange={(event) => { setFrameIndex(Number(event.target.value)); setPlaying(false); }} /></div><p className="transit-simulation-note">When an object crosses the star from our viewpoint, less starlight reaches the telescope and the light curve dips. This animation is a teaching aid; it does not prove that the object is a planet.</p></div>;
+  return <div className="transit-overlay" aria-label="Illustrative transit replay"><svg className="transit-overlay-scene" role="img" aria-label="Animated star and orbiting object synchronized to the candidate light curve" viewBox="0 0 220 130"><defs><radialGradient id="transit-star-gradient"><stop offset="0%" stopColor="#fff6c9" /><stop offset="62%" stopColor="#ffd978" /><stop offset="100%" stopColor="#e99c43" /></radialGradient></defs><ellipse className="transit-simulation-orbit" cx={starX} cy={starY} rx="68" ry="33" />{!objectInFront && planet}{star}{objectInFront && planet}</svg><div className="transit-overlay-readout"><span>Frame {frameIndex + 1} / {frames.length}</span><strong>{displayBrightness.toFixed(1)}% brightness</strong></div></div>;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
@@ -809,6 +807,8 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 function CandidateModal({ candidate, curve, history, replaySequence, onClose }: { candidate: CandidateDetail; curve: LightCurveResponse | null; history: HistoryResponse | null; replaySequence: number | null; onClose: () => void }) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const [transitOpen, setTransitOpen] = useState(false);
+  const [transitProgress, setTransitProgress] = useState<number | null>(null);
   const features = candidate.evaluation?.features ?? {};
   const metrics = candidate.evaluation?.metrics ?? {};
   const holdout = objectValue(features.holdout_metrics ?? metrics.holdout_metrics);
@@ -872,13 +872,16 @@ function CandidateModal({ candidate, curve, history, replaySequence, onClose }: 
 
   const visibleHistory = history?.events.filter((event) => replaySequence === null || event.sequence_number <= replaySequence) ?? [];
   const signal = signalLabel(candidate.candidate_id, features, candidate.signal_index);
+  const handleTransitFrameChange = useCallback((index: number, total: number) => {
+    setTransitProgress(total > 1 ? index / (total - 1) : 0);
+  }, []);
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="candidate-modal" role="dialog" aria-modal="true" aria-labelledby="candidate-modal-title">
       <header className="modal-header"><div><p className="eyebrow accent">Candidate investigation · {stageName(candidate.stage)}</p><h3 id="candidate-modal-title">{candidate.target_id}{signal ? ` - ${signal}` : ""}</h3><p className="modal-subtitle">{candidate.target?.source_product_family ?? "MAST / TESS observation"}</p></div><button ref={closeRef} className="modal-close" type="button" onClick={onClose} aria-label="Close candidate details">×</button></header>
       <div className="modal-summary"><span className="stage-status-stage">{stageName(candidate.stage)}</span>{" "}<span className={`status-pill status-${statusClass(displayStatus(candidate.status, candidate.stage))}`}>{displayStatus(candidate.status, candidate.stage)}</span>{signalResolutionLabel(candidate.signal_resolution) && <span className="evidence-chip">{signalResolutionLabel(candidate.signal_resolution)}</span>}<span className="modal-summary-note">{candidate.ranking_rationale ?? candidate.activity}</span>{replaySequence !== null && <span className="replay-chip">Replay view</span>}</div>
       <div className="modal-content-grid">
         <div className="modal-main-column">
-          <div className="modal-observation-grid"><div className="modal-section"><div className="section-heading"><div><p className="eyebrow">Normalized observation</p><h4>Light curve</h4></div><span className="section-note">{curve?.points.length ?? 0} plotted points</span></div><LightCurveChart points={curve?.points ?? []} signalFeatures={features} emptyMessage={emptyCurveMessage} /></div><div className="modal-section transit-simulation-section"><TransitSimulation points={curve?.points ?? []} signalFeatures={features} /></div></div>
+          <div className="modal-section"><div className="section-heading"><div><p className="eyebrow">Normalized observation</p><h4>Light curve</h4></div><div className="chart-actions"><span className="section-note">{curve?.points.length ?? 0} plotted points</span><button className={`transit-toggle ${transitOpen ? "active" : ""}`} type="button" aria-pressed={transitOpen} aria-label={transitOpen ? "Hide transit replay" : "See the curve with transit replay"} onClick={() => { setTransitOpen((current) => !current); setTransitProgress(transitOpen ? null : 0); }}><span className="planet-toggle-glyph" aria-hidden="true"><i /></span>See the curve</button></div></div><LightCurveChart points={curve?.points ?? []} signalFeatures={features} emptyMessage={emptyCurveMessage} transitProgress={transitOpen ? transitProgress : null} transitOverlay={transitOpen ? <TransitSimulation points={curve?.points ?? []} signalFeatures={features} onFrameChange={handleTransitFrameChange} /> : null} /></div>
           <div className="modal-section"><div className="section-heading"><div><p className="eyebrow">Interpretable evidence</p><h4>Assessment metrics</h4></div></div><div className="detail-metrics">{displayMetrics.map(([label, value]) => <Metric key={label} label={label} value={value} />)}</div></div>
           {candidate.stage === "stage3" && <div className="next-action stage3-context"><span>Stage 3 context</span><p>{insufficientStage3 ? "This candidate was admitted after its Stage 2 result was eligible for Stage 3. The Stage 3 test did not have a recoverable event in every chronological holdout, so no predictive metrics were produced yet." : "This candidate has a completed chronological holdout assessment."}</p><p>{productCount ? `${productCount} MAST / TESS products · ${numberFeature("total_samples", 0)} samples · ${windowCount || "—"} chronological windows.` : "No Stage 3 products are attached to this evaluation yet."}</p></div>}
         </div>
