@@ -535,6 +535,9 @@ def main() -> None:
                     top_n=int(os.getenv("TOP_N_DISPLAY", "500")),
                     stage1_threshold=int(os.getenv("STAGE1_PROMOTION_THRESHOLD", "100")),
                     stage2_reassessment_threshold=int(os.getenv("STAGE2_REASSESSMENT_THRESHOLD", "100")),
+                    stage2_reassessment_concurrency=int(
+                        os.getenv("STAGE2_REASSESSMENT_CONCURRENCY", "4")
+                    ),
                     max_history_sectors=int(os.getenv("MAX_HISTORY_SECTORS", "8")),
                     stage1_pool_size=int(os.getenv("STAGE1_POOL_SIZE", "500")),
                     stage1_continuous_intake_per_cycle=int(

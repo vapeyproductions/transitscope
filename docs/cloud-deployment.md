@@ -88,7 +88,10 @@ RUN_LIVE_PIPELINE=true
 ```
 
 Use the bounded acceleration profile of `STAGE1_BATCH_SIZE=32`,
-`STAGE1_MAX_WORKERS=8`, `LIVE_POLL_SECONDS=300`, and a 500-target Stage 1 pool.
+`STAGE1_MAX_WORKERS=8`, `STAGE1_CONTINUOUS_INTAKE_PER_CYCLE=8`,
+`STAGE2_REASSESSMENTS_PER_CYCLE=8`, `STAGE2_REASSESSMENT_CONCURRENCY=4`,
+`LIVE_POLL_SECONDS=60`, and a 500-target Stage 1 pool. Stage 2 history/model
+work overlaps across four candidates, while ranking writes remain serialized.
 Watch the ML Ops dashboard, provider health, data volume, and worker heartbeat
 before increasing concurrency. The initial pool should fill over hours, not
 finish in a request or a single build.

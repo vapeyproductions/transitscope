@@ -705,6 +705,80 @@ def _run_stage2_manual_batch(
     return [results_by_id[candidate_id] for candidate_id in candidate_ids]
 
 
+def _run_stage2_reassessment_batch(
+    store: DuckDBStore,
+    candidates: list[dict[str, Any]],
+    *,
+    data_dir: Path,
+    max_history_sectors: int,
+    concurrency: int,
+    status_callback: Callable[[str, dict[str, Any]], None] | None,
+    publish_lock: Any,
+) -> list[dict[str, Any]]:
+    """Reassess a bounded Stage 2 priority batch concurrently.
+
+    MAST discovery/download and the Stage 2 model run are independent for
+    each candidate, so they can overlap. Only the durable ranking publication
+    is serialized by ``publish_lock``. The batch is selected in current rank
+    order before dispatch, preserving the priority-window policy while
+    preventing one slow candidate from blocking every other reassessment.
+    """
+
+    if not candidates:
+        return []
+    worker_count = max(1, min(int(concurrency), len(candidates)))
+    candidate_ids = [str(candidate["candidate_id"]) for candidate in candidates]
+    if status_callback:
+        status_callback(
+            "processing_stage2",
+            {
+                "reason": "stage2_top_window_reassessment_batch",
+                "candidate_id": candidate_ids[0],
+                "candidate_ids": candidate_ids,
+                "batch_size": len(candidates),
+                "concurrency": worker_count,
+            },
+        )
+
+    results_by_id: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="stage2-reassessment",
+    ) as executor:
+        futures = {
+            executor.submit(
+                _evaluate_stage2,
+                store,
+                candidate,
+                data_dir=data_dir,
+                max_history_sectors=max_history_sectors,
+                publish_lock=publish_lock,
+            ): str(candidate["candidate_id"])
+            for candidate in candidates
+        }
+        for future in as_completed(futures):
+            candidate_id = futures[future]
+            try:
+                results_by_id[candidate_id] = future.result()
+            except Exception as exc:  # keep other reassessments moving
+                results_by_id[candidate_id] = {
+                    "candidate_id": candidate_id,
+                    "status": "error",
+                    "error": repr(exc),
+                }
+                if status_callback:
+                    status_callback(
+                        "processing_stage2",
+                        {
+                            "reason": "stage2_reassessment_error",
+                            "candidate_id": candidate_id,
+                            "error": repr(exc),
+                        },
+                    )
+
+    return [results_by_id[candidate_id] for candidate_id in candidate_ids]
+
+
 def _evaluate_stage3(
     store: DuckDBStore,
     candidate: dict[str, Any],
@@ -991,6 +1065,7 @@ def run_live_cycle(
     stage1_pool_size: int = 500,
     stage1_continuous_intake_per_cycle: int = 2,
     stage2_capacity: int | None = None,
+    stage2_reassessment_concurrency: int = 4,
     stage3_initial_intake_size: int = 100,
     stage3_reassessment_concurrency: int = 4,
     manual_migrations: list[dict[str, Any]] | None = None,
@@ -1025,6 +1100,8 @@ def run_live_cycle(
         raise ValueError("stage1_continuous_intake_per_cycle cannot be negative")
     if stage3_reassessment_concurrency < 1:
         raise ValueError("stage3_reassessment_concurrency must be positive")
+    if stage2_reassessment_concurrency < 1:
+        raise ValueError("stage2_reassessment_concurrency must be positive")
 
     timings: dict[str, float] = {
         "stage1_seconds": 0.0,
@@ -1187,6 +1264,7 @@ def run_live_cycle(
     attempted_stage2: set[str] = set()
     attempted_stage2_reassessments: set[str] = set()
     attempted_stage3: set[str] = set()
+    stage2_reassessments_used = 0
     def request_stage1_reassessment() -> dict[str, Any]:
         """Ask Stage 1 for more data only after Stage 3 requests a handoff."""
 
@@ -1292,7 +1370,7 @@ def run_live_cycle(
         int(
             os.getenv(
                 "STAGE2_REASSESSMENTS_PER_CYCLE",
-                str(stage2_reassessment_threshold),
+                "8",
             )
         ),
     )
@@ -1308,8 +1386,10 @@ def run_live_cycle(
         signature prevents redundant model reruns across cycles.
         """
 
+        nonlocal stage2_reassessments_used
         processed = 0
-        while processed < stage2_reassessment_budget:
+        remaining_budget = max(0, stage2_reassessment_budget - stage2_reassessments_used)
+        while processed < remaining_budget:
             candidates_now = [
                 candidate
                 for candidate in _stage2_needs_data_queue(
@@ -1321,43 +1401,45 @@ def run_live_cycle(
             if not candidates_now:
                 break
 
-            candidate = candidates_now[0]
-            candidate_id = str(candidate["candidate_id"])
-            attempted_stage2_reassessments.add(candidate_id)
-            if status_callback:
-                status_callback(
-                    "processing_stage2",
-                    {
-                        "candidate_id": candidate_id,
-                        "rank": int(candidate["rank_stage"]),
-                        "reason": "stage2_top_window_reassessment",
-                    },
-                )
+            candidates_batch = candidates_now[: min(
+                stage2_reassessment_concurrency,
+                remaining_budget - processed,
+            )]
+            attempted_stage2_reassessments.update(
+                str(candidate["candidate_id"]) for candidate in candidates_batch
+            )
             stage2_started = time.perf_counter()
-            result = _evaluate_stage2(
+            results = _run_stage2_reassessment_batch(
                 store,
-                candidate,
+                candidates_batch,
                 data_dir=data_dir,
                 max_history_sectors=max_history_sectors,
-            )
-            result.update(
-                {
-                    "queue_kind": "reassessment",
-                    "queue_status": "Needs More Data",
-                    "queue_reason": "stage2_top_window_reassessment",
-                }
+                concurrency=stage2_reassessment_concurrency,
+                status_callback=status_callback,
+                publish_lock=stage3_publish_lock,
             )
             elapsed = add_timing("stage2_seconds", stage2_started)
-            if result.get("status") == "Needs More Data":
+            if any(result.get("status") == "Needs More Data" for result in results):
                 timings["stage2_needs_more_data_seconds"] += elapsed
-            stage2_results.append(result)
-            processed += 1
+            for result in results:
+                result.update(
+                    {
+                        "queue_kind": "reassessment",
+                        "queue_status": "Needs More Data",
+                        "queue_reason": "stage2_top_window_reassessment",
+                    }
+                )
+                stage2_results.append(result)
+
+            processed += len(results)
+            stage2_reassessments_used += len(results)
 
             # An inconclusive Stage 2 result releases its processing slot, so
             # the waterfall immediately asks Stage 1 for the replacement.
             # A Promising result stays in Stage 2 until Stage 3 calls for it.
-            if result.get("status") == "Inconclusive":
-                request_stage2_replacement()
+            for result in results:
+                if result.get("status") == "Inconclusive":
+                    request_stage2_replacement()
 
         return processed
 
@@ -1837,11 +1919,8 @@ def run_live_cycle(
         "stage2_reassessment": {
             "threshold": stage2_reassessment_threshold,
             "requested_count": stage2_reassessment_budget if waterfall_ready else 0,
-            "evaluated_count": sum(
-                1
-                for result in stage2_results
-                if result.get("queue_reason") == "stage2_top_window_reassessment"
-            ),
+            "evaluated_count": stage2_reassessments_used if waterfall_ready else 0,
+            "concurrency": stage2_reassessment_concurrency,
         },
         "manual_migrations": manual_migration_results,
         "timings": {key: round(value, 3) for key, value in timings.items()},
