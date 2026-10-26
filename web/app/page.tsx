@@ -58,6 +58,29 @@ type RankingResponse = {
   read_state?: "publication_busy";
 };
 
+const CLIENT_RANKING_CACHE_PREFIX = "transitscope:ranking:";
+
+function readPersistedRanking(cacheKey: string): RankingResponse | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(`${CLIENT_RANKING_CACHE_PREFIX}${cacheKey}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as RankingResponse;
+    return parsed && Array.isArray(parsed.rows) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistRanking(cacheKey: string, ranking: RankingResponse): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(`${CLIENT_RANKING_CACHE_PREFIX}${cacheKey}`, JSON.stringify(ranking));
+  } catch {
+    // A full or restricted browser cache must never affect live dashboard use.
+  }
+}
+
 type ReplayRemoval = {
   candidate_id: string;
   target_id: string;
@@ -1489,7 +1512,14 @@ export default function HomePage() {
     if (activeTab !== "overall" && controls.status) query.set("status_filter", controls.status);
     if (controls.sort !== "rank") query.set("sort", controls.sort);
     const cacheKey = query.toString();
-    const cachedRanking = rankingCacheRef.current.get(cacheKey);
+    let cachedRanking = rankingCacheRef.current.get(cacheKey);
+    if (!cachedRanking) {
+      cachedRanking = readPersistedRanking(cacheKey) ?? undefined;
+      if (cachedRanking) {
+        rankingCacheRef.current.set(cacheKey, cachedRanking);
+        rankingCacheAtRef.current.set(cacheKey, 0);
+      }
+    }
     setLoading(!cachedRanking);
     if (cachedRanking) setRanking(cachedRanking);
     setError(null);
@@ -1499,6 +1529,7 @@ export default function HomePage() {
       if (nextRanking.read_state === "publication_busy" && !nextRanking.served_from_cache) return;
       rankingCacheRef.current.set(cacheKey, nextRanking);
       rankingCacheAtRef.current.set(cacheKey, Date.now());
+      persistRanking(cacheKey, nextRanking);
       setRanking(nextRanking);
     } catch (cause) {
       if (requestId !== dashboardRequestRef.current) return;
@@ -1529,6 +1560,7 @@ export default function HomePage() {
           const nextRanking = await fetchRanking(query);
           rankingCacheRef.current.set(query, nextRanking);
           rankingCacheAtRef.current.set(query, Date.now());
+          persistRanking(query, nextRanking);
         } catch {
           // A background warm-up must never replace a working overall view or
           // surface an error while the user is browsing the dashboard.
