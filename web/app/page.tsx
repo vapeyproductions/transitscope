@@ -1320,8 +1320,84 @@ function JobCallDistributionPanel({ activity }: { activity: MonitoringCycleActiv
   return <section className="ops-section job-call-distribution-section" aria-labelledby="job-call-distribution-title"><div className="ops-section-heading"><div><p className="eyebrow">Dispatch distribution</p><h4 id="job-call-distribution-title">Where jobs are being called</h4></div><span className="section-note">Latest {activity.recent_run_count} saved cycles · {activity.window_minutes}-minute operating window</span></div>{!series.length || !totalJobs ? <div className="ops-empty">No queue-call telemetry is available yet. The distribution will populate after a cycle records stage-specific jobs.</div> : <><div className="job-call-summary"><div className="job-call-stack" aria-label="Share of jobs called by stage"><span className="job-call-stack-stage1" style={{ width: `${totals.stage1 / totalJobs * 100}%` }} /><span className="job-call-stack-stage2" style={{ width: `${totals.stage2 / totalJobs * 100}%` }} /><span className="job-call-stack-stage3" style={{ width: `${totals.stage3 / totalJobs * 100}%` }} /></div><div className="job-call-legend">{stages.map((stage) => { const share = totals[stage] / totalJobs * 100; return <span key={stage}><i className={colors[stage]} />{stageName(stage)} <strong>{totals[stage].toLocaleString()}</strong> <small>{share.toFixed(1)}%</small></span>; })}</div></div><div className="job-call-chart-wrap"><svg aria-label="Stage job-call distribution over the latest saved cycles" role="img" viewBox={`0 0 ${chartWidth} ${chartHeight}`}><line className="job-call-guide" x1={padding} x2={chartWidth - padding} y1={padding} y2={padding} /><line className="job-call-guide" x1={padding} x2={chartWidth - padding} y1={chartHeight / 2} y2={chartHeight / 2} /><line className="job-call-guide" x1={padding} x2={chartWidth - padding} y1={chartBottom} y2={chartBottom} />{series.map((point, index) => { const x = padding + index * stepWidth + Math.max(1, stepWidth * 0.16); const barWidth = Math.max(3, stepWidth * 0.68); const cycleTotal = stages.reduce((total, stage) => total + Number(point[stage] ?? 0), 0); let offset = 0; return stages.map((stage) => { const value = Number(point[stage] ?? 0); const height = cycleTotal ? value / maxCycleJobs * (chartBottom - padding) : 0; const y = chartBottom - offset - height; offset += height; return <rect className={colors[stage]} height={height} key={`${point.finished_at}-${stage}`} rx="2" width={barWidth} x={x} y={y}><title>{`${stageName(stage)} · ${value} jobs · ${formatDate(point.finished_at)}`}</title></rect>; }); })}</svg><div className="job-call-chart-axis"><span>Older saved cycle</span><span>Latest cycle · {latestTotal.toLocaleString()} jobs</span></div></div><div className="job-call-table" role="table" aria-label="Stage job-call distribution summary"><div className="job-call-table-row job-call-table-header" role="row"><span>Stage</span><span>Saved-window jobs</span><span>Share</span><span>Latest cycle</span></div>{stages.map((stage) => <div className="job-call-table-row" role="row" key={stage}><span><i className={colors[stage]} />{stageName(stage)}</span><strong>{totals[stage].toLocaleString()}</strong><span>{(totals[stage] / totalJobs * 100).toFixed(1)}%</span><span>{Number(latest?.[stage] ?? 0).toLocaleString()}</span></div>)}</div><p className="job-call-note">Bars show the number and mix of jobs called in each saved cycle. This is queue work—not the number of candidates retained in a ranking.</p></>}</section>;
 }
 
+const explainerScenes = [
+  {
+    kicker: "01 · CAPTURE",
+    title: "A transit leaves a measurable fingerprint",
+    body: "When an orbiting object crosses between us and its star, a telescope records a tiny, temporary drop in brightness. That repeating dip is the starting clue—not a confirmation.",
+  },
+  {
+    kicker: "02 · COMPARE",
+    title: "The clue becomes a signal to test",
+    body: "TransitScope turns the brightness trace into a candidate signal, checks whether the pattern repeats across observations, and compares the evidence with what is already known.",
+  },
+  {
+    kicker: "03 · INVESTIGATE",
+    title: "Evidence moves through a ranked pipeline",
+    body: "A sample from the 126,000-target universe enters Stage 1, then the strongest surviving signals receive deeper tests in Stage 2 and Stage 3. Rankings change as evidence accumulates.",
+  },
+] as const;
+
+function ExplainerVisual({ sceneIndex }: { sceneIndex: number }) {
+  if (sceneIndex === 0) {
+    return <div className="explainer-visual explainer-visual-capture" aria-label="Animation showing an orbiting object crossing a star and creating a dip in a light curve" role="img">
+      <svg viewBox="0 0 760 260" aria-hidden="true">
+        <defs><radialGradient id="explainer-star-gradient"><stop offset="0%" stopColor="#fff8ca" /><stop offset="62%" stopColor="#ffd978" /><stop offset="100%" stopColor="#e69a42" /></radialGradient></defs>
+        <g className="explainer-stars"><circle cx="34" cy="33" r="1.4" /><circle cx="76" cy="215" r="1" /><circle cx="180" cy="38" r="1.1" /><circle cx="232" cy="215" r="1.4" /><circle cx="310" cy="30" r="1" /><circle cx="700" cy="35" r="1.2" /><circle cx="724" cy="212" r="1.1" /></g>
+        <text className="explainer-svg-label" x="52" y="38">LINE OF SIGHT</text>
+        <ellipse className="explainer-orbit" cx="150" cy="132" rx="84" ry="44" />
+        <circle className="explainer-star-glow" cx="150" cy="132" r="49" />
+        <circle className="explainer-star" cx="150" cy="132" r="35" fill="url(#explainer-star-gradient)" />
+        <circle className="explainer-star-highlight" cx="138" cy="120" r="11" />
+        <circle className="explainer-planet" cx="234" cy="132" r="9" />
+        <path className="explainer-photon-path" d="M271 132 H326" />
+        <circle className="explainer-photon explainer-photon-one" cx="278" cy="132" r="3" /><circle className="explainer-photon explainer-photon-two" cx="294" cy="132" r="3" /><circle className="explainer-photon explainer-photon-three" cx="310" cy="132" r="3" />
+        <rect className="explainer-chart-card" x="344" y="53" width="375" height="164" rx="11" />
+        <text className="explainer-svg-label" x="365" y="78">MEASURED BRIGHTNESS</text>
+        <line className="explainer-grid-line" x1="365" x2="700" y1="105" y2="105" /><line className="explainer-grid-line" x1="365" x2="700" y1="156" y2="156" /><line className="explainer-grid-line" x1="365" x2="700" y1="198" y2="198" />
+        <path className="explainer-curve" d="M365 126 C393 122 411 123 431 127 C451 131 457 131 474 126 C494 120 509 122 526 127 C543 132 552 164 572 177 C590 188 605 187 620 174 C636 160 645 132 663 126 C677 121 687 122 700 126" />
+        <line className="explainer-cursor" x1="472" x2="472" y1="90" y2="205" />
+        <text className="explainer-dip-label" x="568" y="202">TRANSIT-LIKE DIP</text>
+      </svg>
+      <div className="explainer-visual-readout"><span className="explainer-live-dot" /> Object crossing detected <strong>Brightness falling</strong></div>
+    </div>;
+  }
+
+  if (sceneIndex === 1) {
+    return <div className="explainer-visual explainer-visual-compare" aria-label="Animation showing transit signals being compared across observations" role="img">
+      <svg viewBox="0 0 760 260" aria-hidden="true">
+        <text className="explainer-svg-label" x="40" y="35">REPEATED OBSERVATIONS</text>
+        <g className="explainer-mini-card"><rect x="34" y="55" width="205" height="155" rx="10" /><text x="52" y="80">WINDOW A</text><line x1="52" x2="220" y1="112" y2="112" /><path d="M52 131 C80 126 92 127 108 132 C125 138 132 164 146 173 C160 181 175 177 186 158 C197 139 204 128 220 132" /></g>
+        <g className="explainer-mini-card"><rect x="278" y="55" width="205" height="155" rx="10" /><text x="296" y="80">WINDOW B</text><line x1="296" x2="464" y1="112" y2="112" /><path d="M296 131 C324 127 337 128 352 132 C369 138 375 164 390 172 C404 180 420 177 431 158 C442 139 449 128 464 132" /></g>
+        <g className="explainer-mini-card holdout"><rect x="522" y="55" width="205" height="155" rx="10" /><text x="540" y="80">HOLDOUT C</text><line x1="540" x2="708" y1="112" y2="112" /><path d="M540 132 C564 126 580 127 596 133 C612 140 619 164 634 174 C649 184 664 178 675 159 C686 141 695 130 708 132" /><circle className="explainer-check" cx="696" cy="77" r="9" /></g>
+        <path className="explainer-compare-line" d="M243 132 H270 M487 132 H514" /><path className="explainer-compare-arrow" d="M262 125 L270 132 L262 139 M506 125 L514 132 L506 139" />
+      </svg>
+      <div className="explainer-visual-readout"><span className="explainer-compare-pulse" /> Pattern alignment <strong>Repeated dip timing</strong></div>
+    </div>;
+  }
+
+  return <div className="explainer-visual explainer-visual-pipeline" aria-label="Animation showing sampled stars moving through three assessment stages" role="img">
+    <div className="explainer-universe"><span className="explainer-universe-count">126,000</span><span>target stars</span><div className="explainer-universe-dots">{Array.from({ length: 32 }, (_, index) => <i key={index} style={{ "--dot-delay": `${(index % 8) * 0.08}s`, "--dot-x": `${(index % 8) * 12 + 4}%`, "--dot-y": `${Math.floor(index / 8) * 25 + 10}%` } as CSSProperties} />)}</div></div>
+    <div className="explainer-pipeline-arrow" aria-hidden="true">→</div>
+    <div className="explainer-stage-track">
+      {["Stage 1", "Stage 2", "Stage 3"].map((stage, index) => <div className={`explainer-stage explainer-stage-${index + 1}`} key={stage}><span>{stage}</span><div className="explainer-stage-dots">{Array.from({ length: index === 0 ? 10 : index === 1 ? 6 : 3 }, (_, dot) => <i key={dot} style={{ "--dot-delay": `${dot * 0.13}s` } as CSSProperties} />)}</div><small>{index === 0 ? "screen" : index === 1 ? "repeat" : "holdout"}</small></div>)}
+    </div>
+    <div className="explainer-visual-readout"><span className="explainer-pipeline-pulse" /> Evidence-weighted ranking <strong>Explore · compare · investigate</strong></div>
+  </div>;
+}
+
 function HowItWorksModal({ onClose }: { onClose: () => void }) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const [sceneIndex, setSceneIndex] = useState(0);
+  const [tourPlaying, setTourPlaying] = useState(true);
+
+  useEffect(() => {
+    if (!tourPlaying) return undefined;
+    const timer = window.setInterval(() => {
+      setSceneIndex((current) => (current + 1) % explainerScenes.length);
+    }, 7600);
+    return () => window.clearInterval(timer);
+  }, [tourPlaying]);
 
   useEffect(() => {
     closeRef.current?.focus();
@@ -1343,13 +1419,9 @@ function HowItWorksModal({ onClose }: { onClose: () => void }) {
         <button ref={closeRef} className="modal-close" type="button" aria-label="Close how this site works dialog" onClick={onClose}>×</button>
       </header>
       <div className="info-modal-content">
-        <p className="info-modal-intro">TransitScope follows candidate signals as evidence is gathered. The rankings are a research-style way to explore what deserves attention next—not a claim that any candidate is a confirmed planet.</p>
-        <div className="info-modal-steps">
-          <article className="info-modal-step"><span>01</span><h4>Screen the light curves</h4><p>Stage 1 looks for transit-like brightness dips and ranks the signals that stand out in the observed data.</p></article>
-          <article className="info-modal-step"><span>02</span><h4>Test repeatability</h4><p>Stage 2 checks whether a signal persists across a broader time window and still resembles a meaningful transit pattern.</p></article>
-          <article className="info-modal-step"><span>03</span><h4>Validate with holdouts</h4><p>Stage 3 tests the strongest surviving signals against held-out observations and expanded evidence before identifying a Prime Candidate.</p></article>
-        </div>
-        <div className="info-modal-note"><strong>How to read the dashboard</strong><p>Higher ranks indicate stronger comparative evidence. “Needs More Data” means the signal is still in play but cannot be judged yet; “Inconclusive” means the current evidence did not support further advancement. Open a candidate to inspect its light curve, evidence, and pipeline history.</p></div>
+        <section className="explainer-origin"><div><p className="eyebrow accent">Why this idea matters</p><p className="explainer-origin-copy">Earlier in October, people used AI models to help surface a possible hidden exoplanet from public astronomy data. Read the reporting that inspired this observatory:</p></div><div className="explainer-source-links"><a href="https://www.scientificamerican.com/article/amateur-astronomer-harnesses-ai-to-find-a-possible-hidden-exoplanet/" target="_blank" rel="noreferrer">Scientific American <span>↗</span></a><a href="https://gizmodo.com/did-claude-help-an-amateur-astronomer-discover-a-new-planet-2000824393" target="_blank" rel="noreferrer">Gizmodo <span>↗</span></a></div></section>
+        <section className="explainer-tour" aria-live="polite"><div className="explainer-tour-heading"><div><p className="eyebrow">A signal becomes a discovery candidate</p><h4>{explainerScenes[sceneIndex].title}</h4></div><span className="explainer-tour-count">{sceneIndex + 1} / {explainerScenes.length}</span></div><ExplainerVisual sceneIndex={sceneIndex} /><div className="explainer-tour-copy"><p>{explainerScenes[sceneIndex].body}</p><div className="explainer-tour-controls"><div className="explainer-scene-buttons" role="tablist" aria-label="How it works tour steps">{explainerScenes.map((scene, index) => <button key={scene.kicker} className={`explainer-scene-button ${index === sceneIndex ? "active" : ""}`} type="button" role="tab" aria-selected={index === sceneIndex} onClick={() => { setSceneIndex(index); setTourPlaying(false); }}><span>{String(index + 1).padStart(2, "0")}</span>{scene.kicker.split(" · ")[1]}</button>)}</div><div className="explainer-tour-actions"><button className="button button-quiet" type="button" onClick={() => setTourPlaying((current) => !current)}>{tourPlaying ? "Pause tour" : "Play tour"}</button><button className="button button-outline" type="button" onClick={() => { setSceneIndex((current) => (current + 1) % explainerScenes.length); setTourPlaying(false); }}>Next scene →</button></div></div></div></section>
+        <div className="info-modal-note"><strong>How to read the dashboard</strong><p>Higher ranks indicate stronger comparative evidence. “Needs More Data” means the signal is still in play but cannot be judged yet; “Inconclusive” means the current evidence did not support further advancement. A Prime Candidate is a strong reason for follow-up—not scientific confirmation.</p></div>
       </div>
     </section>
   </div>;
