@@ -119,6 +119,27 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .processed-history-axis { display: flex; justify-content: space-between; padding-top: 4px; }
 .processed-history-footer { align-items: flex-start; flex-direction: column; gap: 4px; line-height: 1.35; margin-top: 9px; }
 .processed-history-empty { color: var(--muted); font-size: 10px; padding: 24px 0 8px; }
+.job-call-summary { background: rgba(3, 8, 17, 0.28); border: 1px solid rgba(146, 169, 205, 0.1); border-radius: 8px; padding: 12px; }
+.job-call-stack { background: rgba(146, 169, 205, 0.12); border-radius: 99px; display: flex; height: 10px; overflow: hidden; }
+.job-call-stack span { min-width: 0; transition: width 350ms ease; }
+.job-call-stack-stage1, .job-call-stage1 { background: var(--cyan); }
+.job-call-stack-stage2, .job-call-stage2 { background: var(--purple); }
+.job-call-stack-stage3, .job-call-stage3 { background: var(--gold); }
+.job-call-legend { color: var(--muted); display: flex; flex-wrap: wrap; font-size: 9px; gap: 13px; margin-top: 10px; }
+.job-call-legend span, .job-call-table-row > span:first-child { align-items: center; display: inline-flex; gap: 6px; }
+.job-call-legend i, .job-call-table-row i { border-radius: 50%; display: inline-block; height: 7px; width: 7px; }
+.job-call-legend strong { color: var(--text); font-size: 10px; }
+.job-call-legend small { color: var(--faint); font-size: 9px; }
+.job-call-chart-wrap { background: rgba(3, 8, 17, 0.45); border: 1px solid rgba(146, 169, 205, 0.1); border-radius: 8px; margin-top: 10px; padding: 8px 10px 5px; }
+.job-call-chart-wrap svg { display: block; height: auto; width: 100%; }
+.job-call-chart-wrap rect { opacity: 0.88; }
+.job-call-guide { stroke: rgba(146, 169, 205, 0.14); stroke-dasharray: 3 4; stroke-width: 1; }
+.job-call-chart-axis { color: var(--faint); display: flex; font-size: 8px; justify-content: space-between; padding-top: 4px; }
+.job-call-table { margin-top: 12px; }
+.job-call-table-row { align-items: center; border-top: 1px solid rgba(146, 169, 205, 0.08); color: var(--muted); display: grid; font-size: 9px; gap: 8px; grid-template-columns: minmax(100px, 1.4fr) repeat(3, minmax(70px, 0.7fr)); padding: 8px 0; }
+.job-call-table-header { border-top: 0; color: var(--faint); font-size: 8px; text-transform: uppercase; }
+.job-call-table-row strong { color: var(--text); font-size: 10px; }
+.job-call-note { color: var(--muted); font-size: 9px; line-height: 1.4; margin: 12px 0 0; }
 .ranking-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 18px 60px rgba(0, 0, 0, 0.18); overflow: hidden; }
 .panel-header { border-bottom: 1px solid var(--border); padding: 20px 22px; }
 .panel-header h3 { font-size: 21px; margin-bottom: 0; }
