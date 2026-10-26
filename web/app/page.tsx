@@ -323,6 +323,18 @@ type MonitoringStage2Reassessment = {
   unchanged_candidate_ids?: string[];
   published_candidate_ids?: string[];
   dispatch_batches?: string[][];
+  waterfall_gate_open?: boolean;
+  gate_bootstrap_evaluated_count?: number;
+  waterfall_gate?: {
+    open?: boolean;
+    threshold?: number;
+    top_count?: number;
+    promising_count?: number;
+    non_promising_count?: number;
+    reason?: string;
+    message?: string;
+    paused_stages?: string[];
+  };
 };
 
 type MonitoringCycle = {
@@ -1139,6 +1151,7 @@ export function MonitoringPanel({ refreshKey }: { refreshKey: number }) {
   const totalNeedsMoreData = pipelinePulse.reduce((sum, stage) => sum + stage.throughput.needs_more_data, 0);
   const totalHandoffs = pipelinePulse.reduce((sum, stage) => sum + stage.throughput.handoffs, 0);
   const latestStage2Reassessment = overview.cycle_activity.runs[overview.cycle_activity.runs.length - 1]?.stage2_reassessment;
+  const stage2Gate = latestStage2Reassessment?.waterfall_gate;
 
   if (loading && !overview) {
     return <section className="operations-panel"><div className="empty-state"><div className="loading-ring" aria-hidden="true" /><h4>Reading ML operations state.</h4><p>This view only reads persisted metrics. It never starts the worker.</p></div></section>;
@@ -1153,7 +1166,7 @@ export function MonitoringPanel({ refreshKey }: { refreshKey: number }) {
       <section className="pipeline-insight-card" aria-labelledby="operations-title">
         <div className="pipeline-insight-heading"><div><p className="eyebrow accent">Pipeline pulse</p><h3 id="operations-title">Where the waterfall is slowing</h3><p>Throughput, queue pressure, and downstream handoffs from the most recent worker cycles.</p></div><span className={`pipeline-health-indicator ${overview.worker.state === "error" || overview.control.pipeline_paused ? "attention" : "flowing"}`}><span className="status-dot" />{overview.control.pipeline_paused ? "Paused" : overview.worker.state === "error" ? "Needs attention" : "Live flow"}</span></div>
         <div className="pipeline-flow-track" aria-label="Pipeline stage flow summary">{pipelinePulse.map((stage) => { const maxEvaluated = Math.max(1, ...pipelinePulse.map((item) => item.throughput.evaluated)); return <article className={`pipeline-flow-stage ${stage.stage}`} key={stage.stage}><div className="pipeline-flow-heading"><strong>{stageName(stage.stage)}</strong><span>{stage.throughput.evaluated.toLocaleString()} assessed</span></div><div className="pipeline-flow-meter"><span style={{ width: `${Math.max(stage.throughput.evaluated ? 8 : 0, Math.min(100, stage.throughput.evaluated / maxEvaluated * 100))}%` }} /></div><small>{stage.queued.toLocaleString()} jobs called · {stage.throughput.handoffs} handoffs</small></article>; })}</div>
-        <div className="pipeline-insight-metrics"><article><span className="metric-label">Slowest lane</span><strong>{slowestStage ? stageName(slowestStage.stage) : "—"}</strong><small>{slowestStage?.timing.average_cycle_seconds ? `${durationLabel(slowestStage.timing.average_cycle_seconds)} average cycle` : "No timing yet"}</small></article><article><span className="metric-label">Flow rate</span><strong>{numberLabel(totalEvaluated / Math.max(1, overview.cycle_activity.window_minutes), 2)} / min</strong><small>{totalEvaluated.toLocaleString()} assessed in the window</small></article><article><span className="metric-label">Needs more data</span><strong>{totalNeedsMoreData.toLocaleString()}</strong><small>reassessments or new evaluations</small></article><article><span className="metric-label">Jobs called</span><strong>{totalQueue.toLocaleString()}</strong><small>{totalHandoffs.toLocaleString()} downstream handoffs in window</small></article><article><span className="metric-label">Stage 2 priority</span><strong>{latestStage2Reassessment?.evaluated_count ?? 0} called</strong><small>{latestStage2Reassessment?.remaining_queue_count ?? 0} top-window candidates · {latestStage2Reassessment?.unchanged_candidate_ids?.length ?? 0} awaiting coverage</small></article></div>
+        <div className="pipeline-insight-metrics"><article><span className="metric-label">Slowest lane</span><strong>{slowestStage ? stageName(slowestStage.stage) : "—"}</strong><small>{slowestStage?.timing.average_cycle_seconds ? `${durationLabel(slowestStage.timing.average_cycle_seconds)} average cycle` : "No timing yet"}</small></article><article><span className="metric-label">Flow rate</span><strong>{numberLabel(totalEvaluated / Math.max(1, overview.cycle_activity.window_minutes), 2)} / min</strong><small>{totalEvaluated.toLocaleString()} assessed in the window</small></article><article><span className="metric-label">Needs more data</span><strong>{totalNeedsMoreData.toLocaleString()}</strong><small>reassessments or new evaluations</small></article><article><span className="metric-label">Jobs called</span><strong>{totalQueue.toLocaleString()}</strong><small>{totalHandoffs.toLocaleString()} downstream handoffs in window</small></article><article><span className="metric-label">Stage 2 priority</span><strong>{latestStage2Reassessment?.evaluated_count ?? 0} called</strong><small>{latestStage2Reassessment?.remaining_queue_count ?? 0} top-window candidates · {latestStage2Reassessment?.unchanged_candidate_ids?.length ?? 0} awaiting coverage</small></article><article><span className="metric-label">Waterfall gate</span><strong>{stage2Gate ? (stage2Gate.open ? "Open" : "Stage 1 + 3 paused") : "Not recorded"}</strong><small>{stage2Gate ? `${stage2Gate.promising_count ?? 0} / ${stage2Gate.threshold ?? 100} Stage 2 top-window candidates Promising` : "The gate appears after the next worker cycle."}</small></article></div>
         <div className="pipeline-insight-footer"><span><strong>Catalog:</strong> {catalogSummary} · {catalogDetail}</span><span>{overview.cycle_activity.run_count} cycles saved · metrics use latest {overview.cycle_activity.recent_run_count} cycles</span></div>
       </section>
       <aside className="operations-status-rail" aria-label="Worker and data status">

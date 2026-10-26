@@ -1,7 +1,11 @@
 import unittest
 
 from main import queue_cycle_events
-from pipeline.live import _stage2_needs_data_candidates, _stage2_needs_data_queue
+from pipeline.live import (
+    _stage2_needs_data_candidates,
+    _stage2_needs_data_queue,
+    _stage2_waterfall_gate_snapshot,
+)
 
 
 class LiveQueueTests(unittest.TestCase):
@@ -92,6 +96,34 @@ class LiveQueueTests(unittest.TestCase):
             [candidate["candidate_id"] for candidate in all_candidates],
             ["rank-1", "rank-3", "outside-window"],
         )
+
+    def test_stage2_waterfall_gate_requires_a_complete_promising_window(self) -> None:
+        candidates = [
+            {
+                "candidate_id": "rank-1",
+                "current_stage": "stage2",
+                "active": True,
+                "rank_stage": 1,
+                "status": "Promising",
+            },
+            {
+                "candidate_id": "rank-2",
+                "current_stage": "stage2",
+                "active": True,
+                "rank_stage": 2,
+                "status": "Needs More Data",
+            },
+        ]
+
+        closed = _stage2_waterfall_gate_snapshot(candidates, threshold=2)
+        self.assertFalse(closed["open"])
+        self.assertEqual(closed["promising_count"], 1)
+        self.assertEqual(closed["paused_stages"], ["stage1", "stage3"])
+
+        candidates[1]["status"] = "Promising"
+        opened = _stage2_waterfall_gate_snapshot(candidates, threshold=2)
+        self.assertTrue(opened["open"])
+        self.assertEqual(opened["paused_stages"], [])
 
 
 if __name__ == "__main__":

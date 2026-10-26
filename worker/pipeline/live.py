@@ -310,6 +310,65 @@ def _stage2_needs_data_queue(
     ]
 
 
+def _stage2_waterfall_gate_snapshot(
+    candidates: list[dict[str, Any]],
+    *,
+    threshold: int,
+) -> dict[str, Any]:
+    """Describe whether normal downstream work may resume.
+
+    The gate is deliberately separate from Stage 2's reassessment window.
+    The window decides which ``Needs More Data`` rows receive work; this gate
+    decides whether Stage 1 intake and Stage 3 jobs may run at all.  Requiring
+    a complete ranked cohort prevents a short or mixed Stage 2 list from
+    making the downstream waterfall look healthy while it is still carrying
+    unresolved work.
+    """
+
+    if threshold < 1:
+        raise ValueError("Stage 2 waterfall gate threshold must be positive")
+    ranked = sorted(
+        (
+            candidate
+            for candidate in candidates
+            if candidate.get("current_stage") == "stage2"
+            and candidate.get("active", True)
+            and candidate.get("rank_stage") is not None
+        ),
+        key=lambda candidate: (int(candidate["rank_stage"]), str(candidate["candidate_id"])),
+    )
+    top_window = ranked[:threshold]
+    status_counts: dict[str, int] = {}
+    for candidate in top_window:
+        status = str(candidate.get("status") or "Unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+    promising_count = status_counts.get("Promising", 0)
+    complete_cohort = len(top_window) >= threshold
+    gate_open = complete_cohort and promising_count == threshold
+    if not complete_cohort:
+        reason = "waiting_for_stage2_cohort"
+        message = f"Stage 2 has {len(top_window)} ranked candidates; {threshold} are required before normal downstream work can resume."
+    elif gate_open:
+        reason = "top_stage2_window_is_promising"
+        message = f"The top {threshold} Stage 2 candidates are Promising; normal Stage 1 and Stage 3 operations may run."
+    else:
+        reason = "top_stage2_window_needs_resolution"
+        message = f"{threshold - promising_count} of the top {threshold} Stage 2 candidates are not Promising; Stage 1 and Stage 3 jobs remain paused while Stage 2 works the window."
+    return {
+        "open": gate_open,
+        "threshold": threshold,
+        "ranked_count": len(ranked),
+        "top_count": len(top_window),
+        "promising_count": promising_count,
+        "non_promising_count": max(0, len(top_window) - promising_count),
+        "status_counts": status_counts,
+        "top_candidate_ids": [str(candidate["candidate_id"]) for candidate in top_window],
+        "reason": reason,
+        "message": message,
+        "paused_stages": [] if gate_open else ["stage1", "stage3"],
+    }
+
+
 def _stage3_initial_intake_queue(
     store: DuckDBStore,
     *,
@@ -1091,7 +1150,9 @@ def run_live_cycle(
     queue moving, performs one durable initial intake of the top eligible
     Promising Stage 2 candidates, then calls the highest-ranked eligible
     Promising Stage 2 candidate without a rank cutoff and asks Stage 2 to
-    request Stage 1 replacements.
+    request Stage 1 replacements. A separate Stage 2 waterfall gate pauses
+    Stage 1 intake and all Stage 3 work until the ranked Stage 2 top window is
+    complete and every slot in it is Promising.
     """
 
     from batching import BatchConfig, run_batch, run_stage1_refresh
@@ -1105,8 +1166,13 @@ def run_live_cycle(
         stage2_reassessment_threshold = stage2_threshold
     if stage2_capacity is not None:
         stage2_reassessment_threshold = stage2_capacity
+    stage2_waterfall_gate_threshold = int(
+        os.getenv("STAGE2_WATERFALL_GATE_THRESHOLD", "100")
+    )
     if min(stage1_threshold, stage2_reassessment_threshold) < 1:
         raise ValueError("stage priority thresholds must be positive")
+    if stage2_waterfall_gate_threshold < 1:
+        raise ValueError("STAGE2_WATERFALL_GATE_THRESHOLD must be positive")
     if stage1_continuous_intake_per_cycle < 0:
         raise ValueError("stage1_continuous_intake_per_cycle cannot be negative")
     if stage3_reassessment_concurrency < 1:
@@ -1276,6 +1342,16 @@ def run_live_cycle(
     attempted_stage2_reassessments: set[str] = set()
     attempted_stage3: set[str] = set()
     stage2_reassessments_used = 0
+    # The gate starts closed for each cycle and is opened only after the
+    # current Stage 2 top window has been re-ranked and every slot is
+    # Promising. Stage 2 may continue to work while the other stages pause.
+    stage2_gate_open = False
+    stage2_gate_snapshot = _stage2_waterfall_gate_snapshot(
+        active_candidates(store),
+        threshold=stage2_waterfall_gate_threshold,
+    )
+    stage2_gate_bootstrap_used = 0
+
     def request_stage1_reassessment() -> dict[str, Any]:
         """Ask Stage 1 for more data only after Stage 3 requests a handoff."""
 
@@ -1329,6 +1405,12 @@ def run_live_cycle(
             if candidate["candidate_id"] not in attempted_stage1
         ]
         if not candidates_now:
+            # While the Stage 2 gate is closed, do not start a new Stage 1
+            # refresh just to manufacture another handoff. Existing Stage 2
+            # work can continue; normal Stage 1 intake resumes only after the
+            # gate opens.
+            if not stage2_gate_open:
+                return None
             refresh_result = request_stage1_reassessment()
             if refresh_result.get("status") != "idle":
                 stage1_requests.append(refresh_result)
@@ -1370,7 +1452,7 @@ def run_live_cycle(
             timings["stage2_needs_more_data_seconds"] += elapsed
         stage2_results.append(result)
         released = len(before_targets - occupied_stage1_target_ids())
-        if released:
+        if released and stage2_gate_open:
             replacement = fill_stage1(released)
             if replacement.get("status") != "idle":
                 stage1_requests.append(replacement)
@@ -1611,6 +1693,79 @@ def run_live_cycle(
         stage2_reassessment_telemetry["remaining_queue_candidate_ids"] = remaining_ids[:stage2_reassessment_threshold]
         return processed
 
+    def bootstrap_stage2_gate_cohort() -> int:
+        """Fill a short Stage 2 cohort without starting new Stage 1 work.
+
+        A strict gate must not deadlock when Stage 2 has fewer than 100 rows,
+        and legacy Inconclusive rows need a downstream replacement opportunity
+        before they can fall below the gate window. Existing eligible Stage 1
+        Promising candidates can therefore be assessed into Stage 2 while the
+        gate is closed. Their released Stage 1 slots intentionally remain
+        empty until normal operations resume.
+        """
+
+        nonlocal stage2_gate_bootstrap_used
+        budget = max(
+            0,
+            int(
+                os.getenv(
+                    "STAGE2_GATE_BOOTSTRAP_PER_CYCLE",
+                    str(max(stage2_reassessment_concurrency, 4)),
+                )
+            ),
+        )
+        processed = 0
+        while processed < budget:
+            gate_now = _stage2_waterfall_gate_snapshot(
+                active_candidates(store),
+                threshold=stage2_waterfall_gate_threshold,
+            )
+            if gate_now["open"]:
+                break
+            candidates_now = [
+                candidate
+                for candidate in promotable_candidates(
+                    store,
+                    stage="stage1",
+                    threshold=stage1_threshold,
+                )
+                if str(candidate["candidate_id"]) not in attempted_stage1
+            ]
+            if not candidates_now:
+                break
+            candidate = candidates_now[0]
+            candidate_id = str(candidate["candidate_id"])
+            attempted_stage1.add(candidate_id)
+            if status_callback:
+                status_callback(
+                    "processing_stage2",
+                    {
+                        "candidate_id": candidate_id,
+                        "reason": "stage2_waterfall_gate_bootstrap",
+                    },
+                )
+            stage2_started = time.perf_counter()
+            result = _evaluate_stage2(
+                store,
+                candidate,
+                data_dir=data_dir,
+                max_history_sectors=max_history_sectors,
+            )
+            result.update(
+                {
+                    "queue_kind": "gate_bootstrap",
+                    "queue_status": "Promising",
+                    "queue_reason": "stage2_gate_cohort_bootstrap",
+                }
+            )
+            elapsed = add_timing("stage2_seconds", stage2_started)
+            if result.get("status") == "Needs More Data":
+                timings["stage2_needs_more_data_seconds"] += elapsed
+            stage2_results.append(result)
+            processed += 1
+            stage2_gate_bootstrap_used += 1
+        return processed
+
     def select_stage2_candidate() -> dict[str, Any] | None:
         """Return the highest-ranked Stage 2 Promising candidate for Stage 3.
 
@@ -1805,11 +1960,45 @@ def run_live_cycle(
     }
     stage3_steady_state_intakes = 0
     reassessment_budget = max(1, int(os.getenv("STAGE3_REASSESSMENTS_PER_CYCLE", "4")))
+    reassessment_candidates: list[dict[str, Any]] = []
+    # Stage 2 is the release valve for the entire waterfall. Reassess its
+    # priority window first, then optionally bootstrap a missing cohort from
+    # already-promising Stage 1 rows. Stage 1 intake and all Stage 3 work stay
+    # paused until the ranked Stage 2 window is fully Promising.
     if waterfall_ready:
-        # Stage 2 owns this rolling window even when Promising candidates are
-        # available. This is the part that prevents a healthy-looking Stage 2
-        # ranking from hiding a growing Needs More Data backlog.
         run_stage2_reassessment_queue()
+        stage2_gate_snapshot = _stage2_waterfall_gate_snapshot(
+            active_candidates(store),
+            threshold=stage2_waterfall_gate_threshold,
+        )
+        if (
+            not stage2_gate_snapshot["open"]
+            and stage2_gate_snapshot["top_count"] < stage2_waterfall_gate_threshold
+        ):
+            bootstrap_stage2_gate_cohort()
+            stage2_gate_snapshot = _stage2_waterfall_gate_snapshot(
+                active_candidates(store),
+                threshold=stage2_waterfall_gate_threshold,
+            )
+        stage2_gate_open = bool(stage2_gate_snapshot["open"])
+    else:
+        stage2_gate_snapshot = {
+            **stage2_gate_snapshot,
+            "open": False,
+            "reason": "waiting_for_stage1_baseline",
+            "message": "Stage 2's release gate will be evaluated after the initial Stage 1 baseline is ready.",
+            "paused_stages": ["stage1", "stage3"],
+        }
+
+    if waterfall_ready and not stage2_gate_open:
+        stage3_intake = {
+            "status": "paused_by_stage2_gate",
+            "batch_id": None,
+            "queued_count": 0,
+            "pending": [],
+        }
+
+    if waterfall_ready and stage2_gate_open:
         stage3_intake = _stage3_initial_intake_queue(
             store,
             size=stage3_initial_intake_size,
@@ -2045,13 +2234,19 @@ def run_live_cycle(
         "message": (
             "Continuous Stage 1 intake is disabled"
             if stage1_continuous_intake_per_cycle == 0
+            else "Paused until the top Stage 2 gate window is fully Promising"
+            if not stage2_gate_open
             else "Waiting for the initial Stage 1 baseline"
         ),
         "selected_count": 0,
         "evaluated_count": 0,
         "intake_reason": "continuous_stage1_intake",
     }
-    if baseline_ready_at_cycle_start and stage1_continuous_intake_per_cycle:
+    if (
+        baseline_ready_at_cycle_start
+        and stage1_continuous_intake_per_cycle
+        and stage2_gate_open
+    ):
         if status_callback:
             status_callback(
                 "processing_stage1",
@@ -2067,7 +2262,8 @@ def run_live_cycle(
         continuous_stage1_intake["scheduled_after"] = "stage2_top_window_reassessment_and_stage3_dispatch"
         continuous_stage1_intake["stage2_priority_calls_completed"] = stage2_reassessments_used
 
-    check_catalog("stage3")
+    if stage2_gate_open:
+        check_catalog("stage3")
     matched_count = sum(int(check.get("matches") or 0) for check in catalog_checks)
     catalog = {
         "status": "matched" if matched_count else "no_matches",
@@ -2103,7 +2299,7 @@ def run_live_cycle(
         },
         "stage3_reassessment": {
             "concurrency": stage3_reassessment_concurrency,
-            "requested_count": reassessment_budget if waterfall_ready else 0,
+            "requested_count": reassessment_budget if waterfall_ready and stage2_gate_open else 0,
             "prime_rank_movement_requested_count": sum(
                 1
                 for candidate in reassessment_candidates
@@ -2122,8 +2318,12 @@ def run_live_cycle(
             "evaluated_count": stage2_reassessments_used if waterfall_ready else 0,
             "concurrency": stage2_reassessment_concurrency,
             "priority": "first_stage2_job_budget_in_cycle",
+            "waterfall_gate": stage2_gate_snapshot,
+            "waterfall_gate_open": stage2_gate_open,
+            "gate_bootstrap_evaluated_count": stage2_gate_bootstrap_used,
             **stage2_reassessment_telemetry,
         },
+        "stage2_waterfall_gate": stage2_gate_snapshot,
         "manual_migrations": manual_migration_results,
         "timings": {key: round(value, 3) for key, value in timings.items()},
         "catalog": catalog,
