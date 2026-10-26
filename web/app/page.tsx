@@ -1381,6 +1381,7 @@ export default function HomePage() {
   const [pipelineStatusOpen, setPipelineStatusOpen] = useState(false);
   const [clockMs, setClockMs] = useState(() => Date.now());
   const dashboardRequestRef = useRef(0);
+  const rankingCacheRef = useRef(new Map<string, RankingResponse>());
 
   const closeCandidate = useCallback(() => {
     setSelectedId(null);
@@ -1396,17 +1397,20 @@ export default function HomePage() {
   const loadDashboard = useCallback(async () => {
     const requestId = dashboardRequestRef.current + 1;
     dashboardRequestRef.current = requestId;
-    setLoading(true);
+    const controls = rankingControls[activeTab];
+    const query = new URLSearchParams({ view: activeTab, limit: "100", page: String(rankingPage) });
+    if (activeTab === "overall" && controls.stage) query.set("stage_filter", controls.stage);
+    if (activeTab !== "overall" && controls.status) query.set("status_filter", controls.status);
+    if (controls.sort !== "rank") query.set("sort", controls.sort);
+    const cacheKey = query.toString();
+    const cachedRanking = rankingCacheRef.current.get(cacheKey);
+    setLoading(!cachedRanking);
+    if (cachedRanking) setRanking(cachedRanking);
     setError(null);
     try {
-      const controls = rankingControls[activeTab];
-      const query = new URLSearchParams({ view: activeTab, limit: "100", page: String(rankingPage) });
-      if (activeTab === "overall" && controls.stage) query.set("stage_filter", controls.stage);
-      if (activeTab !== "overall" && controls.status) query.set("status_filter", controls.status);
-      if (controls.sort !== "rank") query.set("sort", controls.sort);
-      const [nextStatus, nextRanking] = await Promise.all([fetchJson<DashboardStatus>("/api/status"), fetchJson<RankingResponse>(`/api/rankings?${query.toString()}`)]);
+      const nextRanking = await fetchJson<RankingResponse>(`/api/rankings?${query.toString()}`);
       if (requestId !== dashboardRequestRef.current) return;
-      setStatus(nextStatus);
+      rankingCacheRef.current.set(cacheKey, nextRanking);
       setRanking(nextRanking);
     } catch (cause) {
       if (requestId !== dashboardRequestRef.current) return;
@@ -1416,7 +1420,18 @@ export default function HomePage() {
     }
   }, [activeTab, rankingControls, rankingPage]);
 
+  const loadStatus = useCallback(async () => {
+    try {
+      const nextStatus = await fetchJson<DashboardStatus>("/api/status");
+      setStatus(nextStatus);
+    } catch (cause) {
+      setError((current) => current ?? (cause instanceof Error ? cause.message : "The observatory could not load published status."));
+    }
+  }, []);
+
   useEffect(() => { void loadDashboard(); }, [loadDashboard]);
+
+  useEffect(() => { void loadStatus(); }, [loadStatus]);
 
   useEffect(() => {
     const clock = window.setInterval(() => setClockMs(Date.now()), 1000);
@@ -1425,10 +1440,13 @@ export default function HomePage() {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") void loadDashboard();
+      if (document.visibilityState === "visible") {
+        void loadDashboard();
+        void loadStatus();
+      }
     }, 15000);
     return () => window.clearInterval(timer);
-  }, [loadDashboard]);
+  }, [loadDashboard, loadStatus]);
 
   const loadReplaySnapshot = useCallback(async (view: RankingView, cursor: number, page = rankingPage) => {
     updateReplay(view, { cursor, loading: true, error: null });

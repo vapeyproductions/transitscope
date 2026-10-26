@@ -279,34 +279,17 @@ class ReadOnlyStore:
                 where_params.append(status_filter)
             where_sql = " AND ".join(where_clauses)
 
-            if selected_stage:
-                total_ranked_count = int(
-                    connection.execute(
-                        f"SELECT COUNT(*) FROM candidates AS c WHERE {where_sql}",
-                        where_params,
-                    ).fetchone()[0]
-                )
-            else:
-                total_ranked_count = int(
-                    connection.execute(
-                        f"SELECT COUNT(*) FROM candidates AS c WHERE {where_sql}",
-                        where_params,
-                    ).fetchone()[0]
-                )
-            if selected_stage:
-                total_star_count = int(
-                    connection.execute(
-                        f"SELECT COUNT(DISTINCT c.target_id) FROM candidates AS c WHERE {where_sql}",
-                        where_params,
-                    ).fetchone()[0]
-                )
-            else:
-                total_star_count = int(
-                    connection.execute(
-                        f"SELECT COUNT(DISTINCT c.target_id) FROM candidates AS c WHERE {where_sql}",
-                        where_params,
-                    ).fetchone()[0]
-                )
+            total_ranked_count, total_star_count = connection.execute(
+                f"""
+                SELECT COUNT(*) AS candidate_count,
+                       COUNT(DISTINCT c.target_id) AS star_count
+                FROM candidates AS c
+                WHERE {where_sql}
+                """,
+                where_params,
+            ).fetchone()
+            total_ranked_count = int(total_ranked_count)
+            total_star_count = int(total_star_count)
 
             if sort == "last_assessed_desc":
                 order_sql = "last_evaluated_at DESC NULLS LAST"
