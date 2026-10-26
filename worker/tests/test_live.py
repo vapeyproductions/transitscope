@@ -1,7 +1,7 @@
 import unittest
 
 from main import queue_cycle_events
-from pipeline.live import _stage2_needs_data_queue
+from pipeline.live import _stage2_needs_data_candidates, _stage2_needs_data_queue
 
 
 class LiveQueueTests(unittest.TestCase):
@@ -85,6 +85,12 @@ class LiveQueueTests(unittest.TestCase):
         self.assertEqual(
             [candidate["candidate_id"] for candidate in queue],
             ["rank-1", "rank-3"],
+        )
+
+        all_candidates = _stage2_needs_data_candidates(candidates)
+        self.assertEqual(
+            [candidate["candidate_id"] for candidate in all_candidates],
+            ["rank-1", "rank-3", "outside-window"],
         )
 
 

@@ -1665,6 +1665,7 @@ class ReadOnlyStore:
                     },
                     "queue_events": [event for event in queue_events if isinstance(event, dict)],
                     "events": [event for event in events if isinstance(event, dict)],
+                    "stage2_reassessment": payload.get("stage2_reassessment", {}),
                     "stage3_reassessment": payload.get("stage3_reassessment", {}),
                     "stage3_intake": payload.get("stage3_intake", {}),
                 }

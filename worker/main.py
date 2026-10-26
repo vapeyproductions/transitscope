@@ -183,18 +183,25 @@ def ranked_queue_samples(store: DuckDBStore, limit: int = 100) -> dict[str, list
 def result_summary(results: list[dict] | None) -> dict[str, object]:
     items = results or []
     counts: dict[str, int] = {}
+    queue_status_counts: dict[str, int] = {}
     for result in items:
         status = str(result.get("status") or "unknown")
         counts[status] = counts.get(status, 0) + 1
+        queue_status = result.get("queue_status")
+        if queue_status:
+            queue_status_name = str(queue_status)
+            queue_status_counts[queue_status_name] = queue_status_counts.get(queue_status_name, 0) + 1
     return {
         "attempted": len(items),
         "promising": counts.get("Promising", 0),
         "needs_more_data": counts.get("Needs More Data", 0),
+        "queued_needs_more_data": queue_status_counts.get("Needs More Data", 0),
         "inconclusive": counts.get("Inconclusive", 0),
         "known_match": counts.get("Known Match", 0),
         "errors": counts.get("error", 0),
         "unchanged": counts.get("unchanged", 0),
         "statuses": counts,
+        "queue_statuses": queue_status_counts,
     }
 
 
@@ -425,6 +432,23 @@ def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -
         # batch interval rather than a sum of per-candidate CPU time.
         stage1_summary["needs_more_data_seconds"] = stage1_summary["timing_seconds"]
     stage2_summary = result_summary(result.get("stage2"))
+    stage2_reassessment = result.get("stage2_reassessment")
+    if isinstance(stage2_reassessment, dict):
+        stage2_summary.update(
+            {
+                "priority_queue_count": int(stage2_reassessment.get("initial_queue_count") or 0),
+                "priority_queue_remaining_count": int(stage2_reassessment.get("remaining_queue_count") or 0),
+                "priority_queue_called": int(stage2_reassessment.get("evaluated_count") or 0),
+                "priority_queue_unchanged": len(stage2_reassessment.get("unchanged_candidate_ids") or []),
+            }
+        )
+    # A reassessment that discovers no new archive product is still a Stage 2
+    # Needs More Data job. Count it in the operational throughput view even
+    # though no new model evaluation was published.
+    stage2_summary["needs_more_data"] = max(
+        int(stage2_summary.get("needs_more_data") or 0),
+        int(stage2_summary.get("queued_needs_more_data") or 0),
+    )
     stage2_summary.update({
         "timing_seconds": round(float(timings.get("stage2_seconds") or 0.0), 3),
         "needs_more_data_seconds": round(float(timings.get("stage2_needs_more_data_seconds") or 0.0), 3),

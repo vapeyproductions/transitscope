@@ -272,17 +272,8 @@ def _record_stage3_prime_reassessment_attempt(
     return version
 
 
-def _stage2_needs_data_queue(
-    candidates: list[dict[str, Any]],
-    *,
-    threshold: int,
-) -> list[dict[str, Any]]:
-    """Return Stage 2 Needs More Data rows inside the rolling priority window.
-
-    The window is a reassessment trigger, not a capacity or promotion gate.
-    Candidates remain in the Stage 2 ranking while this helper orders the
-    work queue by the current Stage 2 rank.
-    """
+def _stage2_needs_data_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return all active, reassessable Stage 2 candidates in rank order."""
 
     return sorted(
         (
@@ -293,10 +284,30 @@ def _stage2_needs_data_queue(
             and candidate["status"] == "Needs More Data"
             and candidate["promotion_eligible"]
             and candidate["rank_stage"] is not None
-            and int(candidate["rank_stage"]) <= threshold
         ),
         key=lambda candidate: (int(candidate["rank_stage"]), str(candidate["candidate_id"])),
     )
+
+
+def _stage2_needs_data_queue(
+    candidates: list[dict[str, Any]],
+    *,
+    threshold: int,
+) -> list[dict[str, Any]]:
+    """Return the Stage 2 top-window work queue in rank order.
+
+    The window is a reassessment trigger, not a capacity or promotion gate.
+    Candidates remain in the Stage 2 ranking while this helper orders the
+    preferred work queue by the current Stage 2 rank. Callers can use
+    ``_stage2_needs_data_candidates`` for data-available fallback work beyond
+    the window when a preferred candidate has no new coverage.
+    """
+
+    return [
+        candidate
+        for candidate in _stage2_needs_data_candidates(candidates)
+        if int(candidate["rank_stage"]) <= threshold
+    ]
 
 
 def _stage3_initial_intake_queue(
@@ -1374,6 +1385,26 @@ def run_live_cycle(
             )
         ),
     )
+    stage2_reassessment_telemetry: dict[str, Any] = {
+        "queue_order": "stage2_rank_ascending",
+        "queue_threshold": stage2_reassessment_threshold,
+        "initial_queue_count": 0,
+        "initial_queue_candidate_ids": [],
+        "last_queue_count": 0,
+        "last_queue_candidate_ids": [],
+        "remaining_queue_count": 0,
+        "remaining_queue_candidate_ids": [],
+        "dispatch_batches": [],
+        "called_candidate_ids": [],
+        "fallback_candidate_ids": [],
+        "fallback_attempts": 0,
+        "fallback_attempt_budget": max(1, stage2_reassessment_budget * 3),
+        "published_candidate_ids": [],
+        "unchanged_candidate_ids": [],
+        "fallback_unchanged_candidate_ids": [],
+        "inconclusive_candidate_ids": [],
+        "error_candidate_ids": [],
+    }
 
     def run_stage2_reassessment_queue() -> int:
         """Process the current Stage 2 top-window queue in rank order.
@@ -1388,14 +1419,22 @@ def run_live_cycle(
 
         nonlocal stage2_reassessments_used
         processed = 0
+        replacement_slots = 0
         remaining_budget = max(0, stage2_reassessment_budget - stage2_reassessments_used)
         while processed < remaining_budget:
+            queue_now = _stage2_needs_data_queue(
+                active_candidates(store),
+                threshold=stage2_reassessment_threshold,
+            )
+            queue_ids = [str(candidate["candidate_id"]) for candidate in queue_now]
+            if not stage2_reassessment_telemetry["initial_queue_candidate_ids"]:
+                stage2_reassessment_telemetry["initial_queue_count"] = len(queue_now)
+                stage2_reassessment_telemetry["initial_queue_candidate_ids"] = queue_ids[:stage2_reassessment_threshold]
+            stage2_reassessment_telemetry["last_queue_count"] = len(queue_now)
+            stage2_reassessment_telemetry["last_queue_candidate_ids"] = queue_ids[:stage2_reassessment_threshold]
             candidates_now = [
                 candidate
-                for candidate in _stage2_needs_data_queue(
-                    active_candidates(store),
-                    threshold=stage2_reassessment_threshold,
-                )
+                for candidate in queue_now
                 if str(candidate["candidate_id"]) not in attempted_stage2_reassessments
             ]
             if not candidates_now:
@@ -1405,6 +1444,12 @@ def run_live_cycle(
                 stage2_reassessment_concurrency,
                 remaining_budget - processed,
             )]
+            stage2_reassessment_telemetry["dispatch_batches"].append(
+                [str(candidate["candidate_id"]) for candidate in candidates_batch]
+            )
+            stage2_reassessment_telemetry["called_candidate_ids"].extend(
+                str(candidate["candidate_id"]) for candidate in candidates_batch
+            )
             attempted_stage2_reassessments.update(
                 str(candidate["candidate_id"]) for candidate in candidates_batch
             )
@@ -1419,7 +1464,10 @@ def run_live_cycle(
                 publish_lock=stage3_publish_lock,
             )
             elapsed = add_timing("stage2_seconds", stage2_started)
-            if any(result.get("status") == "Needs More Data" for result in results):
+            if any(
+                result.get("status") in {"Needs More Data", "unchanged"}
+                for result in results
+            ):
                 timings["stage2_needs_more_data_seconds"] += elapsed
             for result in results:
                 result.update(
@@ -1430,6 +1478,24 @@ def run_live_cycle(
                     }
                 )
                 stage2_results.append(result)
+                result_status = str(result.get("status") or "error")
+                if result_status == "unchanged":
+                    stage2_reassessment_telemetry["unchanged_candidate_ids"].append(
+                        str(result["candidate_id"])
+                    )
+                    replacement_slots += 1
+                elif result_status == "error":
+                    stage2_reassessment_telemetry["error_candidate_ids"].append(
+                        str(result["candidate_id"])
+                    )
+                elif result.get("publish_version") is not None:
+                    stage2_reassessment_telemetry["published_candidate_ids"].append(
+                        str(result["candidate_id"])
+                    )
+                if result_status == "Inconclusive":
+                    stage2_reassessment_telemetry["inconclusive_candidate_ids"].append(
+                        str(result["candidate_id"])
+                    )
 
             processed += len(results)
             stage2_reassessments_used += len(results)
@@ -1441,6 +1507,108 @@ def run_live_cycle(
                 if result.get("status") == "Inconclusive":
                     request_stage2_replacement()
 
+        # A preferred top-window candidate can be called and still have no
+        # additional MAST coverage. It remains in the ranking, but it should
+        # not occupy a useful Stage 2 work slot for the rest of this cycle.
+        # Replace that slot with the next ranked Needs More Data candidate
+        # outside the window, continuing until the slot produces a new
+        # evaluation or the bounded fallback attempt budget is exhausted.
+        fallback_attempt_budget = max(
+            1,
+            int(
+                os.getenv(
+                    "STAGE2_FALLBACK_ATTEMPTS_PER_CYCLE",
+                    str(stage2_reassessment_budget * 3),
+                )
+            ),
+        )
+        stage2_reassessment_telemetry["fallback_attempt_budget"] = fallback_attempt_budget
+        fallback_attempts = 0
+        while replacement_slots and fallback_attempts < fallback_attempt_budget:
+            fallback_candidates = [
+                candidate
+                for candidate in _stage2_needs_data_candidates(active_candidates(store))
+                if int(candidate["rank_stage"]) > stage2_reassessment_threshold
+                and str(candidate["candidate_id"]) not in attempted_stage2_reassessments
+            ]
+            if not fallback_candidates:
+                break
+            candidates_batch = fallback_candidates[: min(
+                stage2_reassessment_concurrency,
+                replacement_slots,
+                fallback_attempt_budget - fallback_attempts,
+            )]
+            if not candidates_batch:
+                break
+            candidate_ids = [str(candidate["candidate_id"]) for candidate in candidates_batch]
+            stage2_reassessment_telemetry["dispatch_batches"].append(candidate_ids)
+            stage2_reassessment_telemetry["fallback_candidate_ids"].extend(candidate_ids)
+            attempted_stage2_reassessments.update(candidate_ids)
+            stage2_started = time.perf_counter()
+            results = _run_stage2_reassessment_batch(
+                store,
+                candidates_batch,
+                data_dir=data_dir,
+                max_history_sectors=max_history_sectors,
+                concurrency=stage2_reassessment_concurrency,
+                status_callback=status_callback,
+                publish_lock=stage3_publish_lock,
+            )
+            elapsed = add_timing("stage2_seconds", stage2_started)
+            if any(
+                result.get("status") in {"Needs More Data", "unchanged"}
+                for result in results
+            ):
+                timings["stage2_needs_more_data_seconds"] += elapsed
+            unchanged_in_batch = 0
+            for result in results:
+                result.update(
+                    {
+                        "queue_kind": "reassessment",
+                        "queue_status": "Needs More Data",
+                        "queue_reason": "stage2_top_window_no_data_replacement",
+                    }
+                )
+                stage2_results.append(result)
+                result_status = str(result.get("status") or "error")
+                if result_status == "unchanged":
+                    unchanged_in_batch += 1
+                    stage2_reassessment_telemetry["unchanged_candidate_ids"].append(
+                        str(result["candidate_id"])
+                    )
+                    stage2_reassessment_telemetry["fallback_unchanged_candidate_ids"].append(
+                        str(result["candidate_id"])
+                    )
+                elif result_status == "error":
+                    stage2_reassessment_telemetry["error_candidate_ids"].append(
+                        str(result["candidate_id"])
+                    )
+                elif result.get("publish_version") is not None:
+                    stage2_reassessment_telemetry["published_candidate_ids"].append(
+                        str(result["candidate_id"])
+                    )
+                if result_status == "Inconclusive":
+                    stage2_reassessment_telemetry["inconclusive_candidate_ids"].append(
+                        str(result["candidate_id"])
+                    )
+            fallback_attempts += len(results)
+            stage2_reassessment_telemetry["fallback_attempts"] = fallback_attempts
+            stage2_reassessments_used += len(results)
+            # A changed/evaluated candidate consumed its replacement slot. An
+            # unchanged fallback keeps the slot open and causes the next
+            # ranked candidate to be tried.
+            replacement_slots = replacement_slots - len(results) + unchanged_in_batch
+            for result in results:
+                if result.get("status") == "Inconclusive":
+                    request_stage2_replacement()
+
+        remaining_queue = _stage2_needs_data_queue(
+            active_candidates(store),
+            threshold=stage2_reassessment_threshold,
+        )
+        remaining_ids = [str(candidate["candidate_id"]) for candidate in remaining_queue]
+        stage2_reassessment_telemetry["remaining_queue_count"] = len(remaining_queue)
+        stage2_reassessment_telemetry["remaining_queue_candidate_ids"] = remaining_ids[:stage2_reassessment_threshold]
         return processed
 
     def select_stage2_candidate() -> dict[str, Any] | None:
@@ -1896,6 +2064,8 @@ def run_live_cycle(
             stage1_continuous_intake_per_cycle,
             intake_reason="continuous_stage1_intake",
         )
+        continuous_stage1_intake["scheduled_after"] = "stage2_top_window_reassessment_and_stage3_dispatch"
+        continuous_stage1_intake["stage2_priority_calls_completed"] = stage2_reassessments_used
 
     check_catalog("stage3")
     matched_count = sum(int(check.get("matches") or 0) for check in catalog_checks)
@@ -1951,6 +2121,8 @@ def run_live_cycle(
             "requested_count": stage2_reassessment_budget if waterfall_ready else 0,
             "evaluated_count": stage2_reassessments_used if waterfall_ready else 0,
             "concurrency": stage2_reassessment_concurrency,
+            "priority": "first_stage2_job_budget_in_cycle",
+            **stage2_reassessment_telemetry,
         },
         "manual_migrations": manual_migration_results,
         "timings": {key: round(value, 3) for key, value in timings.items()},
