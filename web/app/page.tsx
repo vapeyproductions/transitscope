@@ -1454,6 +1454,9 @@ export default function HomePage() {
   const [clockMs, setClockMs] = useState(() => Date.now());
   const dashboardRequestRef = useRef(0);
   const rankingCacheRef = useRef(new Map<string, RankingResponse>());
+  const rankingCacheAtRef = useRef(new Map<string, number>());
+  const rankingInflightRef = useRef(new Map<string, Promise<RankingResponse>>());
+  const stagePrefetchInFlightRef = useRef(false);
 
   const closeCandidate = useCallback(() => {
     setSelectedId(null);
@@ -1464,6 +1467,15 @@ export default function HomePage() {
 
   const updateReplay = useCallback((view: RankingView, patch: Partial<ReplayState>) => {
     setReplayStates((current) => ({ ...current, [view]: { ...current[view], ...patch } }));
+  }, []);
+
+  const fetchRanking = useCallback((query: string) => {
+    const inFlight = rankingInflightRef.current.get(query);
+    if (inFlight) return inFlight;
+    const request = fetchJson<RankingResponse>(`/api/rankings?${query}`)
+      .finally(() => rankingInflightRef.current.delete(query));
+    rankingInflightRef.current.set(query, request);
+    return request;
   }, []);
 
   const loadDashboard = useCallback(async () => {
@@ -1480,9 +1492,10 @@ export default function HomePage() {
     if (cachedRanking) setRanking(cachedRanking);
     setError(null);
     try {
-      const nextRanking = await fetchJson<RankingResponse>(`/api/rankings?${query.toString()}`);
+      const nextRanking = await fetchRanking(query.toString());
       if (requestId !== dashboardRequestRef.current) return;
       rankingCacheRef.current.set(cacheKey, nextRanking);
+      rankingCacheAtRef.current.set(cacheKey, Date.now());
       setRanking(nextRanking);
     } catch (cause) {
       if (requestId !== dashboardRequestRef.current) return;
@@ -1490,7 +1503,7 @@ export default function HomePage() {
     } finally {
       if (requestId === dashboardRequestRef.current) setLoading(false);
     }
-  }, [activeTab, rankingControls, rankingPage]);
+  }, [activeTab, fetchRanking, rankingControls, rankingPage]);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -1501,9 +1514,37 @@ export default function HomePage() {
     }
   }, []);
 
+  const prefetchStageRankings = useCallback(async () => {
+    if (stagePrefetchInFlightRef.current) return;
+    stagePrefetchInFlightRef.current = true;
+    try {
+      for (const view of ["stage1", "stage2", "stage3"] as const) {
+        const query = new URLSearchParams({ view, limit: "100", page: "1" }).toString();
+        const cachedAt = rankingCacheAtRef.current.get(query) ?? 0;
+        if (Date.now() - cachedAt < 30_000) continue;
+        try {
+          const nextRanking = await fetchRanking(query);
+          rankingCacheRef.current.set(query, nextRanking);
+          rankingCacheAtRef.current.set(query, Date.now());
+        } catch {
+          // A background warm-up must never replace a working overall view or
+          // surface an error while the user is browsing the dashboard.
+        }
+      }
+    } finally {
+      stagePrefetchInFlightRef.current = false;
+    }
+  }, [fetchRanking]);
+
   useEffect(() => { void loadDashboard(); }, [loadDashboard]);
 
   useEffect(() => { void loadStatus(); }, [loadStatus]);
+
+  useEffect(() => {
+    if (activeTab === "overall" && ranking && !replayStates.overall.active) {
+      void prefetchStageRankings();
+    }
+  }, [activeTab, prefetchStageRankings, ranking, replayStates.overall.active]);
 
   useEffect(() => {
     const clock = window.setInterval(() => setClockMs(Date.now()), 1000);
