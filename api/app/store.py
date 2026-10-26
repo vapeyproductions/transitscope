@@ -1136,6 +1136,7 @@ class ReadOnlyStore:
                 "progress_percent": 0.0,
                 "initial_stage1_pool": initial_stage1_pool,
             },
+            "processed_history": [],
             "stages": self._empty_monitoring_stages(stage_thresholds),
             "models": [],
             "sampling": self._empty_sampling(configured_universe),
@@ -1165,6 +1166,24 @@ class ReadOnlyStore:
 
         try:
             version = self.latest_version(connection)
+            try:
+                processed_history_rows = connection.execute(
+                    """
+                    SELECT occurred_at, processed_target_count
+                    FROM ranking_snapshots
+                    WHERE view = 'overall'
+                    ORDER BY sequence_number ASC, occurred_at ASC
+                    """
+                ).fetchall()
+            except Exception:
+                processed_history_rows = []
+            processed_history = [
+                {
+                    "occurred_at": isoformat(row[0]),
+                    "processed_target_count": int(row[1] or 0),
+                }
+                for row in processed_history_rows
+            ]
             manifest_count, processed_count, queued_count, unavailable_count = connection.execute(
                 """
                 SELECT COUNT(*),
@@ -1329,6 +1348,7 @@ class ReadOnlyStore:
                     ),
                     "initial_stage1_pool": initial_stage1_pool,
                 },
+                "processed_history": processed_history,
                 "stages": stage_data,
                 "models": models,
                 "sampling": sampling,
