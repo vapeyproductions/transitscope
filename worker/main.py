@@ -602,7 +602,7 @@ def main() -> None:
                         message=migration.get("message") or ("Migration completed." if status == "completed" else "Migration failed."),
                         error=migration.get("error"),
                     )
-                poll_seconds = float(os.getenv("LIVE_POLL_SECONDS", "300"))
+                poll_seconds = float(os.getenv("LIVE_POLL_SECONDS", "60"))
                 catalog = result.get("catalog") if isinstance(result, dict) else None
                 catalog_health = {
                     "status": catalog.get("status") if isinstance(catalog, dict) else "unknown",
@@ -649,7 +649,7 @@ def main() -> None:
                 write_status(data_dir, "error", {"error": repr(exc)})
                 time.sleep(float(os.getenv("WORKER_ERROR_RETRY_SECONDS", "30")))
                 continue
-            time.sleep(float(os.getenv("LIVE_POLL_SECONDS", "300")))
+            time.sleep(float(os.getenv("LIVE_POLL_SECONDS", "60")))
         write_status(data_dir, "stopped")
         return
 

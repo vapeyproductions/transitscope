@@ -155,6 +155,7 @@ class ReadOnlyStore:
             "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", "126000")),
             "active_candidate_count": 0,
             "last_ingest_at": None,
+            "processed_history": [],
             "worker": worker,
         }
         connection = self.connect()
@@ -184,6 +185,24 @@ class ReadOnlyStore:
             ).fetchone()
             if ingest and ingest[0]:
                 response["last_ingest_at"] = isoformat(ingest[0])
+            try:
+                history_rows = connection.execute(
+                    """
+                    SELECT occurred_at, processed_target_count
+                    FROM ranking_snapshots
+                    WHERE view = 'overall'
+                    ORDER BY sequence_number ASC, occurred_at ASC
+                    """
+                ).fetchall()
+            except Exception:
+                history_rows = []
+            response["processed_history"] = [
+                {
+                    "occurred_at": isoformat(row[0]),
+                    "processed_target_count": int(row[1] or 0),
+                }
+                for row in history_rows
+            ]
             return response
         finally:
             connection.close()
