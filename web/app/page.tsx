@@ -165,14 +165,17 @@ type LightCurveResponse = {
   points: Array<{ time: number; normalized_flux: number }>;
 };
 
+type HistoryEvent = {
+  sequence_number: number;
+  stage: string;
+  event_type: string;
+  payload: Record<string, unknown>;
+  occurred_at: string | null;
+  model_run_id?: string | null;
+};
+
 type HistoryResponse = {
-  events: Array<{
-    sequence_number: number;
-    stage: string;
-    event_type: string;
-    payload: Record<string, unknown>;
-    occurred_at: string | null;
-  }>;
+  events: HistoryEvent[];
 };
 
 type IdentifiedPerformance = {
@@ -690,6 +693,114 @@ function numberLabel(value: number | null | undefined, digits = 1): string {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "—";
 }
 
+function historyEventLabel(eventType: string): string {
+  const labels: Record<string, string> = {
+    discovered: "Candidate discovered",
+    stage1_evaluated: "Stage 1 evaluated",
+    stage1_released: "Passed from Stage 1",
+    stage2_evaluated: "Stage 2 evaluated",
+    stage2_released: "Passed from Stage 2",
+    stage3_intake_started: "Stage 3 intake opened",
+    stage3_intake_queued: "Entered Stage 3 queue",
+    stage3_evaluated: "Stage 3 evaluated",
+    stage3_replacement_called: "Stage 3 replacement called",
+    stage3_prime_rank_moved: "Prime Candidate rank changed",
+    stage3_prime_reassessment_attempted: "Prime Candidate reassessment attempted",
+    signal_alias_held: "Signal held for independence review",
+    signal_alias_released: "Signal released for independent review",
+    signal_independence_assessed: "Signal independence assessed",
+    known_match: "Mapped to a known object",
+    target_unavailable: "Target data unavailable",
+  };
+  return labels[eventType] ?? humanizeState(eventType);
+}
+
+function historyEventStatus(event: HistoryEvent): string | null {
+  const classification = event.payload.classification;
+  return typeof classification === "string" ? classification : null;
+}
+
+function historyEventDetails(event: HistoryEvent): string[] {
+  const payload = event.payload;
+  const features = objectValue(payload.features);
+  const metrics = objectValue(payload.metrics);
+  const holdout = objectValue(features.holdout_metrics ?? metrics.holdout_metrics ?? payload.holdout_metrics);
+  const baseline = objectValue(features.baseline_metrics ?? metrics.baseline_metrics ?? payload.baseline_metrics);
+  const details: string[] = [];
+  const modelVersion = typeof payload.model_version === "string" ? payload.model_version : null;
+  const rankingModelVersion = typeof payload.ranking_model_version === "string" ? payload.ranking_model_version : null;
+  const baselineModelVersion = typeof payload.baseline_model_version === "string" ? payload.baseline_model_version : null;
+
+  if (modelVersion) details.push(`Model ${modelVersion}`);
+  if (rankingModelVersion) details.push(`Ranking ${rankingModelVersion}`);
+  if (baselineModelVersion) details.push(`Baseline ${baselineModelVersion}`);
+  if (typeof payload.classification === "string") details.push(displayStatus(payload.classification, event.stage));
+  if (typeof payload.evidence_score === "number") details.push(`Evidence ${payload.evidence_score.toFixed(3)}`);
+  if (typeof payload.score === "number") details.push(`Independence ${payload.score.toFixed(3)}`);
+
+  if (event.event_type === "stage1_evaluated") {
+    if (typeof features.period_days === "number") details.push(`Period ${features.period_days.toFixed(3)} days`);
+    if (typeof features.depth === "number") details.push(`Depth ${(features.depth * 100).toFixed(3)}%`);
+    if (typeof features.bls_snr === "number") details.push(`BLS SNR ${features.bls_snr.toFixed(2)}`);
+    if (typeof features.observed_transit_count === "number") details.push(`${features.observed_transit_count} observed events`);
+  }
+  if (event.event_type === "stage2_evaluated") {
+    if (typeof features.coverage_days === "number") details.push(`Coverage ${features.coverage_days.toFixed(1)} days`);
+    if (typeof features.observed_event_count === "number") details.push(`${features.observed_event_count} repeated events`);
+    if (typeof features.timing_consistency === "number") details.push(`Timing consistency ${features.timing_consistency.toFixed(3)}`);
+    if (typeof features.depth_consistency === "number") details.push(`Depth consistency ${features.depth_consistency.toFixed(3)}`);
+    if (typeof features.shape_consistency === "number") details.push(`Shape consistency ${features.shape_consistency.toFixed(3)}`);
+  }
+  if (event.event_type === "stage3_evaluated") {
+    if (typeof features.total_samples === "number") details.push(`${features.total_samples.toLocaleString()} samples`);
+    if (typeof features.product_count === "number") details.push(`${features.product_count} products`);
+    if (typeof holdout.f1 === "number") details.push(`Holdout F1 ${holdout.f1.toFixed(3)}`);
+    if (typeof baseline.f1 === "number") details.push(`Baseline F1 ${baseline.f1.toFixed(3)}`);
+    if (typeof features.model_vs_baseline_f1_delta === "number") details.push(`Model lift ${features.model_vs_baseline_f1_delta >= 0 ? "+" : ""}${features.model_vs_baseline_f1_delta.toFixed(3)}`);
+  }
+  if (event.event_type === "stage3_prime_rank_moved") {
+    const oldRank = typeof payload.old_rank === "number" ? payload.old_rank : null;
+    const newRank = typeof payload.new_rank === "number" ? payload.new_rank : null;
+    if (oldRank !== null && newRank !== null) details.push(`Rank #${oldRank} → #${newRank}`);
+    if (payload.retest_policy === "expanded_stage3_history") details.push("Expanded Stage 3 history queued");
+  }
+  if (event.event_type === "stage3_intake_queued" && typeof payload.rank_at_enqueue === "number") {
+    details.push(`Stage 2 rank #${payload.rank_at_enqueue} when queued`);
+  }
+  if (event.event_type === "stage3_replacement_called" && typeof payload.source_candidate_id === "string") {
+    details.push("Called as the next Stage 3 replacement");
+  }
+  if (event.event_type === "known_match") {
+    if (typeof payload.object_name === "string" && payload.object_name) details.push(payload.object_name);
+    if (typeof payload.catalog_id === "string") details.push(`Catalog ${payload.catalog_id}`);
+    if (typeof payload.match_score === "number") details.push(`Match score ${payload.match_score.toFixed(1)}`);
+  }
+  if (event.event_type === "signal_independence_assessed" && typeof payload.reason === "string") details.push(payload.reason);
+  if (event.event_type === "stage1_released" && typeof payload.reason === "string") details.push(humanizeState(payload.reason));
+  if (event.event_type === "stage2_released" || event.event_type === "stage1_released") {
+    if (typeof payload.next_stage === "string") details.push(`Next: ${stageName(payload.next_stage)}`);
+  }
+  return details;
+}
+
+function historyEventDescription(event: HistoryEvent): string {
+  const payload = event.payload;
+  if (event.event_type === "stage1_evaluated") return "The signal was screened for a periodic transit-like dip and entered the Stage 1 ranking.";
+  if (event.event_type === "stage1_released") return payload.next_stage === "stage2" ? "The candidate was released from Stage 1 and passed into the Stage 2 queue." : "The candidate left the active Stage 1 processing slot.";
+  if (event.event_type === "stage2_evaluated") return "The signal was compared with longer historical coverage for repeatability.";
+  if (event.event_type === "stage2_released") return "The candidate was released from Stage 2 and passed into the Stage 3 queue.";
+  if (event.event_type === "stage3_intake_queued") return "The candidate was selected for Stage 3 testing and added to its work queue.";
+  if (event.event_type === "stage3_evaluated") return "The model tested whether earlier observations predicted a later chronological holdout.";
+  if (event.event_type === "stage3_prime_rank_moved") return "Its Stage 3 rank changed, triggering the expanded-history reassessment policy.";
+  if (event.event_type === "stage3_prime_reassessment_attempted") return "A Prime Candidate reassessment was attempted using expanded Stage 3 history.";
+  if (event.event_type === "known_match") return "A catalog comparison mapped this signal to a known object and removed it from active rankings.";
+  if (event.event_type === "signal_independence_assessed") return "The signal was compared with its primary sibling to determine whether it could advance independently.";
+  if (event.event_type === "signal_alias_held") return "The signal was held while the pipeline checked whether it was an independent event or a duplicate pattern.";
+  if (event.event_type === "signal_alias_released") return "The signal was released for independent assessment.";
+  if (event.event_type === "stage3_replacement_called") return "This event records the waterfall calling for the next Stage 3 candidate.";
+  return "A persisted pipeline event was recorded for this candidate.";
+}
+
 function durationLabel(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—";
   if (value < 1) return `${Math.round(value * 1000)} ms`;
@@ -830,9 +941,51 @@ function Metric({ label, value }: { label: string; value: string }) {
   return <div className="detail-metric"><span>{label}</span><strong>{value}</strong></div>;
 }
 
+function AssessmentTrail({ candidate, events }: { candidate: CandidateDetail; events: HistoryEvent[] }) {
+  const stageTrail = assessmentStages.map((stage) => {
+    const stageEvents = events.filter((event) => event.stage === stage || (stage === "stage3" && event.event_type === "stage3_intake_queued"));
+    const evaluationEvents = stageEvents.filter((event) => event.event_type === `${stage}_evaluated`);
+    const latestEvaluation = evaluationEvents.at(-1) ?? null;
+    let queueEvent = events.find((event) => {
+      if (stage === "stage1") return event.event_type === "stage1_evaluated";
+      if (stage === "stage2") return event.event_type === "stage1_released" && event.payload.next_stage === "stage2";
+      return event.event_type === "stage3_intake_queued" || (event.event_type === "stage2_released" && event.payload.next_stage === "stage3");
+    }) ?? null;
+    if (!queueEvent && latestEvaluation) queueEvent = latestEvaluation;
+    const status = latestEvaluation ? historyEventStatus(latestEvaluation) : stage === candidate.stage ? candidate.status : null;
+    return { stage, queueEvent, latestEvaluation, status };
+  });
+
+  return <div className="assessment-trail-content">
+    <div className="trail-intro"><div><p className="eyebrow">Persisted investigation record</p><h4>Assessment trail</h4><p>Follow when this signal entered each stage queue, what the stage tested, and which result determined its next move. These records come from published pipeline events; replay mode filters them to the selected point in time.</p></div><span className="trail-event-count">{events.length} recorded event{events.length === 1 ? "" : "s"}</span></div>
+    <div className="trail-stage-grid">
+      {stageTrail.map(({ stage, queueEvent, latestEvaluation, status }) => <article className={`trail-stage-card ${latestEvaluation ? "complete" : "pending"}`} key={stage}>
+        <div className="trail-stage-heading"><span className="stage-number">{stage === "stage1" ? "01" : stage === "stage2" ? "02" : "03"}</span><div><strong>{stageName(stage)}</strong><small>{queueEvent ? (stage === "stage1" ? "First processing" : "Queue entry") : "Not recorded"}</small></div></div>
+        <dl className="trail-stage-facts">
+          <div><dt>{queueEvent ? (stage === "stage1" ? "First processed" : "Entered queue") : "Queue entry"}</dt><dd>{formatDate(queueEvent?.occurred_at)}</dd></div>
+          <div><dt>Latest result</dt><dd>{status ? displayStatus(status, stage) : "Not evaluated"}</dd></div>
+          <div><dt>Latest assessment</dt><dd>{formatDate(latestEvaluation?.occurred_at)}</dd></div>
+        </dl>
+        {latestEvaluation ? <div className="trail-stage-result"><span>Evidence and model output</span><div className="trail-fact-list">{historyEventDetails(latestEvaluation).slice(0, 5).map((detail) => <span key={detail}>{detail}</span>)}</div></div> : <p className="trail-stage-empty">This signal has no persisted assessment in this stage yet.</p>}
+      </article>)}
+    </div>
+    <div className="modal-section assessment-event-section"><div className="section-heading"><div><p className="eyebrow">Chronological record</p><h4>Queue, model, and comparison events</h4></div><span className="section-note">Oldest first</span></div>
+      {events.length ? <div className="assessment-event-list">{events.map((event) => {
+        const status = historyEventStatus(event);
+        const details = historyEventDetails(event);
+        return <article className="assessment-event" key={`${event.sequence_number}-${event.event_type}-${event.model_run_id ?? "event"}`}>
+          <span className={`assessment-event-dot ${status ? statusClass(status) : "neutral"}`} aria-hidden="true" />
+          <div className="assessment-event-body"><div className="assessment-event-header"><div><strong>{historyEventLabel(event.event_type)}</strong><span>{stageName(event.stage)} · {formatDate(event.occurred_at)}</span></div><small>Cycle {event.sequence_number}</small></div><p>{historyEventDescription(event)}</p>{details.length > 0 && <div className="assessment-event-facts">{details.map((detail) => <span key={detail}>{detail}</span>)}</div>}{event.model_run_id && <small className="assessment-event-run">Run {event.model_run_id}</small>}</div>
+        </article>;
+      })}</div> : <div className="trail-empty"><strong>No pipeline events at this replay position.</strong><span>Advance the replay or return to live view to see the candidate's persisted assessment trail.</span></div>}
+    </div>
+  </div>;
+}
+
 function CandidateModal({ candidate, curve, history, replaySequence, onClose }: { candidate: CandidateDetail; curve: LightCurveResponse | null; history: HistoryResponse | null; replaySequence: number | null; onClose: () => void }) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const [transitOpen, setTransitOpen] = useState(false);
+  const [modalTab, setModalTab] = useState<"curve" | "trail">("curve");
   const [transitProgress, setTransitProgress] = useState<number | null>(null);
   const features = candidate.evaluation?.features ?? {};
   const metrics = candidate.evaluation?.metrics ?? {};
@@ -895,6 +1048,12 @@ function CandidateModal({ candidate, curve, history, replaySequence, onClose }: 
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
+  useEffect(() => {
+    setModalTab("curve");
+    setTransitOpen(false);
+    setTransitProgress(null);
+  }, [candidate.candidate_id]);
+
   const visibleHistory = history?.events.filter((event) => replaySequence === null || event.sequence_number <= replaySequence) ?? [];
   const signal = signalLabel(candidate.candidate_id, features, candidate.signal_index);
   const summaryNote = candidate.status === "Promising" ? null : candidate.ranking_rationale ?? candidate.activity;
@@ -905,7 +1064,8 @@ function CandidateModal({ candidate, curve, history, replaySequence, onClose }: 
     <section className="candidate-modal" role="dialog" aria-modal="true" aria-labelledby="candidate-modal-title">
       <header className="modal-header"><div><p className="eyebrow accent">Candidate investigation · {stageName(candidate.stage)}</p><h3 id="candidate-modal-title">{candidate.target_id}{signal ? ` - ${signal}` : ""}</h3><p className="modal-subtitle">{candidate.target?.source_product_family ?? "MAST / TESS observation"}</p></div><button ref={closeRef} className="modal-close" type="button" onClick={onClose} aria-label="Close candidate details">×</button></header>
       <div className="modal-summary"><span className="stage-status-stage">{stageName(candidate.stage)}</span>{" "}<span className={`status-pill status-${statusClass(displayStatus(candidate.status, candidate.stage))}`}>{displayStatus(candidate.status, candidate.stage)}</span>{signalResolutionLabel(candidate.signal_resolution) && <span className="evidence-chip">{signalResolutionLabel(candidate.signal_resolution)}</span>}{summaryNote && <span className="modal-summary-note">{summaryNote}</span>}{replaySequence !== null && <span className="replay-chip">Replay view</span>}</div>
-      <div className="modal-content-grid">
+      <nav className="modal-tabs" aria-label="Candidate detail views" role="tablist"><button className={`modal-tab ${modalTab === "curve" ? "active" : ""}`} type="button" role="tab" aria-selected={modalTab === "curve"} onClick={() => setModalTab("curve")}>Light curve</button><button className={`modal-tab ${modalTab === "trail" ? "active" : ""}`} type="button" role="tab" aria-selected={modalTab === "trail"} onClick={() => setModalTab("trail")}>Assessment trail <span>{visibleHistory.length}</span></button></nav>
+      {modalTab === "trail" ? <AssessmentTrail candidate={candidate} events={visibleHistory} /> : <div className="modal-content-grid">
         <div className="modal-main-column">
           <div className="modal-section"><div className="section-heading"><div><p className="eyebrow">Normalized observation</p><h4>Light curve</h4></div><div className="chart-actions"><span className="section-note">{curve?.points.length ?? 0} plotted points</span><button className={`transit-toggle ${transitOpen ? "active" : ""}`} type="button" aria-pressed={transitOpen} aria-label={transitOpen ? "Hide transit replay" : "See the curve with transit replay"} onClick={() => { setTransitOpen((current) => !current); setTransitProgress(transitOpen ? null : 0); }}><span className="planet-toggle-glyph" aria-hidden="true"><i /></span>See the curve</button></div></div><LightCurveChart points={curve?.points ?? []} signalFeatures={features} emptyMessage={emptyCurveMessage} transitProgress={transitOpen ? transitProgress : null} transitOverlay={transitOpen ? <TransitSimulation points={curve?.points ?? []} signalFeatures={features} onFrameChange={handleTransitFrameChange} /> : null} /></div>
           <div className="modal-section"><div className="section-heading"><div><p className="eyebrow">Interpretable evidence</p><h4>Assessment metrics</h4></div></div><div className="detail-metrics">{displayMetrics.map(([label, value]) => <Metric key={label} label={label} value={value} />)}</div></div>
@@ -915,7 +1075,7 @@ function CandidateModal({ candidate, curve, history, replaySequence, onClose }: 
           <div className="detail-card"><p className="eyebrow">Current assessment</p><dl className="detail-list"><div><dt>Overall rank</dt><dd>#{candidate.rank_overall ?? "—"}</dd></div><div><dt>Stage rank</dt><dd>#{candidate.rank_stage ?? "—"}</dd></div><div><dt>Last evaluation</dt><dd>{formatDate(candidate.last_evaluated_at)}</dd></div><div><dt>Data sufficiency</dt><dd>{candidate.evaluation?.data_sufficiency ?? "—"}</dd></div><div><dt>Sector</dt><dd>{candidate.target?.sector ?? "—"}</dd></div></dl><div className="next-action"><span>Next evidence</span><p>{candidate.next_action}</p></div></div>
           <div className="detail-card"><p className="eyebrow">Pipeline history</p><div className="timeline">{visibleHistory.length ? visibleHistory.map((event) => <div className="timeline-event" key={`${event.sequence_number}-${event.event_type}`}><span className="timeline-dot" /><div><strong>{event.event_type.replaceAll("_", " ")}</strong><span>{formatDate(event.occurred_at)}</span></div></div>) : <p className="muted-copy">No pipeline events recorded at this replay position.</p>}</div></div>
         </aside>
-      </div>
+      </div>}
       <footer className="modal-footer"><span>Coordinates: {candidate.target?.ra_deg?.toFixed(4) ?? "—"}°, {candidate.target?.dec_deg?.toFixed(4) ?? "—"}°</span><span>Evidence is provisional · not scientific confirmation</span></footer>
     </section>
   </div>;
@@ -1503,6 +1663,18 @@ export default function HomePage() {
     return request;
   }, []);
 
+  const fetchPublishedRanking = useCallback(async (query: string) => {
+    let response: RankingResponse | null = null;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      response = await fetchRanking(query);
+      if (response.read_state !== "publication_busy" || response.served_from_cache) return response;
+      if (attempt < 5) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 900));
+      }
+    }
+    return response as RankingResponse;
+  }, [fetchRanking]);
+
   const loadDashboard = useCallback(async () => {
     const requestId = dashboardRequestRef.current + 1;
     dashboardRequestRef.current = requestId;
@@ -1525,7 +1697,7 @@ export default function HomePage() {
     if (cachedRanking) setRanking(cachedRanking);
     setError(null);
     try {
-      const nextRanking = await fetchRanking(query.toString());
+      const nextRanking = await fetchPublishedRanking(query.toString());
       if (requestId !== dashboardRequestRef.current) return;
       if (nextRanking.read_state === "publication_busy" && !nextRanking.served_from_cache) {
         setWaitingForPublishedState(true);
@@ -1543,7 +1715,7 @@ export default function HomePage() {
     } finally {
       if (requestId === dashboardRequestRef.current) setLoading(false);
     }
-  }, [activeTab, fetchRanking, rankingControls, rankingPage]);
+  }, [activeTab, fetchPublishedRanking, rankingControls, rankingPage]);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -1563,7 +1735,7 @@ export default function HomePage() {
         const cachedAt = rankingCacheAtRef.current.get(query) ?? 0;
         if (Date.now() - cachedAt < 30_000) continue;
         try {
-          const nextRanking = await fetchRanking(query);
+          const nextRanking = await fetchPublishedRanking(query);
           rankingCacheRef.current.set(query, nextRanking);
           rankingCacheAtRef.current.set(query, Date.now());
           persistRanking(query, nextRanking);
@@ -1575,7 +1747,7 @@ export default function HomePage() {
     } finally {
       stagePrefetchInFlightRef.current = false;
     }
-  }, [fetchRanking]);
+  }, [fetchPublishedRanking]);
 
   useEffect(() => { void loadDashboard(); }, [loadDashboard]);
 

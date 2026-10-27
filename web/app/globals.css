@@ -344,9 +344,58 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .evidence-chip { background: rgba(118, 228, 237, 0.07); border: 1px solid rgba(118, 228, 237, 0.18); border-radius: 999px; color: var(--muted); font-size: 10px; padding: 5px 9px; }
 .evidence-chip strong { color: var(--cyan); margin-left: 5px; }
 .replay-chip { background: rgba(168, 148, 255, 0.1); border: 1px solid rgba(168, 148, 255, 0.26); border-radius: 999px; color: var(--purple); font-size: 10px; padding: 5px 9px; }
+.modal-tabs { align-items: center; border-bottom: 1px solid var(--border); display: flex; gap: 5px; padding: 0 28px; }
+.modal-tab { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted); cursor: pointer; font-size: 11px; font-weight: 700; padding: 13px 10px 11px; }
+.modal-tab:hover, .modal-tab.active { border-bottom-color: var(--cyan); color: var(--text); }
+.modal-tab span { background: rgba(118, 228, 237, 0.1); border-radius: 999px; color: var(--cyan); font-size: 9px; margin-left: 5px; padding: 2px 6px; }
 .modal-content-grid { display: grid; gap: 18px; grid-template-columns: minmax(0, 1.6fr) minmax(260px, 0.8fr); padding: 23px 28px; }
 .modal-main-column, .modal-side-column { display: flex; flex-direction: column; gap: 18px; }
 .modal-section, .detail-card { background: rgba(15, 23, 39, 0.62); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+.assessment-trail-content { display: flex; flex-direction: column; gap: 18px; padding: 23px 28px 28px; }
+.trail-intro { align-items: flex-start; background: linear-gradient(135deg, rgba(118, 228, 237, 0.08), rgba(168, 148, 255, 0.05)); border: 1px solid rgba(118, 228, 237, 0.18); border-radius: 12px; display: flex; gap: 18px; justify-content: space-between; padding: 17px 18px; }
+.trail-intro h4 { margin-bottom: 7px; }
+.trail-intro p:not(.eyebrow) { color: var(--muted); font-size: 11px; line-height: 1.55; margin: 0; max-width: 720px; }
+.trail-event-count { color: var(--cyan); flex: 0 0 auto; font-size: 10px; padding-top: 2px; white-space: nowrap; }
+.trail-stage-grid { display: grid; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.trail-stage-card { background: rgba(15, 23, 39, 0.62); border: 1px solid var(--border); border-radius: 12px; min-width: 0; padding: 14px; }
+.trail-stage-card.complete { border-color: rgba(118, 228, 237, 0.28); }
+.trail-stage-card.pending { opacity: 0.76; }
+.trail-stage-heading { align-items: center; display: flex; gap: 9px; margin-bottom: 13px; }
+.trail-stage-heading .stage-number { color: var(--cyan); font-size: 10px; }
+.trail-stage-heading div { display: flex; flex-direction: column; gap: 3px; }
+.trail-stage-heading strong { font-size: 12px; }
+.trail-stage-heading small { color: var(--muted); font-size: 9px; }
+.trail-stage-facts { margin: 0; }
+.trail-stage-facts div { border-bottom: 1px solid rgba(146, 169, 205, 0.09); display: flex; flex-direction: column; gap: 4px; padding: 8px 0; }
+.trail-stage-facts div:last-child { border-bottom: 0; }
+.trail-stage-facts dt { color: var(--faint); font-size: 9px; }
+.trail-stage-facts dd { color: var(--text); font-size: 10px; margin: 0; }
+.trail-stage-result { border-left: 2px solid var(--cyan); margin-top: 11px; padding-left: 9px; }
+.trail-stage-result > span { color: var(--faint); display: block; font-size: 9px; margin-bottom: 6px; }
+.trail-fact-list, .assessment-event-facts { display: flex; flex-wrap: wrap; gap: 5px; }
+.trail-fact-list span, .assessment-event-facts span { background: rgba(118, 228, 237, 0.07); border: 1px solid rgba(118, 228, 237, 0.14); border-radius: 5px; color: var(--muted); font-size: 9px; padding: 4px 5px; }
+.trail-stage-empty { color: var(--faint); font-size: 10px; line-height: 1.45; margin: 12px 0 0; }
+.assessment-event-section { padding: 18px; }
+.assessment-event-list { display: flex; flex-direction: column; gap: 0; }
+.assessment-event { display: flex; gap: 11px; padding: 13px 0; position: relative; }
+.assessment-event:not(:last-child)::before { background: rgba(118, 228, 237, 0.18); bottom: -1px; content: ""; left: 3px; position: absolute; top: 29px; width: 1px; }
+.assessment-event-dot { background: var(--cyan); border-radius: 50%; box-shadow: 0 0 8px rgba(118, 228, 237, 0.52); flex: 0 0 auto; height: 7px; margin-top: 5px; position: relative; width: 7px; z-index: 1; }
+.assessment-event-dot.promising { background: var(--green); box-shadow: 0 0 8px rgba(116, 214, 172, 0.55); }
+.assessment-event-dot.needs-more-data { background: var(--blue); box-shadow: 0 0 8px rgba(118, 168, 255, 0.55); }
+.assessment-event-dot.inconclusive { background: var(--purple); box-shadow: 0 0 8px rgba(168, 148, 255, 0.55); }
+.assessment-event-dot.known-match { background: var(--gold); box-shadow: 0 0 8px rgba(239, 190, 93, 0.55); }
+.assessment-event-dot.neutral { background: var(--muted); box-shadow: none; }
+.assessment-event-body { flex: 1; min-width: 0; }
+.assessment-event-header { align-items: flex-start; display: flex; gap: 14px; justify-content: space-between; }
+.assessment-event-header div { display: flex; flex-direction: column; gap: 3px; }
+.assessment-event-header strong { color: var(--text); font-size: 11px; }
+.assessment-event-header span, .assessment-event-header small, .assessment-event-run { color: var(--faint); font-size: 9px; }
+.assessment-event-header small { white-space: nowrap; }
+.assessment-event-body > p { color: var(--muted); font-size: 10px; line-height: 1.5; margin: 7px 0; }
+.assessment-event-run { display: block; margin-top: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trail-empty { border: 1px dashed rgba(146, 169, 205, 0.2); border-radius: 8px; display: flex; flex-direction: column; gap: 6px; padding: 18px; }
+.trail-empty strong { font-size: 11px; }
+.trail-empty span { color: var(--muted); font-size: 10px; }
 .section-heading { align-items: flex-start; display: flex; justify-content: space-between; margin-bottom: 14px; }
 .section-heading h4 { margin-bottom: 0; }
 .chart-actions { align-items: center; display: flex; gap: 8px; }
@@ -684,6 +733,9 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
   .table-wrap { overflow-x: auto; }
   .ranking-table { min-width: 760px; }
   .modal-content-grid { grid-template-columns: 1fr; }
+  .trail-stage-grid { grid-template-columns: 1fr; }
+  .trail-intro { flex-direction: column; gap: 9px; }
+  .trail-event-count { padding-top: 0; }
   .info-modal-steps { grid-template-columns: 1fr; }
   .explainer-origin { align-items: flex-start; flex-direction: column; gap: 13px; }
   .explainer-source-links { align-self: stretch; flex-direction: row; flex-wrap: wrap; justify-content: flex-start; gap: 10px 18px; }
@@ -716,7 +768,8 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
   .mode-button { flex: 1; }
   .modal-backdrop { padding: 10px; }
   .candidate-modal { max-height: calc(100vh - 20px); }
-  .modal-header, .modal-content-grid, .modal-footer { padding-left: 17px; padding-right: 17px; }
+  .modal-header, .modal-content-grid, .assessment-trail-content, .modal-footer { padding-left: 17px; padding-right: 17px; }
+  .modal-tabs { padding-left: 17px; padding-right: 17px; }
   .detail-metrics { grid-template-columns: repeat(2, 1fr); }
   .modal-footer { align-items: flex-start; flex-direction: column; }
   .explainer-visual-readout { border-radius: 8px; flex-wrap: wrap; left: 10px; right: 10px; }

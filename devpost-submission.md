@@ -6,6 +6,66 @@ TransitScope: Exoplanet Evidence Observatory
 
 A replayable live observatory that screens public TESS light curves for transit-like signals and shows how candidates gain—or lose—evidence through increasingly rigorous tests.
 
+## Project Story
+
+## Inspiration
+
+Earlier in October, reports showed that AI-assisted analysis had helped an amateur astronomer surface a possible hidden exoplanet. Those stories made the idea feel both exciting and approachable: astronomy discoveries do not have to begin inside a polished institutional instrument; they can begin with a careful question asked of public data. The reporting that sparked this project includes [Scientific American's coverage](https://www.scientificamerican.com/article/amateur-astronomer-harnesses-ai-to-find-a-possible-hidden-exoplanet/) and [Gizmodo's coverage](https://gizmodo.com/did-claude-help-an-amateur-astronomer-discover-a-new-planet-2000824393).
+
+The project began as a much broader idea about finding unusual behavior in space. The Learn Skill Pack helped narrow that idea into one concrete, demonstrable workflow: screen stellar brightness measurements for transit-like signals, then make the evidence-building process visible enough for a student or curious observer to understand.
+
+## What it does
+
+TransitScope is a live and replayable assessment observatory for potential exoplanet signals. It samples public TESS observations, looks for periodic brightness dips that could be caused by an orbiting object, and ranks candidates by the strength and consistency of the available evidence.
+
+Candidates move through three increasingly demanding stages:
+
+1. **Stage 1** screens light curves for periodic, transit-like patterns.
+2. **Stage 2** checks whether the pattern repeats across a longer chronological history.
+3. **Stage 3** tests whether a model trained on earlier observations can predict a later observation.
+
+The dashboard shows the overall and stage-specific rankings, candidate statuses, activity, metrics, light curves, pipeline history, and saved replay events. It is intentionally framed as an assessment of potential planets—not scientific confirmation. A candidate can remain promising, need more data, become inconclusive, or be identified as a known object and removed from the active rankings.
+
+## How we built it
+
+The data path starts with official MAST/TESS observations and uses the NASA Exoplanet Archive for conservative known-object cross-reference. A Dockerized worker owns ingestion and model execution. It writes normalized observations, candidate assessments, ranking snapshots, and pipeline events to DuckDB. A read-only FastAPI layer publishes consistent state to a Next.js/TypeScript dashboard.
+
+The model strategy favors evidence that can be explained. Stage 1 uses a Box Least Squares search and combines period, depth, signal strength, event count, consistency, coverage, and data quality into an interpretable evidence score. Stage 2 reuses the detected signal while checking longer-history repeatability. Stage 3 uses a CPU-capable scikit-learn logistic model over transit-phase features, compares it with a transparent phase-window baseline, and evaluates on a later chronological holdout. This gives the interface concrete measurements to show instead of presenting an unexplained “planet probability.”
+
+The observatory also persists its published rankings and events. Replay reads those saved states rather than rerunning expensive models, so a visitor can inspect how candidates entered, moved through, or left the pipeline. Codex and the Devpost Learn Skill Pack were used to interview the idea, create `scope.md`, `prd.md`, and `spec.md` before implementation, execute a verification-based checklist, and keep the build grounded in tests and official data probes.
+
+## Challenges we ran into
+
+The first challenge was scope. A request to search 126,000 targets sounds simple until data availability, archive latency, long historical windows, CPU limits, and staged compute are made explicit. We had to distinguish a real public-data workflow from an unrealistic promise of instant discovery.
+
+The second challenge was designing the pipeline as a fair investigation rather than a one-shot leaderboard. A high Stage 1 score is only a reason to investigate. Candidates need repeatability, chronological holdouts, and enough coverage before their status can change. Missing data must remain “Needs More Data,” not be silently treated as negative evidence.
+
+The third challenge was making live behavior inspectable. Worker publication, queue transitions, ranking changes, and replay all need durable state. During development, archive schema differences and DuckDB publication/read timing exposed how easily a dashboard can show stale or partial information. We added bounded reads, publication checkpoints, cached last-published state, and explicit loading, unavailable, and empty states so the interface is honest about what has and has not happened.
+
+Finally, we had to communicate uncertainty without making the product feel empty. The answer was to show the evidence, the next test, the candidate history, and the changes in rank—not to overstate a provisional signal as a confirmed planet.
+
+## Accomplishments that we're proud of
+
+- We turned a broad space-anomaly idea into a focused end-to-end observatory with a clear scientific question.
+- The current build uses real MAST/TESS-derived observations, provenance, checksums, Docker services, tests, and a public dashboard deployment.
+- The three-stage workflow is visible in the product instead of hidden behind a single score.
+- Replay is deterministic and read-only: it shows saved ranking and pipeline transitions without rerunning the models.
+- Candidate details combine a light curve, interpretable metrics, current activity, next evidence, and pipeline history in one investigation view.
+- The repository contains the planning artifacts that shaped the build, including the required `scope.md`, `prd.md`, and `spec.md` files.
+- We built the product to be useful even when no new planet is found. The changing quality and rarity of evidence is the experience.
+
+## What we learned
+
+We learned that AI-assisted development becomes much more useful when the agent has a durable plan, explicit constraints, and verification checkpoints. The most important improvements did not come from asking for more code; they came from clarifying what a candidate represents, what each stage is allowed to conclude, and which state must be saved for replay.
+
+We also learned that an evidence score is not a probability of a planet. It is a prioritization signal whose meaning depends on coverage, repeatability, model evaluation, and comparison with other candidates. Archive data is not the same thing as a live stream, and a “live” product must explain refresh and publication timing. Finally, observability is part of the model: queue health, data sufficiency, model metrics, and publication state are necessary to understand whether the pipeline is making progress.
+
+## What's next for TransitScope
+
+The next step is to make the production pipeline more scalable and scientifically useful: move durable state to managed storage and queues, improve throughput across the target universe, expand catalog cross-reference coverage for final Prime Candidates, and calibrate the stage metrics against labeled transit and false-positive examples.
+
+We also want to deepen the educational layer. The existing explainer can show how a passing object dims a star and how that pattern becomes evidence; future versions can add clearer comparisons between real transit signals, instrumental artifacts, and known objects. The long-term goal is a public observatory where visitors can follow a candidate from first suspicious dip to a well-supported research lead—or watch the evidence responsibly rule it out.
+
 ## Problem
 
 Public astronomy data is abundant, but the path from a suspicious brightness dip to a credible exoplanet candidate is difficult to follow. Many tools show a light curve or a catalog record without making the investigation legible: what was tested, what evidence changed the rank, why a candidate needs more data, or why it was removed.
