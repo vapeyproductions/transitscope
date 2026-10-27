@@ -28,6 +28,7 @@ RANKING_SORTS = {"rank", "last_assessed_desc", "last_assessed_asc"}
 _READ_CACHE_LOCK = threading.Lock()
 _RANKING_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _STATUS_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
+_MONITORING_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _READ_CACHE_LIMIT = 32
 
 
@@ -1206,10 +1207,18 @@ class ReadOnlyStore:
                 "recent_events": [],
             },
         }
-        connection = self.connect()
+        cache_key = str(self.database.resolve())
+        connection = self.connect(timeout_seconds=0.75)
         if connection is None:
+            cached = _cache_get(_MONITORING_RESPONSE_CACHE, cache_key)
+            if cached is not None:
+                cached["worker"] = worker
+                cached["served_from_cache"] = True
+                cached["read_state"] = "publication_busy"
+                return cached
+            empty["served_from_cache"] = False
+            empty["read_state"] = "publication_busy"
             return empty
-
         try:
             version = self.latest_version(connection)
             try:
@@ -1374,7 +1383,7 @@ class ReadOnlyStore:
             sampling = self._monitoring_sampling(connection, configured_universe)
             data_health = self._monitoring_data_health(connection)
             cycle_activity = self._monitoring_cycle_activity(connection, stage_data)
-            return {
+            response = {
                 "generated_at": datetime.utcnow().isoformat() + "Z",
                 "data_version": version,
                 "control": control_state,
@@ -1401,6 +1410,9 @@ class ReadOnlyStore:
                 "cycle_activity": cycle_activity,
                 "data_health": data_health,
             }
+            response["served_from_cache"] = False
+            _cache_set(_MONITORING_RESPONSE_CACHE, cache_key, response)
+            return response
         finally:
             connection.close()
 
