@@ -1810,14 +1810,15 @@ export default function HomePage() {
         fetchJson<{ candidate: CandidateDetail }>(`/api/candidates/${candidateId}`),
         fetchJson<HistoryResponse>(`/api/candidates/${candidateId}/history`),
       ]);
-      const nextCurve = await fetchJson<LightCurveResponse>(`/api/candidates/${candidateId}/light-curve`).catch(() => ({ points: [] }));
       setCandidate(detail.candidate);
-      setCurve(nextCurve);
+      setCurve(null);
       setHistory(nextHistory);
+      setModalLoading(false);
+      const nextCurve = await fetchJson<LightCurveResponse>(`/api/candidates/${candidateId}/light-curve`).catch(() => ({ points: [] }));
+      setCurve(nextCurve);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Candidate details are unavailable.");
       closeCandidate();
-    } finally {
       setModalLoading(false);
     }
   }, [closeCandidate]);
