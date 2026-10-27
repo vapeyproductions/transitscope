@@ -1624,6 +1624,7 @@ export default function HomePage() {
   const [status, setStatus] = useState<DashboardStatus | null>(null);
   const [ranking, setRanking] = useState<RankingResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [waitingForPublishedState, setWaitingForPublishedState] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
