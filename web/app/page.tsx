@@ -1418,8 +1418,9 @@ export function MonitoringPanel({ refreshKey }: { refreshKey: number }) {
   const totalEvaluated = pipelinePulse.reduce((sum, stage) => sum + stage.throughput.evaluated, 0);
   const totalNeedsMoreData = pipelinePulse.reduce((sum, stage) => sum + stage.throughput.needs_more_data, 0);
   const totalHandoffs = pipelinePulse.reduce((sum, stage) => sum + stage.throughput.handoffs, 0);
-  const latestStage2Intake = overview.cycle_activity.runs[overview.cycle_activity.runs.length - 1]?.stage2_intake;
-  const latestStage2Reassessment = overview.cycle_activity.runs[overview.cycle_activity.runs.length - 1]?.stage2_reassessment;
+  const latestCycle = overview?.cycle_activity.runs.at(-1);
+  const latestStage2Intake = latestCycle?.stage2_intake;
+  const latestStage2Reassessment = latestCycle?.stage2_reassessment;
   const stage2Gate = latestStage2Reassessment?.waterfall_gate;
   const stage2PromisingFirst = stage2Gate?.enforced === false;
 
