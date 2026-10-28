@@ -15,8 +15,10 @@ async function proxy(request: NextRequest, { params }: RouteContext) {
   }
 
   const { path } = await params;
-  const isOpsEndpoint = path[0] === "monitoring" && (path[1] === "overview" || path[1] === "control" || path[1] === "migrations");
-  if (isOpsEndpoint) {
+  const method = request.method.toUpperCase();
+  const isMonitoringEndpoint = path[0] === "monitoring" && (path[1] === "overview" || path[1] === "control" || path[1] === "migrations");
+  const isPublicMonitoringRead = isMonitoringEndpoint && path[1] === "overview" && (method === "GET" || method === "HEAD");
+  if (isMonitoringEndpoint && !isPublicMonitoringRead) {
     const session = (await cookies()).get(OPS_SESSION_COOKIE)?.value;
     if (!isOpsSessionToken(session)) {
       return NextResponse.json({ detail: "ML Ops access requires an authenticated session." }, { status: 401 });
@@ -28,11 +30,10 @@ async function proxy(request: NextRequest, { params }: RouteContext) {
   const contentType = request.headers.get("content-type");
   if (accept) headers.set("accept", accept);
   if (contentType) headers.set("content-type", contentType);
-  if (isOpsEndpoint) {
+  if (isMonitoringEndpoint) {
     headers.set("x-transitscope-ops-token", process.env.OPS_CONTROL_TOKEN ?? process.env.OPS_PASSWORD ?? "monitor");
   }
 
-  const method = request.method.toUpperCase();
   const body = method === "GET" || method === "HEAD" ? undefined : await request.arrayBuffer();
   const response = await fetch(target, {
     method,
