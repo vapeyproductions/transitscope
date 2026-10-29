@@ -53,7 +53,8 @@ button:focus-visible {
 .topbar, .stage-heading, .panel-header, .footer-note { align-items: center; display: flex; justify-content: space-between; }
 .topbar { border-bottom: 1px solid var(--border); gap: 20px; padding-bottom: 24px; }
 .brand-lockup { align-items: center; display: flex; gap: 14px; }
-.brand-mark { align-items: center; background: linear-gradient(135deg, var(--cyan), var(--blue)); border-radius: 12px; box-shadow: 0 0 28px rgba(118, 228, 237, 0.22); color: #07101c; display: flex; font-size: 24px; height: 44px; justify-content: center; width: 44px; }
+.brand-mark { align-items: center; background: linear-gradient(135deg, var(--cyan), var(--blue)); border: 0; border-radius: 12px; box-shadow: 0 0 28px rgba(118, 228, 237, 0.22); color: #07101c; cursor: pointer; display: flex; font-size: 24px; height: 44px; justify-content: center; padding: 0; transition: 160ms ease; width: 44px; }
+.brand-mark:hover { box-shadow: 0 0 34px rgba(118, 228, 237, 0.38); transform: translateY(-1px); }
 .brand-title { align-items: center; display: flex; gap: 11px; }
 .brand-title h1 { margin: 0; }
 .about-trigger { align-items: center; background: transparent; border: 1px solid var(--border-bright); border-radius: 999px; color: var(--cyan); cursor: pointer; display: inline-flex; font-size: 18px; height: 29px; justify-content: center; padding: 0; transition: 160ms ease; width: 29px; }
@@ -234,6 +235,57 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .performance-chip-empty strong, .performance-chip-empty > span { color: var(--faint); }
 .match-proof strong { color: var(--cyan); }
 .identified-footer { align-items: center; border-top: 1px solid var(--border); color: var(--faint); display: flex; font-size: 10px; gap: 8px; padding: 15px 22px; }
+.sky-panel { overflow: hidden; }
+.sky-header { align-items: flex-end; border-bottom: 1px solid var(--border); display: flex; gap: 26px; justify-content: space-between; padding: 25px 28px 23px; }
+.sky-header h3 { margin-bottom: 8px; }
+.sky-header p:not(.eyebrow) { color: var(--muted); font-size: 13px; line-height: 1.55; margin-bottom: 0; max-width: 720px; }
+.sky-summary { align-items: flex-end; display: flex; flex: 0 0 auto; flex-direction: column; gap: 4px; }
+.sky-summary strong { color: var(--cyan); font-size: 32px; letter-spacing: -0.05em; }
+.sky-summary span { color: var(--faint); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
+.sky-summary small { color: var(--muted); font-size: 10px; text-align: right; }
+.sky-toolbar { align-items: center; border-bottom: 1px solid rgba(146, 169, 205, 0.1); display: flex; gap: 18px; justify-content: space-between; padding: 14px 28px; }
+.sky-color-control { align-items: center; color: var(--muted); display: inline-flex; font-size: 10px; gap: 9px; }
+.sky-color-control select { background: #0b1424; border: 1px solid var(--border-bright); border-radius: 6px; color: var(--text); font-size: 10px; padding: 7px 9px; }
+.sky-legend { align-items: center; color: var(--muted); display: flex; flex-wrap: wrap; font-size: 9px; gap: 12px; justify-content: flex-end; }
+.sky-legend span { align-items: center; display: inline-flex; gap: 5px; }
+.sky-legend-dot { border-radius: 50%; display: inline-block; height: 8px; width: 8px; }
+.sky-map-shell { background: rgba(3, 8, 17, 0.45); border-bottom: 1px solid rgba(146, 169, 205, 0.1); padding: 17px 28px 19px; }
+.sky-map { background: radial-gradient(ellipse at 50% 50%, rgba(50, 93, 154, 0.11), transparent 62%), #07101d; border: 1px solid rgba(118, 228, 237, 0.18); border-radius: 10px; height: clamp(300px, 44vw, 560px); overflow: hidden; position: relative; }
+.sky-map-grid-lines { inset: 0; pointer-events: none; position: absolute; }
+.sky-map-grid-lines span, .sky-map-grid-lines i { border-color: rgba(146, 169, 205, 0.12); border-style: dashed; display: block; position: absolute; }
+.sky-map-grid-lines span { border-left-width: 1px; border-top: 0; border-bottom: 0; border-right: 0; bottom: 0; top: 0; width: 0; }
+.sky-map-grid-lines span:nth-child(1) { left: 20%; }
+.sky-map-grid-lines span:nth-child(2) { left: 40%; }
+.sky-map-grid-lines span:nth-child(3) { left: 60%; }
+.sky-map-grid-lines span:nth-child(4) { left: 80%; }
+.sky-map-grid-lines i { border-left: 0; border-right: 0; border-top-width: 1px; border-bottom: 0; height: 0; left: 0; right: 0; }
+.sky-map-grid-lines i:nth-of-type(1) { top: 25%; }
+.sky-map-grid-lines i:nth-of-type(2) { top: 50%; border-top-style: solid; border-top-color: rgba(118, 228, 237, 0.22); }
+.sky-map-grid-lines i:nth-of-type(3) { top: 75%; }
+.sky-map-axis { color: var(--faint); display: flex; font-size: 8px; justify-content: space-between; letter-spacing: 0.04em; }
+.sky-map-axis-top { margin: 0 2px 8px; }
+.sky-map-axis-bottom { margin: 8px 2px 0; }
+.sky-declination-labels { bottom: 5px; color: var(--faint); display: flex; flex-direction: column; font-size: 8px; justify-content: space-between; left: 7px; pointer-events: none; position: absolute; top: 5px; }
+.sky-point { background: transparent; border: 0; border-radius: 50%; cursor: pointer; height: 13px; padding: 3px; position: absolute; transform: translate(-50%, -50%); width: 13px; z-index: 2; }
+.sky-point:hover, .sky-point:focus-visible { background: rgba(118, 228, 237, 0.16); outline: 1px solid rgba(118, 228, 237, 0.55); outline-offset: 2px; z-index: 3; }
+.sky-point-unlinked { cursor: default; height: 7px; padding: 0; width: 7px; z-index: 1; }
+.sky-point-dot { background: var(--faint); border: 1px solid rgba(237, 244, 255, 0.18); border-radius: 50%; box-shadow: 0 0 6px rgba(146, 169, 205, 0.35); display: block; height: 7px; width: 7px; }
+.sky-point .sky-point-dot { height: 7px; width: 7px; }
+.sky-promising, .sky-stage3 { background: var(--green); box-shadow: 0 0 9px rgba(116, 214, 172, 0.72); }
+.sky-needs-more-data, .sky-stage2 { background: var(--blue); box-shadow: 0 0 8px rgba(119, 168, 255, 0.65); }
+.sky-inconclusive { background: var(--gold); box-shadow: 0 0 8px rgba(239, 190, 93, 0.62); }
+.sky-known-match { background: var(--purple); box-shadow: 0 0 8px rgba(168, 148, 255, 0.68); }
+.sky-explored, .sky-unclassified { background: var(--faint); box-shadow: 0 0 5px rgba(146, 169, 205, 0.3); }
+.sky-stage1 { background: var(--cyan); box-shadow: 0 0 8px rgba(118, 228, 237, 0.62); }
+.sky-map-empty { color: var(--muted); font-size: 11px; left: 50%; position: absolute; top: 50%; transform: translate(-50%, -50%); }
+.sky-map-note { align-items: center; color: var(--faint); display: flex; font-size: 10px; gap: 8px; padding: 13px 28px 0; }
+.sky-sector-section { padding: 22px 28px 0; }
+.sky-sector-grid { display: grid; gap: 8px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.sky-sector-card { background: rgba(15, 23, 39, 0.62); border: 1px solid rgba(146, 169, 205, 0.14); border-radius: 8px; padding: 10px; }
+.sky-sector-card > div { align-items: center; display: flex; justify-content: space-between; }
+.sky-sector-card strong { font-size: 10px; }
+.sky-sector-card > div span, .sky-sector-card small { color: var(--muted); font-size: 9px; }
+.sky-sector-card small { display: block; line-height: 1.4; margin-top: 8px; }
 .error-state { align-items: center; display: flex; flex-direction: column; justify-content: center; min-height: 270px; padding: 34px 22px; text-align: center; }
 .error-state h4 { margin: 12px 0 7px; }
 .error-state p, .muted-copy { color: var(--muted); font-size: 13px; line-height: 1.6; max-width: 480px; }
@@ -776,6 +828,12 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
   .topbar, .stage-heading { align-items: flex-start; flex-direction: column; }
   .stage-actions { margin-left: 0; }
   .identified-header { align-items: flex-start; flex-direction: column; }
+  .sky-header, .sky-toolbar { align-items: flex-start; flex-direction: column; }
+  .sky-summary { align-items: flex-start; }
+  .sky-summary small { text-align: left; }
+  .sky-legend { justify-content: flex-start; }
+  .sky-map-shell, .sky-map-note, .sky-sector-section { padding-left: 17px; padding-right: 17px; }
+  .sky-sector-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .operations-header { flex-direction: column; }
   .operations-gate { flex-basis: auto; width: 100%; }
   .operations-control { align-items: stretch; flex-basis: auto; width: 100%; }

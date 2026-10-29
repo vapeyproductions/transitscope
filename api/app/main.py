@@ -260,6 +260,13 @@ def identified(limit: int = Query(100, ge=1, le=500)) -> dict:
     return ReadOnlyStore().identified(limit)
 
 
+@app.get("/api/sky")
+def sky(limit: int = Query(12000, ge=1, le=20000)) -> dict:
+    """Return the explored-target sky projection for the public observatory map."""
+
+    return ReadOnlyStore().sky(limit)
+
+
 @app.get("/api/replay/{view}/meta")
 def replay_meta(view: str) -> dict:
     try:

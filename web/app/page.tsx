@@ -220,6 +220,48 @@ type IdentifiedResponse = {
   rows: IdentifiedRow[];
 };
 
+type SkyPoint = {
+  target_id: string;
+  provider_target_id: string;
+  ra_deg: number | null;
+  dec_deg: number | null;
+  sector: number | null;
+  manifest_status: string;
+  candidate_id: string | null;
+  stage: AssessmentStage | null;
+  status: CandidateStatus | "Explored";
+  overall_score: number | null;
+  stage_score: number | null;
+  rank_overall: number | null;
+  rank_stage: number | null;
+  last_evaluated_at: string | null;
+  active: boolean | null;
+  signal_group_id: string | null;
+  signal_resolution: string | null;
+  promotion_eligible: boolean | null;
+  signal_count: number;
+};
+
+type SkySector = {
+  sector: number | null;
+  explored_count: number;
+  candidate_count: number;
+  status_counts: Record<string, number>;
+};
+
+type SkyResponse = {
+  generated_at: string;
+  data_version: number | null;
+  total_count: number;
+  returned_count: number;
+  truncated: boolean;
+  explored_count: number;
+  candidate_count: number;
+  status_counts: Record<string, number>;
+  sectors: SkySector[];
+  points: SkyPoint[];
+};
+
 type MonitoringStage = {
   stage: AssessmentStage;
   threshold: number | null;
@@ -1112,6 +1154,88 @@ function IdentifiedPanel({ onOpenCandidate, refreshKey }: { onOpenCandidate: (ca
   </section>;
 }
 
+type SkyColorMode = "status" | "stage";
+
+function skyStatusClass(status: string): string {
+  if (status === "Promising") return "promising";
+  if (status === "Needs More Data") return "needs-more-data";
+  if (status === "Inconclusive") return "inconclusive";
+  if (status === "Known Match") return "known-match";
+  return "explored";
+}
+
+function skyStageClass(stage: string | null): string {
+  if (stage === "stage1") return "stage1";
+  if (stage === "stage2") return "stage2";
+  if (stage === "stage3") return "stage3";
+  return "unclassified";
+}
+
+function skyPointLabel(point: SkyPoint): string {
+  const location = point.ra_deg !== null && point.dec_deg !== null
+    ? `RA ${point.ra_deg.toFixed(2)}°, Dec ${point.dec_deg.toFixed(2)}°`
+    : "coordinates unavailable";
+  return `${point.candidate_id ? candidateDisplayLabel(point.target_id, point.candidate_id, undefined, null) : point.provider_target_id} · ${point.status} · ${location}`;
+}
+
+function SkyPanel({ onOpenCandidate, refreshKey }: { onOpenCandidate: (candidateId: string) => void; refreshKey: number }) {
+  const [response, setResponse] = useState<SkyResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [colorMode, setColorMode] = useState<SkyColorMode>("status");
+  const [pollKey, setPollKey] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    void fetchJson<SkyResponse>("/api/sky?limit=12000")
+      .then((nextResponse) => {
+        if (!cancelled) setResponse(nextResponse);
+      })
+      .catch((cause) => {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : "The sky projection is unavailable.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [pollKey, refreshKey]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") setPollKey((current) => current + 1);
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const plottedPoints = (response?.points ?? []).filter((point) => point.ra_deg !== null && point.dec_deg !== null);
+  const renderPoint = (point: SkyPoint) => {
+    if (point.ra_deg === null || point.dec_deg === null) return null;
+    const left = `${Math.max(0, Math.min(100, point.ra_deg / 360 * 100))}%`;
+    const top = `${Math.max(0, Math.min(100, (90 - point.dec_deg) / 180 * 100))}%`;
+    const colorClass = colorMode === "status" ? skyStatusClass(point.status) : skyStageClass(point.stage);
+    const label = skyPointLabel(point);
+    const dot = <span className={`sky-point-dot sky-${colorClass}`} aria-hidden="true" />;
+    if (!point.candidate_id) return <span className="sky-point sky-point-unlinked" key={point.target_id} style={{ left, top }} title={`${label} · no candidate signal recorded`}>{dot}</span>;
+    return <button className="sky-point" key={point.target_id} style={{ left, top }} type="button" onClick={() => onOpenCandidate(point.candidate_id as string)} aria-label={`Open candidate details for ${label}`} title={`${label} · click for candidate details`}>{dot}</button>;
+  };
+
+  const statusLegend = ["Promising", "Needs More Data", "Inconclusive", "Known Match", "Explored"];
+  const stageLegend = [{ label: "Stage 1", value: "stage1" }, { label: "Stage 2", value: "stage2" }, { label: "Stage 3", value: "stage3" }, { label: "Explored", value: "unclassified" }];
+
+  return <section className="sky-panel ranking-panel" aria-labelledby="sky-title">
+    <header className="sky-header"><div><p className="eyebrow accent">Explored sky · target coordinates</p><h3 id="sky-title">Sky map</h3><p>Every plotted point is an explored target with coordinates. Candidate-backed points open the same investigation modal as leaderboard rows.</p></div><div className="sky-summary"><strong>{response?.explored_count?.toLocaleString() ?? "—"}</strong><span>explored stars</span><small>{response?.sectors.length ?? 0} sectors · {response?.candidate_count?.toLocaleString() ?? "—"} candidate signals</small></div></header>
+    <div className="sky-toolbar"><label className="sky-color-control" htmlFor="sky-color-mode"><span>Color points by</span><select id="sky-color-mode" value={colorMode} onChange={(event) => setColorMode(event.target.value as SkyColorMode)}><option value="status">Candidate status</option><option value="stage">Assessment stage</option></select></label><div className="sky-legend" aria-label={`Sky map colors by ${colorMode}`}>{colorMode === "status" ? statusLegend.map((status) => <span key={status}><i className={`sky-legend-dot sky-${skyStatusClass(status)}`} />{status === "Needs More Data" ? "Needs data" : status}</span>) : stageLegend.map((stage) => <span key={stage.value}><i className={`sky-legend-dot sky-${stage.value}`} />{stage.label}</span>)}</div></div>
+    {error ? <div className="error-state" role="alert"><span className="status-dot muted" /><h4>Sky map unavailable</h4><p>{error}</p></div> : loading && !response ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Projecting explored targets.</h4><p>Reading persisted target coordinates and candidate statuses. No model is run for this view.</p></div> : <>
+      <div className="sky-map-shell"><div className="sky-map-axis sky-map-axis-top"><span>RA 0°</span><span>RA 90°</span><span>RA 180°</span><span>RA 270°</span><span>RA 360°</span></div><div className="sky-map" role="img" aria-label="Equirectangular map of explored target coordinates across the full sky"><div className="sky-map-grid-lines" aria-hidden="true"><span /><span /><span /><span /><i /><i /><i /></div><div className="sky-declination-labels" aria-hidden="true"><span>+90°</span><span>+45°</span><span>0°</span><span>−45°</span><span>−90°</span></div>{plottedPoints.map(renderPoint)}{!plottedPoints.length && <span className="sky-map-empty">No explored targets with coordinates yet</span>}</div><div className="sky-map-axis sky-map-axis-bottom"><span>North celestial pole</span><span>Celestial equator</span><span>South celestial pole</span></div></div>
+      <div className="sky-map-note"><span className="status-dot muted" /> The map uses a simple RA/Dec projection—not a physical image of the Milky Way. Points without a candidate signal remain neutral and are not clickable.</div>
+      <section className="sky-sector-section" aria-labelledby="sky-sector-title"><div className="section-heading"><div><p className="eyebrow">Sector coverage</p><h4 id="sky-sector-title">Explored sectors</h4></div><span className="section-note">{response?.truncated ? `Showing ${response.returned_count.toLocaleString()} of ${response.total_count.toLocaleString()} explored targets` : `${response?.total_count.toLocaleString() ?? 0} explored targets plotted`}</span></div>{response?.sectors.length ? <div className="sky-sector-grid">{response.sectors.map((sector) => <article className="sky-sector-card" key={sector.sector ?? "unknown"}><div><strong>{sector.sector === null ? "Unknown sector" : `Sector ${sector.sector}`}</strong><span>{sector.explored_count.toLocaleString()} stars</span></div><small>{sector.candidate_count.toLocaleString()} candidate-backed · {Object.entries(sector.status_counts).map(([status, count]) => `${count} ${status === "Needs More Data" ? "needs data" : status.toLowerCase()}`).join(" · ")}</small></article>)}</div> : <div className="ops-empty">No sector coordinates have been published yet.</div>}</section>
+    </>}
+    <footer className="identified-footer"><span className="status-dot muted" /> Sky status is a current projection of persisted candidate state. Click a colored candidate point to open its light curve and assessment trail.</footer>
+  </section>;
+}
+
 function monitoringStatusLabel(status: string): string {
   if (status === "Needs More Data") return "Needs data";
   if (status === "Known Match") return "Known";
@@ -1573,7 +1697,7 @@ function ExplainerVisual({ sceneIndex }: { sceneIndex: number }) {
   </div>;
 }
 
-function HowItWorksModal({ onClose }: { onClose: () => void }) {
+function HowItWorksModal({ onClose, onOpenSky }: { onClose: () => void; onOpenSky: () => void }) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const [sceneIndex, setSceneIndex] = useState(0);
   const [tourPlaying, setTourPlaying] = useState(true);
@@ -1607,7 +1731,7 @@ function HowItWorksModal({ onClose }: { onClose: () => void }) {
       </header>
       <div className="info-modal-content">
         <section className="explainer-origin"><div><p className="eyebrow accent">Why this idea matters</p><p className="explainer-origin-copy">Earlier in October, people used AI models to help surface a possible hidden exoplanet from public astronomy data. Read the reporting that inspired this observatory:</p></div><div className="explainer-source-links"><a href="https://www.scientificamerican.com/article/amateur-astronomer-harnesses-ai-to-find-a-possible-hidden-exoplanet/" target="_blank" rel="noreferrer">Scientific American <span>↗</span></a><a href="https://gizmodo.com/did-claude-help-an-amateur-astronomer-discover-a-new-planet-2000824393" target="_blank" rel="noreferrer">Gizmodo <span>↗</span></a></div></section>
-        <section className="explainer-tour" aria-live="polite"><div className="explainer-tour-heading"><div><p className="eyebrow">A signal becomes a discovery candidate</p><h4>{explainerScenes[sceneIndex].title}</h4></div><span className="explainer-tour-count">{sceneIndex + 1} / {explainerScenes.length}</span></div><ExplainerVisual sceneIndex={sceneIndex} /><div className="explainer-tour-copy"><p>{explainerScenes[sceneIndex].body}</p><div className="explainer-tour-controls"><div className="explainer-scene-buttons" role="tablist" aria-label="How it works tour steps">{explainerScenes.map((scene, index) => <button key={scene.kicker} className={`explainer-scene-button ${index === sceneIndex ? "active" : ""}`} type="button" role="tab" aria-selected={index === sceneIndex} onClick={() => { setSceneIndex(index); setTourPlaying(false); }}><span>{String(index + 1).padStart(2, "0")}</span>{scene.kicker.split(" · ")[1]}</button>)}</div><div className="explainer-tour-actions"><button className="button button-quiet" type="button" onClick={() => setTourPlaying((current) => !current)}>{tourPlaying ? "Pause tour" : "Play tour"}</button><button className="button button-outline" type="button" onClick={() => { setSceneIndex((current) => (current + 1) % explainerScenes.length); setTourPlaying(false); }}>Next scene →</button></div></div></div></section>
+        <section className="explainer-tour" aria-live="polite"><div className="explainer-tour-heading"><div><p className="eyebrow">A signal becomes a discovery candidate</p><h4>{explainerScenes[sceneIndex].title}</h4></div><span className="explainer-tour-count">{sceneIndex + 1} / {explainerScenes.length}</span></div><ExplainerVisual sceneIndex={sceneIndex} /><div className="explainer-tour-copy"><p>{explainerScenes[sceneIndex].body}</p><div className="explainer-tour-controls"><div className="explainer-scene-buttons" role="tablist" aria-label="How it works tour steps">{explainerScenes.map((scene, index) => <button key={scene.kicker} className={`explainer-scene-button ${index === sceneIndex ? "active" : ""}`} type="button" role="tab" aria-selected={index === sceneIndex} onClick={() => { setSceneIndex(index); setTourPlaying(false); }}><span>{String(index + 1).padStart(2, "0")}</span>{scene.kicker.split(" · ")[1]}</button>)}</div><div className="explainer-tour-actions"><button className="button button-quiet" type="button" onClick={() => setTourPlaying((current) => !current)}>{tourPlaying ? "Pause tour" : "Play tour"}</button><button className="button button-outline" type="button" onClick={() => { setSceneIndex((current) => (current + 1) % explainerScenes.length); setTourPlaying(false); }}>Next scene →</button><button className="button button-outline" type="button" onClick={onOpenSky}>Open sky map ↗</button></div></div></div></section>
       </div>
     </section>
   </div>;
@@ -1617,6 +1741,8 @@ export default function HomePage() {
   const [activeTab, setActiveTab] = useState<RankingView>("overall");
   const [identifiedOpen, setIdentifiedOpen] = useState(false);
   const [identifiedRefreshKey, setIdentifiedRefreshKey] = useState(0);
+  const [skyOpen, setSkyOpen] = useState(false);
+  const [skyRefreshKey, setSkyRefreshKey] = useState(0);
   const [howItWorksOpen, setHowItWorksOpen] = useState(false);
   const [status, setStatus] = useState<DashboardStatus | null>(null);
   const [ranking, setRanking] = useState<RankingResponse | null>(null);
@@ -1800,6 +1926,16 @@ export default function HomePage() {
     updateReplay(view, { active: false, playing: false });
   }, [updateReplay]);
 
+  const openSkyView = useCallback(() => {
+    closeCandidate();
+    exitReplay(activeTab);
+    setIdentifiedOpen(false);
+    setSkyOpen(true);
+    setPipelineStatusOpen(false);
+    setOpenColumnControl(null);
+    setHowItWorksOpen(false);
+  }, [activeTab, closeCandidate, exitReplay]);
+
   const openCandidate = useCallback(async (candidateId: string, seed?: RankingRow) => {
     selectedIdRef.current = candidateId;
     setSelectedId(candidateId);
@@ -1859,15 +1995,16 @@ export default function HomePage() {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     closeCandidate();
-    if (!identifiedOpen) exitReplay(activeTab);
+    if (!identifiedOpen && !skyOpen) exitReplay(activeTab);
     try {
       await fetchJson("/api/refresh", { method: "POST" });
       if (identifiedOpen) setIdentifiedRefreshKey((current) => current + 1);
+      else if (skyOpen) setSkyRefreshKey((current) => current + 1);
       else await loadDashboard();
     } finally {
       setRefreshing(false);
     }
-  }, [activeTab, closeCandidate, exitReplay, identifiedOpen, loadDashboard]);
+  }, [activeTab, closeCandidate, exitReplay, identifiedOpen, loadDashboard, skyOpen]);
 
   const activeReplay = replayStates[activeTab];
   const activeControls = rankingControls[activeTab];
@@ -1927,15 +2064,15 @@ export default function HomePage() {
 
   return <main className="observatory-shell">
     <div className="ambient-glow ambient-glow-one" aria-hidden="true" /><div className="ambient-glow ambient-glow-two" aria-hidden="true" />
-    <header className="topbar"><div className="brand-lockup"><div className="brand-mark" aria-hidden="true">✦</div><div className="brand-title"><h1>Explore Potential Space Discoveries</h1><button className="about-trigger" type="button" aria-label="Learn how TransitScope works" aria-haspopup="dialog" aria-expanded={howItWorksOpen} onClick={() => setHowItWorksOpen(true)}><span aria-hidden="true">→</span></button></div></div><div className="topbar-actions"><span className="data-state"><span className={`status-dot ${status?.data_version ? "" : "muted"}`} /> {dataState}</span><button className="button button-quiet" type="button" onClick={() => void handleRefresh()} disabled={refreshing || loading}>↻ <span>{refreshing ? "Checking" : "Refresh"}</span></button><a className="button button-quiet tool-button" href="/ops" aria-label="Open public ML Ops dashboard" title="Public ML Ops dashboard">🔧</a></div></header>
-    <nav className="tab-row" aria-label="Assessment rankings">{tabs.map((tab) => <button className={`tab-button ${!identifiedOpen && activeTab === tab.id ? "active" : ""}`} key={tab.id} onClick={() => { setIdentifiedOpen(false); setPipelineStatusOpen(false); setOpenColumnControl(null); setRankingPage(1); setActiveTab(tab.id); }} type="button">{tab.label}</button>)}<button className={`tab-button ${identifiedOpen ? "active" : ""}`} type="button" onClick={() => { closeCandidate(); exitReplay(activeTab); setPipelineStatusOpen(false); setOpenColumnControl(null); setIdentifiedOpen(true); }}>Identified</button></nav>
-    {!identifiedOpen ? <>
+    <header className="topbar"><div className="brand-lockup"><button className="brand-mark" type="button" aria-label="Learn how TransitScope works" aria-haspopup="dialog" aria-expanded={howItWorksOpen} onClick={() => setHowItWorksOpen(true)}>✦</button><div className="brand-title"><h1>Explore Potential Space Discoveries</h1><button className="about-trigger" type="button" aria-label="Learn how TransitScope works" aria-haspopup="dialog" aria-expanded={howItWorksOpen} onClick={() => setHowItWorksOpen(true)}><span aria-hidden="true">→</span></button></div></div><div className="topbar-actions"><span className="data-state"><span className={`status-dot ${status?.data_version ? "" : "muted"}`} /> {dataState}</span><button className="button button-quiet" type="button" onClick={() => void handleRefresh()} disabled={refreshing || loading}>↻ <span>{refreshing ? "Checking" : "Refresh"}</span></button><a className="button button-quiet tool-button" href="/ops" aria-label="Open public ML Ops dashboard" title="Public ML Ops dashboard">🔧</a></div></header>
+    <nav className="tab-row" aria-label="Assessment rankings">{tabs.map((tab) => <button className={`tab-button ${!identifiedOpen && !skyOpen && activeTab === tab.id ? "active" : ""}`} key={tab.id} onClick={() => { setIdentifiedOpen(false); setSkyOpen(false); setPipelineStatusOpen(false); setOpenColumnControl(null); setRankingPage(1); setActiveTab(tab.id); }} type="button">{tab.label}</button>)}<button className={`tab-button ${identifiedOpen ? "active" : ""}`} type="button" onClick={() => { closeCandidate(); exitReplay(activeTab); setSkyOpen(false); setPipelineStatusOpen(false); setOpenColumnControl(null); setIdentifiedOpen(true); }}>Identified</button><button className={`tab-button ${skyOpen ? "active" : ""}`} type="button" onClick={openSkyView}>Sky</button></nav>
+    {skyOpen ? <SkyPanel onOpenCandidate={(candidateId) => void openCandidate(candidateId)} refreshKey={skyRefreshKey} /> : !identifiedOpen ? <>
     <section className="stage-heading"><div><div className="stage-kicker"><span className="stage-number">{copy.number}</span> {copy.kicker}</div><h3>{copy.title}</h3><p>{copy.description}</p></div>{activeReplay.active ? <div className="replay-dock-wrap"><div className="replay-dock" aria-label={`${copy.title} replay controls`} title={activeReplay.loading ? "Loading saved replay snapshot" : `Saved replay · ${activeReplay.snapshot?.occurred_at ? formatDate(activeReplay.snapshot.occurred_at) : "Beginning of assessment"}`}><button aria-label={activeReplay.playing ? "Pause replay" : "Play replay"} className="button button-quiet replay-play" type="button" onClick={() => updateReplay(activeTab, { playing: !activeReplay.playing })} disabled={activeReplay.maxSequence === 0}>{activeReplay.playing ? "Ⅱ" : "▶"}</button><label className="replay-speed"> <span>Speed</span><select aria-label="Replay speed" value={activeReplay.speed} onChange={(event) => updateReplay(activeTab, { speed: Number(event.target.value) })}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select></label><input aria-label="Replay position" className="replay-range" type="range" min={0} max={activeReplay.maxSequence} value={activeReplay.cursor} onChange={(event) => void loadReplaySnapshot(activeTab, Number(event.target.value))} /><button className="button button-replay-active replay-exit" type="button" onClick={() => exitReplay(activeTab)}>Exit replay</button></div>{activeReplay.error && <p className="replay-error">{activeReplay.error}</p>}</div> : <div className="stage-actions"><button className="button button-outline" type="button" onClick={() => void startReplay(activeTab)}>Replay</button>{activeTab === "overall" && <button className="button button-outline" type="button" onClick={() => setPipelineStatusOpen((open) => !open)} aria-expanded={pipelineStatusOpen}>{pipelineStatusOpen ? "Hide pipeline status" : "Pipeline status"}</button>}</div>}</section>
     {activeTab === "overall" && pipelineStatusOpen && !activeReplay.active && <section className="metrics-grid" aria-label="Processing summary"><article className="metric-card"><span className="metric-label">Target universe</span><strong>{remainingCount.toLocaleString()} / {targetCount.toLocaleString()}</strong><span className="metric-detail">stars left in target universe exploration</span></article><article className="metric-card"><span className="metric-label">Processed</span><strong>{processedCount.toLocaleString()}</strong><span className="metric-detail">targets with published evaluations</span></article><article className="metric-card"><span className="metric-label">Active candidates</span><strong>{activeCandidateCount.toLocaleString()}</strong><span className="metric-detail">currently visible in this assessment</span></article><article className="metric-card metric-card-status"><span className="metric-label">Pipeline status</span><strong><span className={`status-dot ${status?.data_version ? "" : "muted"}`} /> {pipelineState}</strong><span className="metric-detail">{footerState}</span><span className="metric-detail">Next update: {nextUpdateLabel} · {nextUpdateAt ? formatDate(nextUpdateAt) : "Calculating…"}</span></article></section>}
           <section className="ranking-panel" aria-labelledby="ranking-title"><div className="panel-header"><div><p className="eyebrow">Top candidates · {activeReplay.active ? "saved replay" : "live ranking"}</p><h3 id="ranking-title">{panelTitle}</h3></div><span className="panel-meta">Top {displayCap.toLocaleString()} displayed</span></div>{error ? <div className="error-state" role="alert"><span className="status-dot muted" /><h4>Published state unavailable</h4><p>{error}</p><button className="button button-outline" type="button" onClick={() => void loadDashboard()}>Try again</button></div> : activeReplay.loading && !activeReplay.snapshot ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Reading saved replay state.</h4><p>The replay is reconstructing this view from persisted ranking snapshots. No model is run during replay.</p></div> : (waitingForPublishedState || loading) && !liveRanking && !activeReplay.active ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Reading the latest published state.</h4><p>The API is checking the worker’s durable publication boundary. No model is run during a dashboard load.</p></div> : displayRanking ? <div className="table-wrap"><div className="ranking-table ranking-table-header"><span>Rank</span><span>Candidate</span><RankingColumnControl label={statusControlLabel} active={statusControlActive} open={openColumnControl === "status"} ariaLabel={activeTab === "overall" ? "Filter overall ranking by stage" : "Filter ranking by status"} options={statusControlOptions} onToggle={() => setOpenColumnControl((current) => current === "status" ? null : "status")} onSelect={(value) => activeTab === "overall" ? updateRankingControls({ stage: value as AssessmentStage }) : updateRankingControls({ status: value as CandidateStatus })} onClear={() => activeTab === "overall" ? updateRankingControls({ stage: null }) : updateRankingControls({ status: null })} /><span>Current activity</span><span>Movement</span><RankingColumnControl label={assessmentSortLabel} active={activeControls.sort !== "rank"} open={openColumnControl === "assessed"} ariaLabel="Sort ranking by assessment time" options={[{ value: "last_assessed_desc", label: "Most recently assessed" }, { value: "last_assessed_asc", label: "Oldest assessed first" }]} onToggle={() => setOpenColumnControl((current) => current === "assessed" ? null : "assessed")} onSelect={(value) => updateRankingControls({ sort: value as AssessmentSort })} onClear={() => updateRankingControls({ sort: "rank" })} /></div><div className="ranking-rows">{removals.map((removal) => <div className="ranking-table ranking-table-row replay-removal-row" key={`removed-${displayRanking?.sequence_number ?? 0}-${removal.candidate_id}`} role="status" aria-label={`${candidateDisplayLabel(removal.target_id, removal.candidate_id, undefined, removal.signal_index)} removed as already known`}><span className="rank-value">{removal.rank ?? "—"}</span><span className="candidate-cell"><strong>{candidateDisplayLabel(removal.target_id, removal.candidate_id, undefined, removal.signal_index)}</strong></span><span><span className="stage-status-stage">{stageName(removal.stage)}</span>{" "}<span className="status-pill status-known-match">Already Known</span><small className="score-label">{removal.known_match_id ?? "Catalog match"}</small></span><span className="activity-cell"><span className="activity-pulse removal-pulse" />{removal.activity}</span><span className="movement movement-removed">→ Removed</span><span className="last-update">{formatDate(removal.occurred_at)}</span></div>)}{rows.map((row) => { const resolutionLabel = signalResolutionLabel(row.signal_resolution); const rowStatus = displayStatus(row.status, row.stage); return <button className="ranking-table ranking-table-row" key={row.candidate_id} type="button" onClick={() => void openCandidate(row.candidate_id, row)} aria-label={`Open details for ${candidateDisplayLabel(row.target_id, row.candidate_id, undefined, row.signal_index)}`}><span className="rank-value">{row.rank}</span><span className="candidate-cell"><strong>{candidateDisplayLabel(row.target_id, row.candidate_id, undefined, row.signal_index)}</strong>{resolutionLabel && <small className="signal-resolution-note">{resolutionLabel}</small>}</span><span><span className="stage-status-stage">{stageName(row.stage)}</span>{" "}<span className={`status-pill status-${statusClass(rowStatus)}`}>{rowStatus}</span></span><span className="activity-cell"><span className="activity-pulse" />{row.activity}</span><span className={`movement movement-${row.movement}`}>{movementLabel(row)}</span><span className="last-update">{formatDate(row.last_evaluated_at)}</span></button>; })}{!rows.length && !removals.length && <div className="filtered-empty-state" role="status"><span className="status-dot muted" aria-hidden="true" /><strong>No candidates match this selection.</strong><span>Try another status or clear the filter to return to the full ranking.</span></div>}</div>{pageCount > 1 && <nav className="ranking-pages" aria-label="Ranking pages"><span>Showing page {displayRanking?.page ?? rankingPage} of {pageCount}</span><div>{Array.from({ length: pageCount }, (_, index) => index + 1).map((page) => <button className={`page-button ${(displayRanking?.page ?? rankingPage) === page ? "active" : ""}`} key={page} type="button" onClick={() => selectRankingPage(page)}>{page}</button>)}</div></nav>}</div> : <div className="empty-state" role="status"><div className="empty-orbit" aria-hidden="true"><span /></div><h4>{activeReplay.active && activeReplay.cursor === 0 ? "The replay begins before the first candidate." : "The observatory is waiting for its first observation."}</h4><p>{activeReplay.active ? "Move the replay forward to watch candidates enter, change rank, advance, or leave the active pool." : "The ranking will populate when a MAST/TESS evaluation is published. Empty is a real state here—not a hidden placeholder result."}</p><div className="empty-state-meta"><span className="status-dot muted" /> No current activity</div></div>}</section>
     </> : <IdentifiedPanel onOpenCandidate={(candidateId) => void openCandidate(candidateId)} refreshKey={identifiedRefreshKey} />}
     <footer className="footer-note"><span className="footer-pulse" aria-hidden="true" /><span>Data source: MAST / TESS · {footerState} · Evidence is provisional</span></footer>
     {modal}
-    {howItWorksOpen && <HowItWorksModal onClose={() => setHowItWorksOpen(false)} />}
+    {howItWorksOpen && <HowItWorksModal onClose={() => setHowItWorksOpen(false)} onOpenSky={openSkyView} />}
   </main>;
 }

@@ -1113,6 +1113,168 @@ class ReadOnlyStore:
         finally:
             connection.close()
 
+    def sky(self, limit: int) -> dict[str, Any]:
+        """Build a compact, read-only projection of explored targets on the sky.
+
+        A target can have multiple signal candidates. The map uses one point per
+        explored target and selects the most informative candidate for its click
+        target: active candidates win over released matches, then the strongest
+        current status and score. The full signal count remains on the point.
+        """
+
+        empty = {
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "data_version": None,
+            "total_count": 0,
+            "returned_count": 0,
+            "truncated": False,
+            "explored_count": 0,
+            "candidate_count": 0,
+            "status_counts": {},
+            "sectors": [],
+            "points": [],
+        }
+        connection = self.connect(timeout_seconds=1.5)
+        if connection is None:
+            return empty
+        try:
+            rows = connection.execute(
+                """
+                WITH ranked_candidates AS (
+                    SELECT
+                        c.candidate_id,
+                        c.target_id,
+                        c.current_stage,
+                        c.status,
+                        c.overall_score,
+                        c.stage_score,
+                        c.rank_overall,
+                        c.rank_stage,
+                        c.last_evaluated_at,
+                        c.active,
+                        c.signal_group_id,
+                        c.signal_resolution,
+                        c.promotion_eligible,
+                        COUNT(*) OVER (PARTITION BY c.target_id) AS signal_count,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY c.target_id
+                            ORDER BY
+                                CASE WHEN c.active THEN 0 ELSE 1 END ASC,
+                                CASE c.status
+                                    WHEN 'Promising' THEN 4
+                                    WHEN 'Needs More Data' THEN 3
+                                    WHEN 'Inconclusive' THEN 2
+                                    WHEN 'Known Match' THEN 1
+                                    ELSE 0
+                                END DESC,
+                                COALESCE(c.overall_score, -1) DESC,
+                                c.last_evaluated_at DESC NULLS LAST,
+                                c.candidate_id ASC
+                        ) AS target_candidate_rank
+                    FROM candidates AS c
+                )
+                SELECT
+                    tm.target_id,
+                    tm.provider_target_id,
+                    tm.ra_deg,
+                    tm.dec_deg,
+                    tm.sector,
+                    tm.manifest_status,
+                    rc.candidate_id,
+                    rc.current_stage,
+                    rc.status,
+                    rc.overall_score,
+                    rc.stage_score,
+                    rc.rank_overall,
+                    rc.rank_stage,
+                    rc.last_evaluated_at,
+                    rc.active,
+                    rc.signal_group_id,
+                    rc.signal_resolution,
+                    rc.promotion_eligible,
+                    rc.signal_count,
+                    COUNT(*) OVER () AS total_count
+                FROM target_manifest AS tm
+                LEFT JOIN ranked_candidates AS rc
+                    ON rc.target_id = tm.target_id
+                   AND rc.target_candidate_rank = 1
+                WHERE rc.candidate_id IS NOT NULL
+                   OR tm.manifest_status IN ('processed', 'evaluated', 'explored', 'complete')
+                ORDER BY tm.sector NULLS LAST, tm.target_id ASC
+                LIMIT ?
+                """,
+                [limit],
+            ).fetchall()
+            data_version = self.latest_version(connection)
+        finally:
+            connection.close()
+
+        points: list[dict[str, Any]] = []
+        status_counts: dict[str, int] = {}
+        sectors: dict[str, dict[str, Any]] = {}
+        total_count = 0
+        for row in rows:
+            total_count = max(total_count, int(row[19] or 0))
+            status = str(row[8]) if row[8] else "Explored"
+            sector_key = str(int(row[4])) if row[4] is not None else "Unknown"
+            sector = sectors.setdefault(
+                sector_key,
+                {
+                    "sector": int(row[4]) if row[4] is not None else None,
+                    "explored_count": 0,
+                    "candidate_count": 0,
+                    "status_counts": {},
+                },
+            )
+            sector["explored_count"] += 1
+            if row[6] is not None:
+                sector["candidate_count"] += 1
+            sector["status_counts"][status] = sector["status_counts"].get(status, 0) + 1
+            status_counts[status] = status_counts.get(status, 0) + 1
+            points.append(
+                {
+                    "target_id": row[0],
+                    "provider_target_id": row[1],
+                    "ra_deg": float(row[2]) if row[2] is not None else None,
+                    "dec_deg": float(row[3]) if row[3] is not None else None,
+                    "sector": int(row[4]) if row[4] is not None else None,
+                    "manifest_status": row[5],
+                    "candidate_id": row[6],
+                    "stage": row[7],
+                    "status": status,
+                    "overall_score": float(row[9]) if row[9] is not None else None,
+                    "stage_score": float(row[10]) if row[10] is not None else None,
+                    "rank_overall": int(row[11]) if row[11] is not None else None,
+                    "rank_stage": int(row[12]) if row[12] is not None else None,
+                    "last_evaluated_at": isoformat(row[13]),
+                    "active": bool(row[14]) if row[14] is not None else None,
+                    "signal_group_id": row[15],
+                    "signal_resolution": row[16],
+                    "promotion_eligible": bool(row[17]) if row[17] is not None else None,
+                    "signal_count": int(row[18] or 0),
+                }
+            )
+
+        ordered_sectors = sorted(
+            sectors.values(),
+            key=lambda item: (item["sector"] is None, item["sector"] or 0),
+        )
+        for sector in ordered_sectors:
+            sector["status_counts"] = dict(sorted(sector["status_counts"].items()))
+        return {
+            **empty,
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "data_version": data_version,
+            "total_count": total_count,
+            "returned_count": len(points),
+            "truncated": total_count > len(points),
+            "explored_count": total_count,
+            "candidate_count": sum(1 for point in points if point["candidate_id"] is not None),
+            "status_counts": dict(sorted(status_counts.items())),
+            "sectors": ordered_sectors,
+            "points": points,
+        }
+
     def monitoring(self, worker: dict[str, Any]) -> dict[str, Any]:
         """Build an operations view for the authenticated ML/pipeline dashboard.
 
