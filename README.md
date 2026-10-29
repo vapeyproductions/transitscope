@@ -19,7 +19,20 @@ The compose worker is intentionally paused by default with `RUN_LIVE_PIPELINE=fa
 
 ## ML operations and eventual deployment
 
-The `ML Ops` tab is a password-protected operations view for the system that runs the long-lived search. It reports the configured 500-target Stage 1 pool, progress through the 126,000-target manifest, occupied Stage 1/2/3 slots, status counts, model versions and aggregate metrics, MAST/catalog provider health, archive coverage watermarks, recent batches/events, selection buckets, and 10-degree sky-cell outcome signals. Authorized operators can pause or resume the worker between cycles. Sampling signals are descriptive until adaptive replacement sampling is explicitly enabled.
+The public [`ML Ops dashboard`](https://desirable-luck-production-ad18.up.railway.app/ops) is a read-only portfolio view for the system that runs the long-lived search. It reports the configured 500-target Stage 1 pool, progress through the 126,000-target manifest, occupied Stage 1/2/3 slots, status counts, model versions and aggregate metrics, MAST/catalog provider health, archive coverage watermarks, recent batches/events, selection buckets, 10-degree sky-cell outcome signals, queue motion, dispatch distribution, and cumulative throughput. Worker pause/resume and manual migration controls remain authenticated and are not exposed to public viewers. Sampling signals are descriptive until adaptive replacement sampling is explicitly enabled.
+
+The monitoring page also presents the engineering case study directly: the data path from MAST/TESS to feature extraction and staged workers, model-card descriptions for each assessment stage, data lineage, replay guarantees, and links into the live queue/latency/health metrics. See [`docs/portfolio.md`](docs/portfolio.md) for the concise portfolio narrative and metric definitions.
+
+```mermaid
+flowchart LR
+  A[MAST / TESS] --> B[Light-curve features]
+  B --> C[Stage 1 detection]
+  C --> D[Stage 2 repeatability]
+  D --> E[Stage 3 chronological holdout]
+  E --> F[(DuckDB evidence store)]
+  F --> G[Ranking snapshots + replay]
+  F --> H[Public read-only ML Ops]
+```
 
 For a public always-updating launch, keep the responsibilities separate even if they are deployed from one repository:
 

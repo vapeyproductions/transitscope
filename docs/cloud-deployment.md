@@ -59,7 +59,7 @@ Dockerfile and can be adjusted later from Railway variables.
    - Dockerfile path: `Dockerfile.web`
    - `NEXT_PUBLIC_API_BASE_URL=` (empty, so the browser uses same-origin `/api`)
    - `API_BACKEND_URL=https://<api-domain>`
-   - `OPS_PASSWORD=<private-monitor-password>`
+   - `OPS_PASSWORD=<private-control-password>`
    - `OPS_SESSION_SECRET=<long-random-session-secret>`
    - `OPS_CONTROL_TOKEN=<same-long-random-server-token-as-api-worker>`
    - Generate a public domain for the web service
@@ -73,11 +73,14 @@ https://<api-domain>/api/monitoring/overview
 https://<web-domain>/
 ```
 
-The ML Ops view requires the configured password. Its Pause worker button writes
-a durable operator gate that the worker checks between cycles; its Resume worker
-button only works when `RUN_LIVE_PIPELINE=true` and `PIPELINE_PAUSED=false`.
-No MAST download starts while either deployment gate or the operator gate is
-paused. A pause does not interrupt an in-flight cycle; it prevents the next one.
+The `/ops` ML Ops view is public and read-only for portfolio observability. The
+monitoring overview can be fetched anonymously, while the Pause/Resume and
+manual migration endpoints still require the configured control session and
+server token. The protected Pause worker action writes a durable operator gate
+that the worker checks between cycles; Resume only works when
+`RUN_LIVE_PIPELINE=true` and `PIPELINE_PAUSED=false`. No MAST download starts
+while either deployment gate or the operator gate is paused. A pause does not
+interrupt an in-flight cycle; it prevents the next one.
 
 ## When to enable processing
 
