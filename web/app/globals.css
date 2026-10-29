@@ -623,6 +623,19 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .ledger-row small, .ledger-row > span { color: var(--muted); font-size: 9px; }
 .ledger-row > span { text-align: right; }
 .operations-footer { border-top: 1px solid var(--border); color: var(--faint); display: flex; font-size: 10px; gap: 8px; margin-top: 23px; padding: 15px 22px; }
+.ops-architecture-strip { background: rgba(10, 22, 39, 0.72); border: 1px solid rgba(118, 228, 237, 0.16); border-radius: 10px; margin-bottom: 12px; padding: 13px 16px; }
+.ops-architecture-heading { align-items: center; display: flex; justify-content: space-between; margin-bottom: 10px; }
+.ops-architecture-heading .eyebrow { margin: 0; }
+.ops-architecture-heading > span { color: var(--faint); font-size: 9px; }
+.ops-architecture-flow { align-items: center; display: flex; gap: 6px; }
+.ops-architecture-flow-item { align-items: center; display: flex; flex: 1; gap: 6px; min-width: 0; }
+.ops-architecture-node { background: rgba(15, 23, 39, 0.8); border: 1px solid rgba(146, 169, 205, 0.2); border-radius: 7px; color: var(--text); display: block; flex: 1; font-size: 10px; line-height: 1.2; padding: 9px 8px; text-align: center; }
+.ops-architecture-node.cyan { border-color: rgba(118, 228, 237, 0.35); color: var(--cyan); }
+.ops-architecture-node.blue { border-color: rgba(119, 168, 255, 0.35); color: var(--blue); }
+.ops-architecture-node.purple { border-color: rgba(168, 148, 255, 0.35); color: var(--purple); }
+.ops-architecture-node.gold { border-color: rgba(239, 190, 93, 0.35); color: var(--gold); }
+.ops-architecture-node.green { border-color: rgba(116, 214, 172, 0.35); color: var(--green); }
+.ops-architecture-arrow { color: var(--faint); flex: 0 0 auto; font-size: 13px; }
 .portfolio-brief { background: linear-gradient(145deg, rgba(10, 22, 39, 0.94), rgba(4, 10, 20, 0.86)); border: 1px solid rgba(118, 228, 237, 0.18); border-radius: 15px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.2); margin-bottom: 18px; overflow: hidden; padding: 25px; }
 .portfolio-brief-header { align-items: flex-start; display: flex; gap: 26px; justify-content: space-between; }
 .portfolio-brief-header h2 { font-size: clamp(24px, 3vw, 38px); letter-spacing: -0.045em; line-height: 1.04; margin: 7px 0 12px; max-width: 760px; }
@@ -842,6 +855,9 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
   .operations-control-actions { justify-content: flex-end; }
   .operations-control-message, .operations-control-note { max-width: none; text-align: left; }
   .topbar-actions { justify-content: space-between; width: 100%; }
+  .ops-architecture-heading { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .ops-architecture-flow { flex-wrap: wrap; }
+  .ops-architecture-flow-item { flex: 1 1 calc(50% - 8px); }
   .portfolio-brief-header, .portfolio-section-heading { flex-direction: column; }
   .portfolio-brief-actions { align-items: flex-start; flex-direction: row; flex-wrap: wrap; }
   .portfolio-stat-strip { grid-template-columns: repeat(2, 1fr); }
