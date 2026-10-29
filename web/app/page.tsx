@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
@@ -1184,6 +1184,9 @@ function SkyPanel({ onOpenCandidate, refreshKey }: { onOpenCandidate: (candidate
   const [error, setError] = useState<string | null>(null);
   const [colorMode, setColorMode] = useState<SkyColorMode>("status");
   const [pollKey, setPollKey] = useState(0);
+  const [mapPan, setMapPan] = useState({ x: 0, y: 0 });
+  const [mapDragging, setMapDragging] = useState(false);
+  const mapDragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1209,6 +1212,31 @@ function SkyPanel({ onOpenCandidate, refreshKey }: { onOpenCandidate: (candidate
     return () => window.clearInterval(timer);
   }, []);
 
+  const handleMapPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    if (target.closest("button, a, select, input")) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    mapDragRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: mapPan.x, originY: mapPan.y };
+    setMapDragging(true);
+  }, [mapPan.x, mapPan.y]);
+
+  const handleMapPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = mapDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setMapPan({
+      x: Math.max(-150, Math.min(150, drag.originX + event.clientX - drag.startX)),
+      y: Math.max(-115, Math.min(115, drag.originY + event.clientY - drag.startY)),
+    });
+  }, []);
+
+  const finishMapDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = mapDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    mapDragRef.current = null;
+    setMapDragging(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  }, []);
+
   const plottedPoints = (response?.points ?? []).filter((point) => point.ra_deg !== null && point.dec_deg !== null);
   const renderPoint = (point: SkyPoint) => {
     if (point.ra_deg === null || point.dec_deg === null) return null;
@@ -1228,8 +1256,8 @@ function SkyPanel({ onOpenCandidate, refreshKey }: { onOpenCandidate: (candidate
     <header className="sky-header"><div><p className="eyebrow accent">Explored sky · target coordinates</p><h3 id="sky-title">Sky map</h3><p>Every plotted point is an explored target with coordinates. Candidate-backed points open the same investigation modal as leaderboard rows.</p></div><div className="sky-summary"><strong>{response?.explored_count?.toLocaleString() ?? "—"}</strong><span>explored stars</span><small>{response?.sectors.length ?? 0} sectors · {response?.candidate_count?.toLocaleString() ?? "—"} candidate signals</small></div></header>
     <div className="sky-toolbar"><label className="sky-color-control" htmlFor="sky-color-mode"><span>Color points by</span><select id="sky-color-mode" value={colorMode} onChange={(event) => setColorMode(event.target.value as SkyColorMode)}><option value="status">Candidate status</option><option value="stage">Assessment stage</option></select></label><div className="sky-legend" aria-label={`Sky map colors by ${colorMode}`}>{colorMode === "status" ? statusLegend.map((status) => <span key={status}><i className={`sky-legend-dot sky-${skyStatusClass(status)}`} />{status === "Needs More Data" ? "Needs data" : status}</span>) : stageLegend.map((stage) => <span key={stage.value}><i className={`sky-legend-dot sky-${stage.value}`} />{stage.label}</span>)}</div></div>
     {error ? <div className="error-state" role="alert"><span className="status-dot muted" /><h4>Sky map unavailable</h4><p>{error}</p></div> : loading && !response ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Projecting explored targets.</h4><p>Reading persisted target coordinates and candidate statuses. No model is run for this view.</p></div> : <>
-      <div className="sky-map-shell"><div className="sky-map-axis sky-map-axis-top"><span>RA 0°</span><span>RA 90°</span><span>RA 180°</span><span>RA 270°</span><span>RA 360°</span></div><div className="sky-map" aria-label="Equirectangular map of explored target coordinates across the full sky"><div className="sky-map-grid-lines" aria-hidden="true"><span /><span /><span /><span /><i /><i /><i /></div><div className="sky-declination-labels" aria-hidden="true"><span>+90°</span><span>+45°</span><span>0°</span><span>−45°</span><span>−90°</span></div>{plottedPoints.map(renderPoint)}{!plottedPoints.length && <span className="sky-map-empty">No explored targets with coordinates yet</span>}</div><div className="sky-map-axis sky-map-axis-bottom"><span>North celestial pole</span><span>Celestial equator</span><span>South celestial pole</span></div></div>
-      <div className="sky-map-note"><span className="status-dot muted" /> The map uses a simple RA/Dec projection—not a physical image of the Milky Way. Points without a candidate signal remain neutral and are not clickable.</div>
+      <div className="sky-map-shell"><div className="sky-map-axis sky-map-axis-top"><span>RA 0°</span><span>RA 90°</span><span>RA 180°</span><span>RA 270°</span><span>RA 360°</span></div><div className={`sky-map ${mapDragging ? "is-dragging" : ""}`} aria-label="Equirectangular map of explored target coordinates across the full sky" onPointerDown={handleMapPointerDown} onPointerMove={handleMapPointerMove} onPointerUp={finishMapDrag} onPointerCancel={finishMapDrag}><div className="sky-map-canvas" style={{ transform: `translate3d(${mapPan.x}px, ${mapPan.y}px, 0)` }}><div className="sky-map-grid-lines" aria-hidden="true"><span /><span /><span /><span /><i /><i /><i /></div><div className="sky-declination-labels" aria-hidden="true"><span>+90°</span><span>+45°</span><span>0°</span><span>−45°</span><span>−90°</span></div>{plottedPoints.map(renderPoint)}</div>{!plottedPoints.length && <span className="sky-map-empty">No explored targets with coordinates yet</span>}</div><div className="sky-map-axis sky-map-axis-bottom"><span>North celestial pole</span><span>Celestial equator</span><span>South celestial pole</span></div></div>
+      <div className="sky-map-note"><span className="status-dot muted" /> Click and drag to pan across the expanded sky projection. The map uses a simple RA/Dec projection—not a physical image of the Milky Way. Points without a candidate signal remain neutral and are not clickable.</div>
       <section className="sky-sector-section" aria-labelledby="sky-sector-title"><div className="section-heading"><div><p className="eyebrow">Sector coverage</p><h4 id="sky-sector-title">Explored sectors</h4></div><span className="section-note">{response?.truncated ? `Showing ${response.returned_count.toLocaleString()} of ${response.total_count.toLocaleString()} explored targets` : `${response?.total_count.toLocaleString() ?? 0} explored targets plotted`}</span></div>{response?.sectors.length ? <div className="sky-sector-grid">{response.sectors.map((sector) => <article className="sky-sector-card" key={sector.sector ?? "unknown"}><div><strong>{sector.sector === null ? "Unknown sector" : `Sector ${sector.sector}`}</strong><span>{sector.explored_count.toLocaleString()} stars</span></div><small>{sector.candidate_count.toLocaleString()} candidate-backed · {Object.entries(sector.status_counts).map(([status, count]) => `${count} ${status === "Needs More Data" ? "needs data" : status.toLowerCase()}`).join(" · ")}</small></article>)}</div> : <div className="ops-empty">No sector coordinates have been published yet.</div>}</section>
     </>}
     <footer className="identified-footer"><span className="status-dot muted" /> Sky status is a current projection of persisted candidate state. Click a colored candidate point to open its light curve and assessment trail.</footer>
