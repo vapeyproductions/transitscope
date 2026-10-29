@@ -252,7 +252,7 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .sky-map-shell { background: rgba(3, 8, 17, 0.45); border-bottom: 1px solid rgba(146, 169, 205, 0.1); padding: 26px 40px 30px; }
 .sky-map { background: radial-gradient(ellipse at 50% 50%, rgba(50, 93, 154, 0.11), transparent 62%), #07101d; border: 1px solid rgba(118, 228, 237, 0.18); border-radius: 14px; cursor: grab; height: clamp(420px, 58vw, 760px); overflow: hidden; position: relative; touch-action: none; }
 .sky-map.is-dragging { cursor: grabbing; }
-.sky-map-canvas { height: 240%; left: -70%; pointer-events: none; position: absolute; top: -70%; transition: transform 120ms ease-out; width: 240%; will-change: transform; }
+.sky-map-canvas { height: 220%; left: -45%; pointer-events: none; position: absolute; top: -90%; transition: transform 120ms ease-out; width: 220%; will-change: transform; }
 .sky-map-grid-lines { inset: 0; pointer-events: none; position: absolute; }
 .sky-map-grid-lines span, .sky-map-grid-lines i { border-color: rgba(146, 169, 205, 0.12); border-style: dashed; display: block; position: absolute; }
 .sky-map-grid-lines span { border-left-width: 1px; border-top: 0; border-bottom: 0; border-right: 0; bottom: 0; top: 0; width: 0; }
