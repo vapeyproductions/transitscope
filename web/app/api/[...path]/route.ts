@@ -17,8 +17,7 @@ async function proxy(request: NextRequest, { params }: RouteContext) {
   const { path } = await params;
   const method = request.method.toUpperCase();
   const isMonitoringEndpoint = path[0] === "monitoring" && (path[1] === "overview" || path[1] === "control" || path[1] === "migrations");
-  const isPublicMonitoringRead = isMonitoringEndpoint && path[1] === "overview" && (method === "GET" || method === "HEAD");
-  if (isMonitoringEndpoint && !isPublicMonitoringRead) {
+  if (isMonitoringEndpoint) {
     const session = (await cookies()).get(OPS_SESSION_COOKIE)?.value;
     if (!isOpsSessionToken(session)) {
       return NextResponse.json({ detail: "ML Ops access requires an authenticated session." }, { status: 401 });
