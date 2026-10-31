@@ -1378,6 +1378,139 @@ class ReadOnlyStore:
                 cached["served_from_cache"] = True
                 cached["read_state"] = "publication_busy"
                 return cached
+
+            # A publish can hold the shared sidecar lock for longer than the
+            # API read timeout.  After a deploy the in-process response cache
+            # is cold, so returning the zeroed projection makes a healthy
+            # monitor look broken.  The worker status file carries the last
+            # completed cycle and compact telemetry; project that here until
+            # the next published read becomes available.
+            last_metrics = worker.get("last_cycle_metrics")
+            if isinstance(last_metrics, dict):
+                telemetry = worker.get("telemetry") if isinstance(worker.get("telemetry"), dict) else {}
+                saved_queue = last_metrics.get("queue") if isinstance(last_metrics.get("queue"), dict) else {}
+                queue_events = last_metrics.get("queue_events") if isinstance(last_metrics.get("queue_events"), list) else []
+                queue_current = {stage: {"jobs": 0} for stage in ("stage1", "stage2", "stage3")}
+                for event in queue_events:
+                    if not isinstance(event, dict):
+                        continue
+                    stage = str(event.get("stage") or "")
+                    if stage in queue_current and event.get("candidate_id"):
+                        queue_current[stage]["jobs"] += 1
+
+                finished_at = worker.get("last_heartbeat") or empty["generated_at"]
+                stage_payloads = {
+                    stage: last_metrics.get(stage)
+                    if isinstance(last_metrics.get(stage), dict)
+                    else {}
+                    for stage in ("stage1", "stage2", "stage3")
+                }
+                timings = last_metrics.get("timings") if isinstance(last_metrics.get("timings"), dict) else {}
+                synthetic_run = {
+                    "cycle_id": "last-completed-cycle",
+                    "started_at": finished_at,
+                    "finished_at": finished_at,
+                    "status": "complete",
+                    "duration_seconds": round(
+                        sum(float(value or 0) for key, value in timings.items() if str(key).endswith("_seconds")),
+                        3,
+                    ),
+                    "stages": stage_payloads,
+                    "queue": saved_queue,
+                    "ranked_samples": last_metrics.get("ranked_samples", {}),
+                    "queue_events": queue_events,
+                    "events": last_metrics.get("events", []),
+                    "stage2_intake": last_metrics.get("stage2_intake", {}),
+                    "stage2_reassessment": last_metrics.get("stage2_reassessment", {}),
+                }
+
+                stage_data = self._empty_monitoring_stages(stage_thresholds)
+                for stage, counts in saved_queue.items():
+                    if stage not in stage_data or not isinstance(counts, dict):
+                        continue
+                    normalized_counts = {
+                        str(status): int(count or 0)
+                        for status, count in counts.items()
+                        if isinstance(count, (int, float))
+                    }
+                    stage_data[stage]["counts"].update(normalized_counts)
+                    stage_data[stage]["total_candidates"] = sum(normalized_counts.values())
+                    stage_data[stage]["evaluated_candidate_count"] = stage_data[stage]["total_candidates"]
+                    if stage == "stage3":
+                        stage_data[stage]["priority_candidates"] = normalized_counts.get("Needs More Data", 0)
+                    else:
+                        stage_data[stage]["priority_candidates"] = sum(normalized_counts.values())
+
+                throughput: dict[str, dict[str, Any]] = {}
+                timing_summary: dict[str, dict[str, Any]] = {}
+                for stage in ("stage1", "stage2", "stage3"):
+                    summary = stage_payloads[stage]
+                    evaluated = int(summary.get("evaluated") or summary.get("attempted") or 0)
+                    throughput[stage] = {
+                        "attempted": int(summary.get("attempted") or evaluated),
+                        "evaluated": evaluated,
+                        "promising": int(summary.get("promising") or 0),
+                        "needs_more_data": int(summary.get("needs_more_data") or 0),
+                        "inconclusive": int(summary.get("inconclusive") or 0),
+                        "known_match": int(summary.get("known_match") or 0),
+                        "errors": int(summary.get("errors") or 0),
+                        "handoffs": int(summary.get("handoffs") or 0),
+                        "per_hour": evaluated,
+                        "per_minute": round(evaluated / 60, 2),
+                    }
+                    stage_seconds = float(timings.get(f"{stage}_seconds") or 0)
+                    needs_seconds = float(timings.get(f"{stage}_needs_more_data_seconds") or 0)
+                    dispatch_seconds = float(timings.get(f"{stage}_dispatch_seconds") or 0)
+                    timing_summary[stage] = {
+                        "average_cycle_seconds": round(stage_seconds, 2) if stage_seconds else None,
+                        "needs_more_data_seconds": round(needs_seconds, 2),
+                        "average_needs_more_data_seconds": round(needs_seconds / max(1, int(summary.get("needs_more_data") or 0)), 2) if needs_seconds else None,
+                        "average_dispatch_seconds": round(dispatch_seconds / max(1, int(summary.get("handoffs") or 0)), 2) if dispatch_seconds else None,
+                        "handoffs": int(summary.get("handoffs") or 0),
+                    }
+
+                processed_count = int(telemetry.get("processed_target_count") or 0)
+                remaining_count = max(0, configured_universe - processed_count)
+                empty["data_version"] = int(telemetry.get("data_version") or 0) or None
+                empty["universe"].update(
+                    {
+                        "processed_count": processed_count,
+                        "remaining_count": remaining_count,
+                        "progress_percent": round(
+                            min(100.0, processed_count / configured_universe * 100)
+                            if configured_universe
+                            else 0.0,
+                            2,
+                        ),
+                    }
+                )
+                empty["stages"] = stage_data
+                empty["cycle_activity"] = {
+                    "window_minutes": 60,
+                    "expected_runs": 12,
+                    "recent_run_count": 1,
+                    "default_start_index": 0,
+                    "run_count": 1,
+                    "runs": [synthetic_run],
+                    "throughput": throughput,
+                    "timings": timing_summary,
+                    "queue": {
+                        "current": queue_current,
+                        "series": [
+                            {
+                                "finished_at": finished_at,
+                                "stage1": queue_current["stage1"]["jobs"],
+                                "stage2": queue_current["stage2"]["jobs"],
+                                "stage3": queue_current["stage3"]["jobs"],
+                            }
+                        ],
+                    },
+                    "top100_status": {},
+                    "note": "Publication is in progress; showing the last completed worker cycle until the new read becomes available.",
+                }
+                empty["served_from_cache"] = True
+                empty["read_state"] = "publication_busy"
+                return empty
             empty["served_from_cache"] = False
             empty["read_state"] = "publication_busy"
             return empty

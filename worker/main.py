@@ -37,12 +37,25 @@ def env_flag(name: str, *, default: bool = False) -> bool:
 def write_status(data_dir: Path, state: str, details: dict | None = None) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     status_path = data_dir / "worker-status.json"
+    previous: dict = {}
+    try:
+        loaded = json.loads(status_path.read_text())
+        if isinstance(loaded, dict):
+            previous = loaded
+    except (OSError, json.JSONDecodeError):
+        previous = {}
     payload = {
         "service": "worker",
         "state": state,
         "mode": os.getenv("WORKER_MODE", "bootstrap"),
         "last_heartbeat": utc_now(),
     }
+    # Preserve the last completed cycle and its compact telemetry while a new
+    # cycle is running. This lets the API show the last known progress during
+    # a long publication lock instead of falling back to an empty dashboard.
+    for key in ("last_cycle", "last_cycle_metrics", "telemetry", "catalog_health"):
+        if key in previous:
+            payload[key] = previous[key]
     if details:
         payload.update(details)
     status_path.write_text(json.dumps(payload, indent=2) + "\n")
@@ -645,6 +658,12 @@ def main() -> None:
                     "idle",
                     {
                         "last_cycle": result,
+                        "last_cycle_metrics": cycle_metrics,
+                        "telemetry": {
+                            "processed_target_count": int(processed_target_count(store)),
+                            "active_candidate_count": len(active_candidates(store)),
+                            "data_version": int(store.latest_published_version() or 0),
+                        },
                         "catalog_health": catalog_health,
                         "history_repair": history_repair,
                         "overall_ranking_rebuild": overall_ranking_rebuild,
