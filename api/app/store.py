@@ -1834,16 +1834,22 @@ class ReadOnlyStore:
         motion scrubber receives the complete chronological ledger.
         """
 
+        projection_limit = max(24, int(os.getenv("MONITORING_CYCLE_PROJECTION_LIMIT", "256")))
         try:
+            total_run_count = int(connection.execute("SELECT COUNT(*) FROM pipeline_cycles").fetchone()[0] or 0)
             rows = connection.execute(
                 """
                 SELECT cycle_id, started_at, finished_at, status,
                        duration_seconds, payload_json
                 FROM pipeline_cycles
-                ORDER BY finished_at ASC
-                """
+                ORDER BY finished_at DESC
+                LIMIT ?
+                """,
+                [projection_limit],
             ).fetchall()
+            rows.reverse()
         except Exception:
+            total_run_count = 0
             rows = []
 
         runs: list[dict[str, Any]] = []
@@ -1978,14 +1984,14 @@ class ReadOnlyStore:
             "expected_runs": 12,
             "recent_run_count": len(recent_runs),
             "default_start_index": max(0, len(runs) - len(recent_runs)),
-            "run_count": len(runs),
+            "run_count": total_run_count,
             "runs": runs,
             "throughput": throughput,
             "timings": timings,
             "queue": {"current": latest_queue, "series": queue_series},
             "top100_status": top100_status,
             "note": (
-                "Every completed worker cycle is retained for chronological replay. Throughput, timing, and rolling top-100 summaries use the latest twelve cycles (approximately one hour). All-time status and dwell charts use every saved cycle. Older cycles may contain fewer than 100 sampled rows because top-100 telemetry was added after they were recorded."
+                f"Every completed worker cycle is retained in the database. This page projects the latest {projection_limit} cycles so the live monitor remains responsive; throughput, timing, and rolling top-100 summaries use the latest twelve cycles (approximately one hour). Ranking replay remains backed by the complete saved snapshot history. Older cycles may contain fewer than 100 sampled rows because top-100 telemetry was added after they were recorded."
             ),
         }
 
@@ -2077,6 +2083,30 @@ class ReadOnlyStore:
                     }
                 )
 
+        # Resolve status dwell timestamps once. The previous implementation
+        # ran a correlated pipeline_events subquery for every candidate in
+        # every view, which became prohibitively slow as the event ledger grew.
+        try:
+            latest_event_rows = connection.execute(
+                """
+                SELECT candidate_id, MAX(occurred_at) AS status_since
+                FROM pipeline_events
+                WHERE event_type IN (
+                    'stage1_evaluated',
+                    'stage2_evaluated',
+                    'stage3_evaluated',
+                    'known_match',
+                    'signal_alias_held',
+                    'signal_alias_released',
+                    'signal_independence_assessed'
+                )
+                GROUP BY candidate_id
+                """
+            ).fetchall()
+            latest_event_times = {str(row[0]): row[1] for row in latest_event_rows if row[0] is not None}
+        except Exception:
+            latest_event_times = {}
+
         current_samples_by_view: dict[str, list[dict[str, Any]]] = {}
         for view in views:
             stage_filter = VIEW_STAGE.get(view)
@@ -2092,24 +2122,7 @@ class ReadOnlyStore:
             )
             rows = connection.execute(
                 f"""
-                SELECT c.candidate_id, c.status,
-                       COALESCE(
-                           (
-                               SELECT MAX(event.occurred_at)
-                               FROM pipeline_events AS event
-                               WHERE event.candidate_id = c.candidate_id
-                                 AND event.event_type IN (
-                                     'stage1_evaluated',
-                                     'stage2_evaluated',
-                                     'stage3_evaluated',
-                                     'known_match',
-                                     'signal_alias_held',
-                                     'signal_alias_released',
-                                     'signal_independence_assessed'
-                                 )
-                           ),
-                           c.last_evaluated_at
-                       ) AS status_since
+                SELECT c.candidate_id, c.status, c.last_evaluated_at
                 FROM candidates AS c
                 WHERE {where}
                 ORDER BY {order}, c.candidate_id ASC
@@ -2118,7 +2131,11 @@ class ReadOnlyStore:
                 params,
             ).fetchall()
             current_samples_by_view[view] = [
-                {"candidate_id": row[0], "status": row[1], "status_since": isoformat(row[2])}
+                {
+                    "candidate_id": row[0],
+                    "status": row[1],
+                    "status_since": isoformat(latest_event_times.get(str(row[0])) or row[2]),
+                }
                 for row in rows
             ]
 
