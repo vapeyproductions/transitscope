@@ -1511,6 +1511,43 @@ class ReadOnlyStore:
                 empty["served_from_cache"] = True
                 empty["read_state"] = "publication_busy"
                 return empty
+
+            # There may be no completed cycle yet after a service restart. In
+            # that case still expose the worker's current lane rather than a
+            # completely empty monitor. Counts remain zero until a publish is
+            # actually completed; this is deliberately only an execution
+            # status indicator, not synthetic pipeline data.
+            current_stage = str(worker.get("stage") or "")
+            if current_stage not in {"stage1", "stage2", "stage3"}:
+                current_stage = ""
+            current_jobs = {
+                stage: {"jobs": 1 if stage == current_stage else 0}
+                for stage in ("stage1", "stage2", "stage3")
+            }
+            heartbeat = worker.get("last_heartbeat") or empty["generated_at"]
+            empty["cycle_activity"] = {
+                "window_minutes": 60,
+                "expected_runs": 12,
+                "recent_run_count": 0,
+                "default_start_index": 0,
+                "run_count": 0,
+                "runs": [],
+                "throughput": {},
+                "timings": {},
+                "queue": {
+                    "current": current_jobs,
+                    "series": [
+                        {
+                            "finished_at": heartbeat,
+                            "stage1": current_jobs["stage1"]["jobs"],
+                            "stage2": current_jobs["stage2"]["jobs"],
+                            "stage3": current_jobs["stage3"]["jobs"],
+                        }
+                    ],
+                },
+                "top100_status": {},
+                "note": "The worker is running before its first completed publish; candidate counts will appear when this cycle commits.",
+            }
             empty["served_from_cache"] = False
             empty["read_state"] = "publication_busy"
             return empty
