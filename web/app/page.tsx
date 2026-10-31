@@ -498,7 +498,15 @@ type MonitoringOverview = {
   };
   manual_migrations: ManualMigration[];
   cycle_activity: MonitoringCycleActivity;
-  worker: { state?: string; last_heartbeat?: string | null; reason?: string; catalog_health?: CatalogHealth };
+  worker: {
+    state?: string;
+    stage?: string;
+    candidate_id?: string;
+    source_candidate_id?: string;
+    last_heartbeat?: string | null;
+    reason?: string;
+    catalog_health?: CatalogHealth;
+  };
   universe: {
     configured_count: number;
     manifest_count: number;
@@ -1609,6 +1617,7 @@ export function MonitoringPanel({ refreshKey, readOnly = false }: { refreshKey: 
         {!readOnly && <article className="ops-mini-card ops-migration-control"><span className="metric-label">Manual waterfall migration</span><label className="ops-control-label" htmlFor="manual-migration-route">Route</label><select id="manual-migration-route" className="ops-control-select" value={migrationRoute} onChange={(event) => setMigrationRoute(event.target.value as "universe:stage1" | "stage1:stage2" | "stage2:stage3")}><option value="universe:stage1">Candidate Universe → Stage 1</option><option value="stage1:stage2">Stage 1 → Stage 2</option><option value="stage2:stage3">Stage 2 → Stage 3</option></select><label className="ops-control-label" htmlFor="manual-migration-count">Candidates</label><input id="manual-migration-count" className="ops-control-input" type="number" min={1} max={100} value={migrationCount} onChange={(event) => setMigrationCount(event.target.value)} /><button className="button button-quiet" type="button" onClick={() => void queueManualMigration()} disabled={migrationBusy}>{migrationBusy ? "Queueing…" : "Queue migration"}</button><small className="ops-control-help">Type the batch size manually. Maximum 100 per request.</small>{migrationMessage && <p className="operations-control-message" role="status">{migrationMessage}</p>}</article>}
       </aside>
     </div>
+    <CurrentJobsPanel overview={overview} />
     <section className="ops-section manual-migrations-section"><div className="ops-section-heading"><div><p className="eyebrow">Operator requests</p><h4>Manual migrations</h4></div><span className="section-note">Requests are claimed by the worker and use normal evaluation and replay publishing.</span></div>{overview.manual_migrations?.length ? <div className="manual-migration-list">{overview.manual_migrations.slice(0, 8).map((migration) => <div className="manual-migration-row" key={migration.request_id}><div><strong>{migration.from_stage === "universe" ? "Candidate Universe" : stageName(migration.from_stage)} → {stageName(migration.to_stage)}</strong><small>{migration.completed_count ?? 0} / {migration.requested_count} completed · {formatDate(migration.updated_at)}</small></div><span className={`manual-migration-status ${migration.status}`}>{migration.status}</span><em>{migration.message ?? "Waiting for worker"}</em></div>)}</div> : <div className="ops-empty">No manual migration requests yet.</div>}</section>
     <JobCallDistributionPanel activity={overview.cycle_activity} />
     <ProcessedHistoryChart history={overview.processed_history} currentCount={overview.universe.processed_count} />
@@ -1666,6 +1675,47 @@ function JobCallDistributionPanel({ activity }: { activity: MonitoringCycleActiv
   const colors: Record<AssessmentStage, string> = { stage1: "job-call-stage1", stage2: "job-call-stage2", stage3: "job-call-stage3" };
 
   return <section className="ops-section job-call-distribution-section" aria-labelledby="job-call-distribution-title"><div className="ops-section-heading"><div><p className="eyebrow">Dispatch distribution</p><h4 id="job-call-distribution-title">Where jobs are being called</h4></div><span className="section-note">Latest {activity.recent_run_count} saved cycles · {activity.window_minutes}-minute operating window</span></div>{!series.length || !totalJobs ? <div className="ops-empty">No queue-call telemetry is available yet. The distribution will populate after a cycle records stage-specific jobs.</div> : <><div className="job-call-summary"><div className="job-call-stack" aria-label="Share of jobs called by stage"><span className="job-call-stack-stage1" style={{ width: `${totals.stage1 / totalJobs * 100}%` }} /><span className="job-call-stack-stage2" style={{ width: `${totals.stage2 / totalJobs * 100}%` }} /><span className="job-call-stack-stage3" style={{ width: `${totals.stage3 / totalJobs * 100}%` }} /></div><div className="job-call-legend">{stages.map((stage) => { const share = totals[stage] / totalJobs * 100; return <span key={stage}><i className={colors[stage]} />{stageName(stage)} <strong>{totals[stage].toLocaleString()}</strong> <small>{share.toFixed(1)}%</small></span>; })}</div></div><div className="job-call-chart-wrap"><svg aria-label="Stage job-call distribution over the latest saved cycles" role="img" viewBox={`0 0 ${chartWidth} ${chartHeight}`}><line className="job-call-guide" x1={padding} x2={chartWidth - padding} y1={padding} y2={padding} /><line className="job-call-guide" x1={padding} x2={chartWidth - padding} y1={chartHeight / 2} y2={chartHeight / 2} /><line className="job-call-guide" x1={padding} x2={chartWidth - padding} y1={chartBottom} y2={chartBottom} />{series.map((point, index) => { const x = padding + index * stepWidth + Math.max(1, stepWidth * 0.16); const barWidth = Math.max(3, stepWidth * 0.68); const cycleTotal = stages.reduce((total, stage) => total + Number(point[stage] ?? 0), 0); let offset = 0; return stages.map((stage) => { const value = Number(point[stage] ?? 0); const height = cycleTotal ? value / maxCycleJobs * (chartBottom - padding) : 0; const y = chartBottom - offset - height; offset += height; return <rect className={colors[stage]} height={height} key={`${point.finished_at}-${stage}`} rx="2" width={barWidth} x={x} y={y}><title>{`${stageName(stage)} · ${value} jobs · ${formatDate(point.finished_at)}`}</title></rect>; }); })}</svg><div className="job-call-chart-axis"><span>Older saved cycle</span><span>Latest cycle · {latestTotal.toLocaleString()} jobs</span></div></div><div className="job-call-table" role="table" aria-label="Stage job-call distribution summary"><div className="job-call-table-row job-call-table-header" role="row"><span>Stage</span><span>Saved-window jobs</span><span>Share</span><span>Latest cycle</span></div>{stages.map((stage) => <div className="job-call-table-row" role="row" key={stage}><span><i className={colors[stage]} />{stageName(stage)}</span><strong>{totals[stage].toLocaleString()}</strong><span>{(totals[stage] / totalJobs * 100).toFixed(1)}%</span><span>{Number(latest?.[stage] ?? 0).toLocaleString()}</span></div>)}</div><p className="job-call-note">Bars show the number and mix of jobs called in each saved cycle. This is queue work—not the number of candidates retained in a ranking.</p></>}</section>;
+}
+
+function CurrentJobsPanel({ overview }: { overview: MonitoringOverview }) {
+  const stages: AssessmentStage[] = ["stage1", "stage2", "stage3"];
+  const workerState = overview.worker.state ?? "unknown";
+  const active = !overview.control.pipeline_paused && !["idle", "starting", "stopped", "paused_by_config", "paused_by_operator"].includes(workerState);
+  const activeStage = overview.worker.stage ?? workerState.match(/stage[123]/)?.[0] ?? null;
+  const currentQueue = overview.cycle_activity.queue.current ?? {};
+  const latestCycle = overview.cycle_activity.runs.at(-1);
+  const latestJobs = stages.reduce<Record<AssessmentStage, number>>((result, stage) => {
+    result[stage] = Number(currentQueue[stage]?.jobs ?? 0);
+    return result;
+  }, { stage1: 0, stage2: 0, stage3: 0 });
+  const totalLatestJobs = Object.values(latestJobs).reduce((sum, value) => sum + value, 0);
+  const activeLabel = active ? humanizeState(workerState) : overview.control.pipeline_paused ? "Paused" : "Idle";
+  const workerDetail = overview.worker.candidate_id
+    ? overview.worker.candidate_id.replace(/^stage\d+-tic-/, "TIC ").replace(/-signal-.+$/, "")
+    : overview.worker.reason ?? "Waiting for the next worker cycle";
+
+  return <section className="ops-section current-jobs-section" aria-labelledby="current-jobs-title">
+    <div className="ops-section-heading"><div><p className="eyebrow">Live execution</p><h4 id="current-jobs-title">Current jobs</h4></div><span className={`section-note current-jobs-live-note ${active ? "active" : ""}`}><span className="status-dot" />{active ? "Worker active" : activeLabel}</span></div>
+    <div className="current-jobs-visual" role="img" aria-label={`Current worker job flow: ${activeLabel}. ${totalLatestJobs} jobs were called in the latest completed cycle.`}>
+      <div className="current-jobs-track" aria-hidden="true">
+        {stages.map((stage, index) => {
+          const isActive = active && activeStage === stage;
+          const jobCount = latestJobs[stage];
+          const dotCount = Math.min(10, jobCount);
+          return <div className={`current-job-lane ${isActive ? "active" : ""}`} key={stage}>
+            <div className="current-job-lane-heading"><strong>{stageName(stage)}</strong><span>{jobCount.toLocaleString()} latest jobs</span></div>
+            <div className="current-job-lane-track"><span className="current-job-lane-fill" style={{ width: `${jobCount ? Math.min(100, 18 + jobCount * 12) : 0}%` }} />{isActive && <span className="current-job-active-marker" />}</div>
+            <div className="current-job-dots">{Array.from({ length: dotCount }, (_, dotIndex) => <span className="current-job-dot" key={`${stage}-${dotIndex}`} />)}{!jobCount && <small>No completed jobs in latest cycle</small>}</div>
+            {isActive && <span className="current-job-running">Running now</span>}
+            {index < stages.length - 1 && <span className="current-job-arrow" aria-hidden="true">→</span>}
+          </div>;
+        })}
+      </div>
+      <div className="current-job-active-summary"><span className="metric-label">Active job</span><strong>{activeLabel}</strong><small>{workerDetail}</small></div>
+    </div>
+    <div className="current-jobs-meta"><span><strong>Last worker signal</strong> {formatDate(overview.worker.last_heartbeat)}</span><span><strong>Latest completed cycle</strong> {formatDate(latestCycle?.finished_at)}</span><span><strong>Dispatch jobs</strong> {totalLatestJobs.toLocaleString()} in latest cycle</span></div>
+    <p className="current-jobs-note">The highlighted lane is the worker’s current job. The dots are jobs from the latest completed cycle; they are separate from the retained ranking population.</p>
+  </section>;
 }
 
 const explainerScenes = [

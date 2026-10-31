@@ -535,6 +535,35 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .pipeline-insight-footer { border-top: 1px solid rgba(146, 169, 205, 0.12); color: var(--muted); display: flex; font-size: 9px; gap: 10px; justify-content: space-between; margin-top: 14px; padding-top: 11px; }
 .pipeline-insight-footer span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pipeline-insight-footer strong { color: var(--text); }
+.current-jobs-section { padding-top: 18px; }
+.current-jobs-live-note { align-items: center; display: inline-flex; gap: 6px; }
+.current-jobs-live-note.active { color: var(--green); }
+.current-jobs-visual { background: rgba(3, 8, 17, 0.34); border: 1px solid rgba(146, 169, 205, 0.12); border-radius: 9px; padding: 16px; }
+.current-jobs-track { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.current-job-lane { min-width: 0; position: relative; }
+.current-job-lane-heading { align-items: baseline; display: flex; gap: 8px; justify-content: space-between; }
+.current-job-lane-heading strong { font-size: 11px; }
+.current-job-lane-heading span { color: var(--muted); font-size: 9px; }
+.current-job-lane-track { background: rgba(146, 169, 205, 0.12); border-radius: 99px; height: 8px; margin: 11px 0 9px; overflow: visible; position: relative; }
+.current-job-lane-fill { background: var(--cyan); border-radius: inherit; display: block; height: 100%; min-width: 0; transition: width 350ms ease; }
+.current-job-lane:nth-child(2) .current-job-lane-fill { background: var(--purple); }
+.current-job-lane:nth-child(3) .current-job-lane-fill { background: var(--gold); }
+.current-job-lane.active .current-job-lane-track { box-shadow: 0 0 0 2px rgba(116, 214, 172, 0.16); }
+.current-job-active-marker { background: var(--green); border: 2px solid rgba(3, 8, 17, 0.8); border-radius: 50%; box-shadow: 0 0 12px rgba(116, 214, 172, 0.8); height: 14px; position: absolute; right: -2px; top: -3px; width: 14px; }
+.current-job-dots { align-items: center; display: flex; flex-wrap: wrap; gap: 5px; min-height: 14px; }
+.current-job-dots small { color: var(--faint); font-size: 9px; }
+.current-job-dot { background: var(--muted); border-radius: 50%; display: block; height: 6px; opacity: 0.74; width: 6px; }
+.current-job-lane:nth-child(1) .current-job-dot { background: var(--cyan); }
+.current-job-lane:nth-child(2) .current-job-dot { background: var(--purple); }
+.current-job-lane:nth-child(3) .current-job-dot { background: var(--gold); }
+.current-job-running { color: var(--green); display: block; font-size: 9px; margin-top: 8px; }
+.current-job-arrow { color: var(--faint); font-size: 16px; position: absolute; right: -13px; top: 22px; }
+.current-job-active-summary { align-items: baseline; border-top: 1px solid rgba(146, 169, 205, 0.12); display: flex; gap: 10px; margin-top: 16px; padding-top: 12px; }
+.current-job-active-summary strong { color: var(--green); font-size: 12px; }
+.current-job-active-summary small { color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.current-jobs-meta { color: var(--muted); display: flex; flex-wrap: wrap; font-size: 9px; gap: 14px; margin-top: 11px; }
+.current-jobs-meta strong { color: var(--text); font-weight: 500; }
+.current-jobs-note { color: var(--muted); font-size: 9px; line-height: 1.4; margin: 11px 0 0; }
 .operations-status-rail { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .ops-mini-card { background: rgba(15, 23, 39, 0.62); border: 1px solid var(--border); border-radius: 9px; min-width: 0; padding: 11px 12px; }
 .ops-mini-card > strong { display: block; font-size: 17px; letter-spacing: -0.03em; margin: 7px 0 4px; }
@@ -889,6 +918,8 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
   .operations-opening-panel { grid-template-columns: 1fr; }
   .operations-status-rail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ops-mini-control { grid-column: 1 / -1; }
+  .current-jobs-track { grid-template-columns: 1fr; }
+  .current-job-arrow { display: none; }
   .pipeline-motion-shell { overflow-x: auto; }
   .pipeline-motion-toolbar { align-items: flex-start; flex-direction: column; }
   .pipeline-motion-track { grid-template-columns: repeat(4, minmax(170px, 1fr)); min-width: 720px; }
