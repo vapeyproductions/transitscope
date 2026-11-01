@@ -66,6 +66,7 @@ function readPersistedRanking(cacheKey: string): RankingResponse | null {
     const raw = window.localStorage.getItem(`${CLIENT_RANKING_CACHE_PREFIX}${cacheKey}`);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as RankingResponse;
+    if (parsed?.read_state === "publication_busy" && !parsed.served_from_cache) return null;
     return parsed && Array.isArray(parsed.rows) ? parsed : null;
   } catch {
     return null;
