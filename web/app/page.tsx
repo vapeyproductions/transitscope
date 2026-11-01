@@ -1949,6 +1949,12 @@ export default function HomePage() {
         if (Date.now() - cachedAt < 30_000) continue;
         try {
           const nextRanking = await fetchPublishedRanking(query);
+          // A publication lock is a temporary read state, not an empty
+          // ranking. Never overwrite a usable Stage 1/2/3 snapshot with the
+          // zero-row response returned while the worker is publishing.
+          if (nextRanking.read_state === "publication_busy" && !nextRanking.served_from_cache) {
+            continue;
+          }
           rankingCacheRef.current.set(query, nextRanking);
           rankingCacheAtRef.current.set(query, Date.now());
           persistRanking(query, nextRanking);
