@@ -396,45 +396,102 @@ class DuckDBStore:
         connection: duckdb.DuckDBPyConnection,
         updates: Sequence[Mapping[str, object]],
     ) -> None:
-        for update in updates:
-            candidate_id = update.get("candidate_id")
-            if not candidate_id:
-                continue
-            connection.execute(
-                """
-                UPDATE candidates
-                SET current_stage = COALESCE(?, current_stage), signal_id = COALESCE(?, signal_id), rank_overall = ?, rank_stage = ?, rank_delta = ?, movement_kind = ?,
-                    active = ?, activity = ?, status = ?, overall_score = ?, stage_score = ?,
-                    last_evaluated_at = ?, known_match_id = ?,
-                    processing_slot_occupied = COALESCE(?, processing_slot_occupied),
-                    signal_group_id = COALESCE(?, signal_group_id),
-                    signal_resolution = COALESCE(?, signal_resolution),
-                    alias_of_candidate_id = ?,
-                    promotion_eligible = COALESCE(?, promotion_eligible)
-                WHERE candidate_id = ?
-                """,
-                [
-                    update.get("current_stage"),
-                    update.get("signal_id"),
-                    update.get("rank_overall"),
-                    update.get("rank_stage"),
-                    update.get("rank_delta", 0),
-                    update.get("movement_kind", "unchanged"),
-                    update.get("active", True),
-                    update.get("activity", "No current activity"),
-                    update.get("status"),
-                    update.get("overall_score"),
-                    update.get("stage_score"),
-                    update.get("last_evaluated_at"),
-                    update.get("known_match_id"),
-                    update.get("processing_slot_occupied"),
-                    update.get("signal_group_id"),
-                    update.get("signal_resolution"),
-                    update.get("alias_of_candidate_id"),
-                    update.get("promotion_eligible"),
-                    candidate_id,
-                ],
+        values = [
+            [
+                update.get("candidate_id"),
+                update.get("current_stage"),
+                update.get("signal_id"),
+                update.get("rank_overall"),
+                update.get("rank_stage"),
+                update.get("rank_delta", 0),
+                update.get("movement_kind", "unchanged"),
+                update.get("active", True),
+                update.get("activity", "No current activity"),
+                update.get("status"),
+                update.get("overall_score"),
+                update.get("stage_score"),
+                update.get("last_evaluated_at"),
+                update.get("known_match_id"),
+                update.get("processing_slot_occupied"),
+                update.get("signal_group_id"),
+                update.get("signal_resolution"),
+                update.get("alias_of_candidate_id"),
+                update.get("promotion_eligible"),
+            ]
+            for update in updates
+            if update.get("candidate_id")
+        ]
+        if not values:
+            return
+
+        # Ranking publication used to execute one UPDATE statement per
+        # candidate. With a large active pool, a single Stage 2 or Stage 3
+        # evaluation could therefore hold the publication transaction for
+        # minutes and make the worker look frozen. Stage the rows once and
+        # apply them with one joined UPDATE; the COALESCE/direct assignments
+        # intentionally preserve the old per-row semantics.
+        connection.execute(
+            """
+            CREATE TEMP TABLE candidate_updates_tmp (
+                candidate_id VARCHAR,
+                current_stage VARCHAR,
+                signal_id VARCHAR,
+                rank_overall BIGINT,
+                rank_stage BIGINT,
+                rank_delta BIGINT,
+                movement_kind VARCHAR,
+                active BOOLEAN,
+                activity VARCHAR,
+                status VARCHAR,
+                overall_score DOUBLE,
+                stage_score DOUBLE,
+                last_evaluated_at TIMESTAMP WITH TIME ZONE,
+                known_match_id VARCHAR,
+                processing_slot_occupied BOOLEAN,
+                signal_group_id VARCHAR,
+                signal_resolution VARCHAR,
+                alias_of_candidate_id VARCHAR,
+                promotion_eligible BOOLEAN
             )
+            """
+        )
+        connection.executemany(
+            """
+            INSERT INTO candidate_updates_tmp VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            """,
+            values,
+        )
+        connection.execute(
+            """
+            UPDATE candidates AS candidate
+            SET current_stage = COALESCE(update_row.current_stage, candidate.current_stage),
+                signal_id = COALESCE(update_row.signal_id, candidate.signal_id),
+                rank_overall = update_row.rank_overall,
+                rank_stage = update_row.rank_stage,
+                rank_delta = update_row.rank_delta,
+                movement_kind = update_row.movement_kind,
+                active = update_row.active,
+                activity = update_row.activity,
+                status = update_row.status,
+                overall_score = update_row.overall_score,
+                stage_score = update_row.stage_score,
+                last_evaluated_at = update_row.last_evaluated_at,
+                known_match_id = update_row.known_match_id,
+                processing_slot_occupied = COALESCE(
+                    update_row.processing_slot_occupied,
+                    candidate.processing_slot_occupied
+                ),
+                signal_group_id = COALESCE(update_row.signal_group_id, candidate.signal_group_id),
+                signal_resolution = COALESCE(update_row.signal_resolution, candidate.signal_resolution),
+                alias_of_candidate_id = update_row.alias_of_candidate_id,
+                promotion_eligible = COALESCE(update_row.promotion_eligible, candidate.promotion_eligible)
+            FROM candidate_updates_tmp AS update_row
+            WHERE candidate.candidate_id = update_row.candidate_id
+            """
+        )
+        connection.execute("DROP TABLE candidate_updates_tmp")
 
     @staticmethod
     def _upsert_coverage_watermarks(
