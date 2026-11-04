@@ -1884,6 +1884,9 @@ export default function HomePage() {
   const rankingCacheRef = useRef(new Map<string, RankingResponse>());
   const rankingCacheAtRef = useRef(new Map<string, number>());
   const rankingInflightRef = useRef(new Map<string, Promise<RankingResponse>>());
+  const candidateDetailCacheRef = useRef(new Map<string, CandidateDetail>());
+  const candidateCurveCacheRef = useRef(new Map<string, LightCurveResponse>());
+  const candidateHistoryCacheRef = useRef(new Map<string, HistoryResponse>());
   const stagePrefetchInFlightRef = useRef(false);
 
   const closeCandidate = useCallback(() => {
@@ -2065,13 +2068,18 @@ export default function HomePage() {
   const openCandidate = useCallback(async (candidateId: string, seed?: RankingRow) => {
     selectedIdRef.current = candidateId;
     setSelectedId(candidateId);
-    setModalLoading(!seed);
+    const cachedDetail = candidateDetailCacheRef.current.get(candidateId) ?? null;
+    const cachedCurve = candidateCurveCacheRef.current.get(candidateId) ?? null;
+    const cachedHistory = candidateHistoryCacheRef.current.get(candidateId) ?? null;
+    setModalLoading(!seed && !cachedDetail);
     setError(null);
-    setCurve(null);
-    setHistory(null);
-    setCandidateDetailLoaded(false);
+    setCurve(cachedCurve);
+    setHistory(cachedHistory);
+    setCandidateDetailLoaded(Boolean(cachedDetail));
     setCandidateLoadError(null);
-    if (seed) {
+    if (cachedDetail) {
+      setCandidate(cachedDetail);
+    } else if (seed) {
       setCandidate({
         candidate_id: seed.candidate_id,
         target_id: seed.target_id,
@@ -2092,6 +2100,8 @@ export default function HomePage() {
         target: null,
         evaluation: null,
       });
+    } else {
+      setCandidate(null);
     }
 
     const detailRequest = fetchCandidateJson<{ candidate: CandidateDetail }>(`/api/candidates/${candidateId}`);
@@ -2099,6 +2109,7 @@ export default function HomePage() {
     const curveRequest = fetchCandidateJson<LightCurveResponse>(`/api/candidates/${candidateId}/light-curve`);
 
     void detailRequest.then((detail) => {
+      candidateDetailCacheRef.current.set(candidateId, detail.candidate);
       if (selectedIdRef.current === candidateId) {
         setCandidate(detail.candidate);
         setCandidateDetailLoaded(true);
@@ -2106,22 +2117,28 @@ export default function HomePage() {
       setModalLoading(false);
     }).catch((cause) => {
       if (!seed) {
-        setError(cause instanceof Error ? cause.message : "Candidate details are unavailable.");
-        closeCandidate();
+        if (!cachedDetail) {
+          setError(cause instanceof Error ? cause.message : "Candidate details are unavailable.");
+          closeCandidate();
+        }
       } else if (selectedIdRef.current === candidateId) {
-        setCandidateLoadError("The published evidence is still busy. Reopen this candidate after the next worker snapshot.");
+        if (!cachedDetail) {
+          setCandidateLoadError("The latest snapshot is still publishing; this candidate has no previously cached evidence in this browser yet.");
+        }
       }
       setModalLoading(false);
     });
     void historyRequest.then((nextHistory) => {
+      candidateHistoryCacheRef.current.set(candidateId, nextHistory);
       if (selectedIdRef.current === candidateId) setHistory(nextHistory);
     }).catch(() => {
-      if (selectedIdRef.current === candidateId) setCandidateLoadError((current) => current ?? "The persisted assessment history is temporarily unavailable. Reopen after the next worker snapshot.");
+      if (selectedIdRef.current === candidateId && !cachedHistory) setCandidateLoadError((current) => current ?? "The persisted assessment history is temporarily unavailable. Reopen after the next worker snapshot.");
     });
     void curveRequest.then((nextCurve) => {
+      candidateCurveCacheRef.current.set(candidateId, nextCurve);
       if (selectedIdRef.current === candidateId) setCurve(nextCurve);
     }).catch(() => {
-      if (selectedIdRef.current === candidateId) setCandidateLoadError((current) => current ?? "The persisted light curve is temporarily unavailable. Reopen after the next worker snapshot.");
+      if (selectedIdRef.current === candidateId && !cachedCurve) setCandidateLoadError((current) => current ?? "The persisted light curve is temporarily unavailable. Reopen after the next worker snapshot.");
     });
   }, [closeCandidate]);
 

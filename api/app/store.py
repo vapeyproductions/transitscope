@@ -4,6 +4,7 @@ import json
 import os
 import fcntl
 import copy
+import hashlib
 import threading
 import time
 from datetime import datetime, timezone
@@ -33,6 +34,9 @@ _READ_CACHE_LOCK = threading.Lock()
 _RANKING_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _STATUS_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _MONITORING_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
+_CANDIDATE_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
+_HISTORY_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
+_CURVE_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _READ_CACHE_LIMIT = 32
 
 
@@ -109,6 +113,49 @@ class ReadOnlyStore:
         self.data_dir = data_dir or Path(os.getenv("DATA_DIR", "/app/data"))
         self.database = self.data_dir / "transitscope.duckdb"
         self.publication_busy = False
+
+    def _disk_cache_path(self, kind: str, key: str) -> Path:
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        return self.data_dir / "candidate-evidence-cache" / f"{kind}-{digest}.json"
+
+    def _read_disk_cache(self, kind: str, key: str) -> dict[str, Any] | None:
+        path = self._disk_cache_path(kind, key)
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _write_disk_cache(self, kind: str, key: str, payload: dict[str, Any]) -> None:
+        path = self._disk_cache_path(kind, key)
+        temporary = path.with_suffix(path.suffix + f".{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(json.dumps(payload, separators=(",", ":")))
+            os.replace(temporary, path)
+        except (OSError, TypeError, ValueError):
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _cached_response(
+        self,
+        cache: dict[str, dict[str, Any]],
+        kind: str,
+        key: str,
+    ) -> dict[str, Any] | None:
+        return _cache_get(cache, key) or self._read_disk_cache(kind, key)
+
+    def _remember_response(
+        self,
+        cache: dict[str, dict[str, Any]],
+        kind: str,
+        key: str,
+        payload: dict[str, Any],
+    ) -> None:
+        _cache_set(cache, key, payload)
+        self._write_disk_cache(kind, key, payload)
 
     def connect(self, *, timeout_seconds: float | None = None) -> Any | None:
         self.publication_busy = False
@@ -949,6 +996,9 @@ class ReadOnlyStore:
         connection = self.connect(timeout_seconds=1.25)
         if connection is None:
             if self.publication_busy:
+                cached = self._cached_response(_CANDIDATE_RESPONSE_CACHE, "candidate", candidate_id)
+                if cached is not None:
+                    return cached
                 raise PublicationBusyError("The worker is publishing a new candidate snapshot.")
             return None
         try:
@@ -1002,7 +1052,7 @@ class ReadOnlyStore:
             signal_index = features.get("signal_index") if isinstance(features, dict) else None
             if not isinstance(signal_index, int) or isinstance(signal_index, bool):
                 signal_index = self._signal_indices(connection, [str(candidate[0])]).get(str(candidate[0]))
-            return {
+            result = {
                 "candidate_id": candidate[0],
                 "target_id": candidate[1],
                 "stage": candidate[2],
@@ -1050,6 +1100,8 @@ class ReadOnlyStore:
                 else None,
                 "next_action": self._next_action(candidate[2], candidate[3]),
             }
+            self._remember_response(_CANDIDATE_RESPONSE_CACHE, "candidate", candidate_id, result)
+            return result
         finally:
             connection.close()
 
@@ -1057,6 +1109,10 @@ class ReadOnlyStore:
         detail = self.candidate(candidate_id)
         if detail is None or not detail.get("evaluation"):
             return None
+        if self.publication_busy:
+            cached = self._cached_response(_CURVE_RESPONSE_CACHE, "curve", candidate_id)
+            if cached is not None:
+                return cached
         feature_path = detail["evaluation"]["features"].get("normalized_path")
         if not feature_path:
             # A later insufficient-data evaluation can legitimately lack a
@@ -1066,6 +1122,9 @@ class ReadOnlyStore:
             connection = self.connect(timeout_seconds=1.25)
             if connection is None:
                 if self.publication_busy:
+                    cached = self._cached_response(_CURVE_RESPONSE_CACHE, "curve", candidate_id)
+                    if cached is not None:
+                        return cached
                     raise PublicationBusyError("The worker is publishing a new candidate snapshot.")
                 return {"candidate_id": candidate_id, "points": [], "data_version": None}
             try:
@@ -1101,7 +1160,7 @@ class ReadOnlyStore:
         except (OSError, KeyError, ValueError):
             return None
         indices = self._sample_indices(len(time_values), max_points)
-        return {
+        result = {
             "candidate_id": candidate_id,
             "data_version": self._version(),
             "source": "normalized Stage 1 series",
@@ -1110,6 +1169,8 @@ class ReadOnlyStore:
                 for index in indices
             ],
         }
+        self._remember_response(_CURVE_RESPONSE_CACHE, "curve", candidate_id, result)
+        return result
 
     def history(self, candidate_id: str) -> dict[str, Any] | None:
         if self.candidate(candidate_id) is None:
@@ -1117,6 +1178,9 @@ class ReadOnlyStore:
         connection = self.connect(timeout_seconds=1.25)
         if connection is None:
             if self.publication_busy:
+                cached = self._cached_response(_HISTORY_RESPONSE_CACHE, "history", candidate_id)
+                if cached is not None:
+                    return cached
                 raise PublicationBusyError("The worker is publishing a new candidate snapshot.")
             return {"candidate_id": candidate_id, "data_version": None, "events": []}
         try:
@@ -1133,7 +1197,7 @@ class ReadOnlyStore:
                 """,
                 [candidate_id],
             ).fetchall()
-            return {
+            result = {
                 "candidate_id": candidate_id,
                 "data_version": self.latest_version(connection),
                 "events": [
@@ -1148,6 +1212,8 @@ class ReadOnlyStore:
                     for row in events
                 ],
             }
+            self._remember_response(_HISTORY_RESPONSE_CACHE, "history", candidate_id, result)
+            return result
         finally:
             connection.close()
 
