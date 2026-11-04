@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from .store import ReadOnlyStore
+from .store import PublicationBusyError, ReadOnlyStore
 
 
 app = FastAPI(
@@ -311,16 +311,37 @@ def replay_events(
 
 @app.get("/api/candidates/{candidate_id}")
 def candidate(candidate_id: str) -> dict:
-    result = ReadOnlyStore().candidate(candidate_id)
+    store = ReadOnlyStore()
+    try:
+        result = store.candidate(candidate_id)
+    except PublicationBusyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "publication_busy",
+                "message": "The worker is publishing the latest candidate snapshot; retrying will not rerun a model.",
+                "retryable": True,
+            },
+        ) from exc
     if result is None:
         raise not_found("candidate_not_found", f"Candidate {candidate_id} was not found.")
-    return {"data_version": ReadOnlyStore()._version(), "candidate": result}
+    return {"data_version": store._version(), "candidate": result}
 
 
 @app.get("/api/candidates/{candidate_id}/light-curve")
 def light_curve(candidate_id: str) -> dict:
     store = ReadOnlyStore()
-    result = store.light_curve(candidate_id)
+    try:
+        result = store.light_curve(candidate_id)
+    except PublicationBusyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "publication_busy",
+                "message": "The worker is publishing the latest light curve snapshot; retrying will not rerun a model.",
+                "retryable": True,
+            },
+        ) from exc
     if result is None:
         raise not_found("light_curve_unavailable", f"No light curve is available for {candidate_id}.")
     return result
@@ -328,7 +349,17 @@ def light_curve(candidate_id: str) -> dict:
 
 @app.get("/api/candidates/{candidate_id}/history")
 def history(candidate_id: str) -> dict:
-    result = ReadOnlyStore().history(candidate_id)
+    try:
+        result = ReadOnlyStore().history(candidate_id)
+    except PublicationBusyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "publication_busy",
+                "message": "The worker is publishing the latest candidate history; retrying will not rerun a model.",
+                "retryable": True,
+            },
+        ) from exc
     if result is None:
         raise not_found("candidate_not_found", f"Candidate {candidate_id} was not found.")
     return result

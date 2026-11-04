@@ -609,9 +609,28 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const payload = await response.json();
   if (!response.ok) {
     const message = payload?.detail?.message ?? "The observatory API did not respond successfully.";
-    throw new Error(message);
+    const error = new Error(message) as Error & { code?: string; retryable?: boolean; status?: number };
+    error.code = payload?.detail?.code;
+    error.retryable = payload?.detail?.retryable;
+    error.status = response.status;
+    throw error;
   }
   return payload as T;
+}
+
+async function fetchCandidateJson<T>(path: string): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      return await fetchJson<T>(path);
+    } catch (cause) {
+      lastError = cause;
+      const retryable = cause instanceof Error && (cause as Error & { code?: string; retryable?: boolean }).code === "publication_busy";
+      if (!retryable || attempt === 7) throw cause;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, Math.min(500 + attempt * 350, 2200)));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Candidate evidence is temporarily unavailable.");
 }
 
 function formatDate(value: string | null | undefined): string {
@@ -992,7 +1011,7 @@ function Metric({ label, value }: { label: string; value: string }) {
   return <div className="detail-metric"><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function AssessmentTrail({ candidate, events }: { candidate: CandidateDetail; events: HistoryEvent[] }) {
+function AssessmentTrail({ candidate, events, loading, loadError }: { candidate: CandidateDetail; events: HistoryEvent[]; loading: boolean; loadError: string | null }) {
   const stageTrail = assessmentStages.map((stage) => {
     const stageEvents = events.filter((event) => event.stage === stage || (stage === "stage3" && event.event_type === "stage3_intake_queued"));
     const evaluationEvents = stageEvents.filter((event) => event.event_type === `${stage}_evaluated`);
@@ -1008,7 +1027,7 @@ function AssessmentTrail({ candidate, events }: { candidate: CandidateDetail; ev
   });
 
   return <div className="assessment-trail-content">
-    <div className="trail-intro"><div><p className="eyebrow">Persisted investigation record</p><h4>Assessment trail</h4><p>Follow when this signal entered each stage queue, what the stage tested, and which result determined its next move. These records come from published pipeline events; replay mode filters them to the selected point in time.</p></div><span className="trail-event-count">{events.length} recorded event{events.length === 1 ? "" : "s"}</span></div>
+    <div className="trail-intro"><div><p className="eyebrow">Persisted investigation record</p><h4>Assessment trail</h4><p>Follow when this signal entered each stage queue, what the stage tested, and which result determined its next move. These records come from published pipeline events; replay mode filters them to the selected point in time.</p></div><span className="trail-event-count">{loading ? "Loading…" : `${events.length} recorded event${events.length === 1 ? "" : "s"}`}</span></div>
     <div className="trail-stage-grid">
       {stageTrail.map(({ stage, queueEvent, latestEvaluation, status }) => <article className={`trail-stage-card ${latestEvaluation ? "complete" : "pending"}`} key={stage}>
         <div className="trail-stage-heading"><span className="stage-number">{stage === "stage1" ? "01" : stage === "stage2" ? "02" : "03"}</span><div><strong>{stageName(stage)}</strong><small>{queueEvent ? (stage === "stage1" ? "First processing" : "Queue entry") : "Not recorded"}</small></div></div>
@@ -1021,7 +1040,7 @@ function AssessmentTrail({ candidate, events }: { candidate: CandidateDetail; ev
       </article>)}
     </div>
     <div className="modal-section assessment-event-section"><div className="section-heading"><div><p className="eyebrow">Chronological record</p><h4>Queue, model, and comparison events</h4></div><span className="section-note">Oldest first</span></div>
-      {events.length ? <div className="assessment-event-list">{events.map((event) => {
+      {loading ? <div className="trail-empty"><strong>{loadError ?? "Loading the persisted assessment trail…"}</strong><span>The worker may be publishing a new snapshot; this view will update when the published record is available.</span></div> : events.length ? <div className="assessment-event-list">{events.map((event) => {
         const status = historyEventStatus(event);
         const details = historyEventDetails(event);
         return <article className="assessment-event" key={`${event.sequence_number}-${event.event_type}-${event.model_run_id ?? "event"}`}>
@@ -1033,7 +1052,7 @@ function AssessmentTrail({ candidate, events }: { candidate: CandidateDetail; ev
   </div>;
 }
 
-function CandidateModal({ candidate, curve, history, replaySequence, onClose }: { candidate: CandidateDetail; curve: LightCurveResponse | null; history: HistoryResponse | null; replaySequence: number | null; onClose: () => void }) {
+function CandidateModal({ candidate, curve, history, replaySequence, loadError, onClose }: { candidate: CandidateDetail; curve: LightCurveResponse | null; history: HistoryResponse | null; replaySequence: number | null; loadError: string | null; onClose: () => void }) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const [transitOpen, setTransitOpen] = useState(false);
   const [modalTab, setModalTab] = useState<"curve" | "trail">("curve");
@@ -1106,6 +1125,7 @@ function CandidateModal({ candidate, curve, history, replaySequence, onClose }: 
   }, [candidate.candidate_id]);
 
   const visibleHistory = history?.events.filter((event) => replaySequence === null || event.sequence_number <= replaySequence) ?? [];
+  const evidenceLoading = candidate.evaluation === null && !loadError;
   const signal = signalLabel(candidate.candidate_id, features, candidate.signal_index);
   const summaryNote = candidate.status === "Promising" ? null : candidate.ranking_rationale ?? candidate.activity;
   const handleTransitFrameChange = useCallback((index: number, total: number) => {
@@ -1114,17 +1134,17 @@ function CandidateModal({ candidate, curve, history, replaySequence, onClose }: 
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="candidate-modal" role="dialog" aria-modal="true" aria-labelledby="candidate-modal-title">
       <header className="modal-header"><div><p className="eyebrow accent">Candidate investigation · {stageName(candidate.stage)}</p><h3 id="candidate-modal-title">{candidate.target_id}{signal ? ` - ${signal}` : ""}</h3><p className="modal-subtitle">{candidate.target?.source_product_family ?? "MAST / TESS observation"}</p></div><button ref={closeRef} className="modal-close" type="button" onClick={onClose} aria-label="Close candidate details">×</button></header>
-      <div className="modal-summary"><span className="stage-status-stage">{stageName(candidate.stage)}</span>{" "}<span className={`status-pill status-${statusClass(displayStatus(candidate.status, candidate.stage))}`}>{displayStatus(candidate.status, candidate.stage)}</span>{signalResolutionLabel(candidate.signal_resolution) && <span className="evidence-chip">{signalResolutionLabel(candidate.signal_resolution)}</span>}{summaryNote && <span className="modal-summary-note">{summaryNote}</span>}{replaySequence !== null && <span className="replay-chip">Replay view</span>}</div>
-      <nav className="modal-tabs" aria-label="Candidate detail views" role="tablist"><button className={`modal-tab ${modalTab === "curve" ? "active" : ""}`} type="button" role="tab" aria-selected={modalTab === "curve"} onClick={() => setModalTab("curve")}>Light curve</button><button className={`modal-tab ${modalTab === "trail" ? "active" : ""}`} type="button" role="tab" aria-selected={modalTab === "trail"} onClick={() => setModalTab("trail")}>Assessment trail <span>{visibleHistory.length}</span></button></nav>
-      {modalTab === "trail" ? <AssessmentTrail candidate={candidate} events={visibleHistory} /> : <div className="modal-content-grid">
+      <div className="modal-summary"><span className="stage-status-stage">{stageName(candidate.stage)}</span>{" "}<span className={`status-pill status-${statusClass(displayStatus(candidate.status, candidate.stage))}`}>{displayStatus(candidate.status, candidate.stage)}</span>{signalResolutionLabel(candidate.signal_resolution) && <span className="evidence-chip">{signalResolutionLabel(candidate.signal_resolution)}</span>}{summaryNote && <span className="modal-summary-note">{summaryNote}</span>}{evidenceLoading && <span className="modal-data-status" role="status">Waiting for the latest published evidence…</span>}{loadError && <span className="modal-data-status modal-data-status-error" role="alert">{loadError}</span>}{replaySequence !== null && <span className="replay-chip">Replay view</span>}</div>
+      <nav className="modal-tabs" aria-label="Candidate detail views" role="tablist"><button className={`modal-tab ${modalTab === "curve" ? "active" : ""}`} type="button" role="tab" aria-selected={modalTab === "curve"} onClick={() => setModalTab("curve")}>Light curve</button><button className={`modal-tab ${modalTab === "trail" ? "active" : ""}`} type="button" role="tab" aria-selected={modalTab === "trail"} onClick={() => setModalTab("trail")}>Assessment trail <span>{history === null ? loadError ? "—" : "…" : visibleHistory.length}</span></button></nav>
+      {modalTab === "trail" ? <AssessmentTrail candidate={candidate} events={visibleHistory} loading={history === null} loadError={loadError} /> : <div className="modal-content-grid">
         <div className="modal-main-column">
-          <div className="modal-section"><div className="section-heading"><div><p className="eyebrow">Normalized observation</p><h4>Light curve</h4></div><div className="chart-actions"><span className="section-note">{curve?.points.length ?? 0} plotted points</span><button className={`transit-toggle ${transitOpen ? "active" : ""}`} type="button" aria-pressed={transitOpen} aria-label={transitOpen ? "Hide transit replay" : "See the curve with transit replay"} onClick={() => { setTransitOpen((current) => !current); setTransitProgress(transitOpen ? null : 0); }}><span className="planet-toggle-glyph" aria-hidden="true"><i /></span>See the curve</button></div></div><LightCurveChart points={curve?.points ?? []} signalFeatures={features} emptyMessage={emptyCurveMessage} transitProgress={transitOpen ? transitProgress : null} transitOverlay={transitOpen ? <TransitSimulation points={curve?.points ?? []} signalFeatures={features} onFrameChange={handleTransitFrameChange} /> : null} /></div>
+          <div className="modal-section"><div className="section-heading"><div><p className="eyebrow">Normalized observation</p><h4>Light curve</h4></div><div className="chart-actions"><span className="section-note">{curve === null ? "Loading…" : `${curve.points.length} plotted points`}</span><button className={`transit-toggle ${transitOpen ? "active" : ""}`} type="button" aria-pressed={transitOpen} aria-label={transitOpen ? "Hide transit replay" : "See the curve with transit replay"} onClick={() => { setTransitOpen((current) => !current); setTransitProgress(transitOpen ? null : 0); }}><span className="planet-toggle-glyph" aria-hidden="true"><i /></span>See the curve</button></div></div><LightCurveChart points={curve?.points ?? []} signalFeatures={features} emptyMessage={curve === null ? loadError ?? "Waiting for the published light curve…" : emptyCurveMessage} transitProgress={transitOpen ? transitProgress : null} transitOverlay={transitOpen ? <TransitSimulation points={curve?.points ?? []} signalFeatures={features} onFrameChange={handleTransitFrameChange} /> : null} /></div>
           <div className="modal-section"><div className="section-heading"><div><p className="eyebrow">Interpretable evidence</p><h4>Assessment metrics</h4></div></div><div className="detail-metrics">{displayMetrics.map(([label, value]) => <Metric key={label} label={label} value={value} />)}</div></div>
           {candidate.stage === "stage3" && <div className="next-action stage3-context"><span>Stage 3 context</span><p>{insufficientStage3 ? "This candidate was admitted after its Stage 2 result was eligible for Stage 3. The Stage 3 test did not have a recoverable event in every chronological holdout, so no predictive metrics were produced yet." : "This candidate has a completed chronological holdout assessment."}</p><p>{productCount ? `${productCount} MAST / TESS products · ${numberFeature("total_samples", 0)} samples · ${windowCount || "—"} chronological windows.` : "No Stage 3 products are attached to this evaluation yet."}</p></div>}
         </div>
         <aside className="modal-side-column">
           <div className="detail-card"><p className="eyebrow">Current assessment</p><dl className="detail-list"><div><dt>Overall rank</dt><dd>#{candidate.rank_overall ?? "—"}</dd></div><div><dt>Stage rank</dt><dd>#{candidate.rank_stage ?? "—"}</dd></div><div><dt>Last evaluation</dt><dd>{formatDate(candidate.last_evaluated_at)}</dd></div><div><dt>Data sufficiency</dt><dd>{candidate.evaluation?.data_sufficiency ?? "—"}</dd></div><div><dt>Sector</dt><dd>{candidate.target?.sector ?? "—"}</dd></div></dl><div className="next-action"><span>Next evidence</span><p>{candidate.next_action}</p></div></div>
-          <div className="detail-card"><p className="eyebrow">Pipeline history</p><div className="timeline">{visibleHistory.length ? visibleHistory.map((event) => <div className="timeline-event" key={`${event.sequence_number}-${event.event_type}`}><span className="timeline-dot" /><div><strong>{event.event_type.replaceAll("_", " ")}</strong><span>{formatDate(event.occurred_at)}</span></div></div>) : <p className="muted-copy">No pipeline events recorded at this replay position.</p>}</div></div>
+          <div className="detail-card"><p className="eyebrow">Pipeline history</p><div className="timeline">{history === null ? <p className="muted-copy">{loadError ?? "Loading the persisted pipeline history…"}</p> : visibleHistory.length ? visibleHistory.map((event) => <div className="timeline-event" key={`${event.sequence_number}-${event.event_type}`}><span className="timeline-dot" /><div><strong>{event.event_type.replaceAll("_", " ")}</strong><span>{formatDate(event.occurred_at)}</span></div></div>) : <p className="muted-copy">No pipeline events recorded at this replay position.</p>}</div></div>
         </aside>
       </div>}
       <footer className="modal-footer"><span>Coordinates: {candidate.target?.ra_deg?.toFixed(4) ?? "—"}°, {candidate.target?.dec_deg?.toFixed(4) ?? "—"}°</span><span>Evidence is provisional · not scientific confirmation</span></footer>
@@ -1846,6 +1866,7 @@ export default function HomePage() {
   const [curve, setCurve] = useState<LightCurveResponse | null>(null);
   const [history, setHistory] = useState<HistoryResponse | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
+  const [candidateLoadError, setCandidateLoadError] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   const [replayStates, setReplayStates] = useState<Record<RankingView, ReplayState>>(createReplayStates);
   const [rankingControls, setRankingControls] = useState<Record<RankingView, RankingControls>>(createRankingControls);
@@ -1865,6 +1886,7 @@ export default function HomePage() {
     setCandidate(null);
     setCurve(null);
     setHistory(null);
+    setCandidateLoadError(null);
   }, []);
 
   const updateReplay = useCallback((view: RankingView, patch: Partial<ReplayState>) => {
@@ -2039,7 +2061,8 @@ export default function HomePage() {
     setModalLoading(!seed);
     setError(null);
     setCurve(null);
-    setHistory({ events: [] });
+    setHistory(null);
+    setCandidateLoadError(null);
     if (seed) {
       setCandidate({
         candidate_id: seed.candidate_id,
@@ -2063,9 +2086,9 @@ export default function HomePage() {
       });
     }
 
-    const detailRequest = fetchJson<{ candidate: CandidateDetail }>(`/api/candidates/${candidateId}`);
-    const historyRequest = fetchJson<HistoryResponse>(`/api/candidates/${candidateId}/history`);
-    const curveRequest = fetchJson<LightCurveResponse>(`/api/candidates/${candidateId}/light-curve`);
+    const detailRequest = fetchCandidateJson<{ candidate: CandidateDetail }>(`/api/candidates/${candidateId}`);
+    const historyRequest = fetchCandidateJson<HistoryResponse>(`/api/candidates/${candidateId}/history`);
+    const curveRequest = fetchCandidateJson<LightCurveResponse>(`/api/candidates/${candidateId}/light-curve`);
 
     void detailRequest.then((detail) => {
       if (selectedIdRef.current === candidateId) setCandidate(detail.candidate);
@@ -2074,18 +2097,20 @@ export default function HomePage() {
       if (!seed) {
         setError(cause instanceof Error ? cause.message : "Candidate details are unavailable.");
         closeCandidate();
+      } else if (selectedIdRef.current === candidateId) {
+        setCandidateLoadError("The published evidence is still busy. Reopen this candidate after the next worker snapshot.");
       }
       setModalLoading(false);
     });
     void historyRequest.then((nextHistory) => {
       if (selectedIdRef.current === candidateId) setHistory(nextHistory);
     }).catch(() => {
-      // The modal remains useful with the ranking-row shell while the worker is publishing.
+      if (selectedIdRef.current === candidateId) setCandidateLoadError((current) => current ?? "The persisted assessment history is temporarily unavailable. Reopen after the next worker snapshot.");
     });
     void curveRequest.then((nextCurve) => {
       if (selectedIdRef.current === candidateId) setCurve(nextCurve);
     }).catch(() => {
-      // A missing curve should not prevent the Assessment trail from being opened.
+      if (selectedIdRef.current === candidateId) setCandidateLoadError((current) => current ?? "The persisted light curve is temporarily unavailable. Reopen after the next worker snapshot.");
     });
   }, [closeCandidate]);
 
@@ -2156,8 +2181,8 @@ export default function HomePage() {
   const modal = useMemo(() => {
     if (!selectedId) return null;
     if (modalLoading || !candidate) return <div className="modal-backdrop" role="presentation"><section className="candidate-modal modal-loading" role="dialog" aria-modal="true" aria-label="Loading candidate details"><span className="status-dot" /><p>Loading candidate evidence…</p></section></div>;
-    return <CandidateModal candidate={candidate} curve={curve} history={history} replaySequence={activeReplay.active ? activeReplay.cursor : null} onClose={closeCandidate} />;
-  }, [activeReplay.active, activeReplay.cursor, candidate, closeCandidate, curve, history, modalLoading, selectedId]);
+    return <CandidateModal candidate={candidate} curve={curve} history={history} replaySequence={activeReplay.active ? activeReplay.cursor : null} loadError={candidateLoadError} onClose={closeCandidate} />;
+  }, [activeReplay.active, activeReplay.cursor, candidate, candidateLoadError, closeCandidate, curve, history, modalLoading, selectedId]);
 
   return <main className="observatory-shell">
     <div className="ambient-glow ambient-glow-one" aria-hidden="true" /><div className="ambient-glow ambient-glow-two" aria-hidden="true" />

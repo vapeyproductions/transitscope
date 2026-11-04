@@ -395,6 +395,8 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 @keyframes explainer-sample-dot { 0%, 68%, 100% { opacity: 0.58; transform: translate(0, 0); } 82% { opacity: 1; transform: translate(17px, -8px); } }
 @keyframes explainer-stage-dot { 0%, 100% { opacity: 0.58; transform: translateY(0); } 45% { opacity: 1; transform: translateY(-4px); } 60% { opacity: 0.75; transform: translateY(3px); } }
 .modal-summary { align-items: center; border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 10px; padding: 15px 28px; }
+.modal-data-status { background: rgba(118, 228, 237, 0.08); border: 1px solid rgba(118, 228, 237, 0.22); border-radius: 999px; color: var(--cyan); font-size: 10px; padding: 5px 9px; }
+.modal-data-status-error { background: rgba(255, 126, 142, 0.08); border-color: rgba(255, 126, 142, 0.25); color: #ff9aa8; }
 .evidence-chip { background: rgba(118, 228, 237, 0.07); border: 1px solid rgba(118, 228, 237, 0.18); border-radius: 999px; color: var(--muted); font-size: 10px; padding: 5px 9px; }
 .evidence-chip strong { color: var(--cyan); margin-left: 5px; }
 .replay-chip { background: rgba(168, 148, 255, 0.1); border: 1px solid rgba(168, 148, 255, 0.26); border-radius: 999px; color: var(--purple); font-size: 10px; padding: 5px 9px; }

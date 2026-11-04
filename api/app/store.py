@@ -25,6 +25,10 @@ STATUS_PRIORITY = {
 RANKING_STATUS_FILTERS = set(STATUS_PRIORITY) | {"Duplicate Signal"}
 RANKING_SORTS = {"rank", "last_assessed_desc", "last_assessed_asc"}
 
+
+class PublicationBusyError(RuntimeError):
+    """Raised when the worker is publishing and a read cannot get a snapshot."""
+
 _READ_CACHE_LOCK = threading.Lock()
 _RANKING_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _STATUS_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
@@ -104,8 +108,10 @@ class ReadOnlyStore:
     def __init__(self, data_dir: Path | None = None) -> None:
         self.data_dir = data_dir or Path(os.getenv("DATA_DIR", "/app/data"))
         self.database = self.data_dir / "transitscope.duckdb"
+        self.publication_busy = False
 
     def connect(self, *, timeout_seconds: float | None = None) -> Any | None:
+        self.publication_busy = False
         if not self.database.exists():
             return None
         # DuckDB uses a process-level file lock even for a read-only connection.
@@ -124,6 +130,7 @@ class ReadOnlyStore:
                         break
                     except BlockingIOError:
                         if time.monotonic() >= deadline:
+                            self.publication_busy = True
                             lock_file.close()
                             return None
                         time.sleep(0.05)
@@ -939,8 +946,10 @@ class ReadOnlyStore:
         return removals
 
     def candidate(self, candidate_id: str) -> dict[str, Any] | None:
-        connection = self.connect()
+        connection = self.connect(timeout_seconds=1.25)
         if connection is None:
+            if self.publication_busy:
+                raise PublicationBusyError("The worker is publishing a new candidate snapshot.")
             return None
         try:
             candidate = connection.execute(
@@ -1050,6 +1059,33 @@ class ReadOnlyStore:
             return None
         feature_path = detail["evaluation"]["features"].get("normalized_path")
         if not feature_path:
+            # A later insufficient-data evaluation can legitimately lack a
+            # curve even though the candidate has a usable curve from an
+            # earlier stage. Prefer that persisted evidence over presenting a
+            # misleading empty chart.
+            connection = self.connect(timeout_seconds=1.25)
+            if connection is None:
+                if self.publication_busy:
+                    raise PublicationBusyError("The worker is publishing a new candidate snapshot.")
+                return {"candidate_id": candidate_id, "points": [], "data_version": None}
+            try:
+                evaluations = connection.execute(
+                    """
+                    SELECT feature_json
+                    FROM evaluations
+                    WHERE candidate_id = ?
+                    ORDER BY created_at DESC
+                    """,
+                    [candidate_id],
+                ).fetchall()
+                for (feature_json,) in evaluations:
+                    features = json.loads(feature_json) if feature_json else {}
+                    if isinstance(features, dict) and features.get("normalized_path"):
+                        feature_path = features["normalized_path"]
+                        break
+            finally:
+                connection.close()
+        if not feature_path:
             return {"candidate_id": candidate_id, "points": [], "data_version": self._version()}
         path = Path(str(feature_path))
         if not path.exists():
@@ -1078,8 +1114,10 @@ class ReadOnlyStore:
     def history(self, candidate_id: str) -> dict[str, Any] | None:
         if self.candidate(candidate_id) is None:
             return None
-        connection = self.connect()
+        connection = self.connect(timeout_seconds=1.25)
         if connection is None:
+            if self.publication_busy:
+                raise PublicationBusyError("The worker is publishing a new candidate snapshot.")
             return {"candidate_id": candidate_id, "data_version": None, "events": []}
         try:
             events = connection.execute(
@@ -2354,7 +2392,7 @@ class ReadOnlyStore:
         return result
 
     def _version(self) -> int | None:
-        connection = self.connect()
+        connection = self.connect(timeout_seconds=0.75)
         if connection is None:
             return None
         try:
