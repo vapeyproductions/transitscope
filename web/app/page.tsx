@@ -1052,7 +1052,7 @@ function AssessmentTrail({ candidate, events, loading, loadError }: { candidate:
   </div>;
 }
 
-function CandidateModal({ candidate, curve, history, replaySequence, loadError, onClose }: { candidate: CandidateDetail; curve: LightCurveResponse | null; history: HistoryResponse | null; replaySequence: number | null; loadError: string | null; onClose: () => void }) {
+function CandidateModal({ candidate, curve, history, replaySequence, detailLoaded, loadError, onClose }: { candidate: CandidateDetail; curve: LightCurveResponse | null; history: HistoryResponse | null; replaySequence: number | null; detailLoaded: boolean; loadError: string | null; onClose: () => void }) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const [transitOpen, setTransitOpen] = useState(false);
   const [modalTab, setModalTab] = useState<"curve" | "trail">("curve");
@@ -1125,7 +1125,8 @@ function CandidateModal({ candidate, curve, history, replaySequence, loadError, 
   }, [candidate.candidate_id]);
 
   const visibleHistory = history?.events.filter((event) => replaySequence === null || event.sequence_number <= replaySequence) ?? [];
-  const evidenceLoading = candidate.evaluation === null && !loadError;
+  const evidenceLoading = !detailLoaded && !loadError;
+  const evaluationMissing = detailLoaded && candidate.evaluation === null && !loadError;
   const signal = signalLabel(candidate.candidate_id, features, candidate.signal_index);
   const summaryNote = candidate.status === "Promising" ? null : candidate.ranking_rationale ?? candidate.activity;
   const handleTransitFrameChange = useCallback((index: number, total: number) => {
@@ -1134,11 +1135,11 @@ function CandidateModal({ candidate, curve, history, replaySequence, loadError, 
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="candidate-modal" role="dialog" aria-modal="true" aria-labelledby="candidate-modal-title">
       <header className="modal-header"><div><p className="eyebrow accent">Candidate investigation · {stageName(candidate.stage)}</p><h3 id="candidate-modal-title">{candidate.target_id}{signal ? ` - ${signal}` : ""}</h3><p className="modal-subtitle">{candidate.target?.source_product_family ?? "MAST / TESS observation"}</p></div><button ref={closeRef} className="modal-close" type="button" onClick={onClose} aria-label="Close candidate details">×</button></header>
-      <div className="modal-summary"><span className="stage-status-stage">{stageName(candidate.stage)}</span>{" "}<span className={`status-pill status-${statusClass(displayStatus(candidate.status, candidate.stage))}`}>{displayStatus(candidate.status, candidate.stage)}</span>{signalResolutionLabel(candidate.signal_resolution) && <span className="evidence-chip">{signalResolutionLabel(candidate.signal_resolution)}</span>}{summaryNote && <span className="modal-summary-note">{summaryNote}</span>}{evidenceLoading && <span className="modal-data-status" role="status">Waiting for the latest published evidence…</span>}{loadError && <span className="modal-data-status modal-data-status-error" role="alert">{loadError}</span>}{replaySequence !== null && <span className="replay-chip">Replay view</span>}</div>
+      <div className="modal-summary"><span className="stage-status-stage">{stageName(candidate.stage)}</span>{" "}<span className={`status-pill status-${statusClass(displayStatus(candidate.status, candidate.stage))}`}>{displayStatus(candidate.status, candidate.stage)}</span>{signalResolutionLabel(candidate.signal_resolution) && <span className="evidence-chip">{signalResolutionLabel(candidate.signal_resolution)}</span>}{summaryNote && <span className="modal-summary-note">{summaryNote}</span>}{evidenceLoading && <span className="modal-data-status" role="status">Waiting for the latest published evidence…</span>}{evaluationMissing && <span className="modal-data-status" role="status">No published evaluation record is attached yet.</span>}{loadError && <span className="modal-data-status modal-data-status-error" role="alert">{loadError}</span>}{replaySequence !== null && <span className="replay-chip">Replay view</span>}</div>
       <nav className="modal-tabs" aria-label="Candidate detail views" role="tablist"><button className={`modal-tab ${modalTab === "curve" ? "active" : ""}`} type="button" role="tab" aria-selected={modalTab === "curve"} onClick={() => setModalTab("curve")}>Light curve</button><button className={`modal-tab ${modalTab === "trail" ? "active" : ""}`} type="button" role="tab" aria-selected={modalTab === "trail"} onClick={() => setModalTab("trail")}>Assessment trail <span>{history === null ? loadError ? "—" : "…" : visibleHistory.length}</span></button></nav>
       {modalTab === "trail" ? <AssessmentTrail candidate={candidate} events={visibleHistory} loading={history === null} loadError={loadError} /> : <div className="modal-content-grid">
         <div className="modal-main-column">
-          <div className="modal-section"><div className="section-heading"><div><p className="eyebrow">Normalized observation</p><h4>Light curve</h4></div><div className="chart-actions"><span className="section-note">{curve === null ? "Loading…" : `${curve.points.length} plotted points`}</span><button className={`transit-toggle ${transitOpen ? "active" : ""}`} type="button" aria-pressed={transitOpen} aria-label={transitOpen ? "Hide transit replay" : "See the curve with transit replay"} onClick={() => { setTransitOpen((current) => !current); setTransitProgress(transitOpen ? null : 0); }}><span className="planet-toggle-glyph" aria-hidden="true"><i /></span>See the curve</button></div></div><LightCurveChart points={curve?.points ?? []} signalFeatures={features} emptyMessage={curve === null ? loadError ?? "Waiting for the published light curve…" : emptyCurveMessage} transitProgress={transitOpen ? transitProgress : null} transitOverlay={transitOpen ? <TransitSimulation points={curve?.points ?? []} signalFeatures={features} onFrameChange={handleTransitFrameChange} /> : null} /></div>
+          <div className="modal-section"><div className="section-heading"><div><p className="eyebrow">Normalized observation</p><h4>Light curve</h4></div><div className="chart-actions"><span className="section-note">{curve === null ? "Loading…" : `${curve.points.length} plotted points`}</span><button className={`transit-toggle ${transitOpen ? "active" : ""}`} type="button" aria-pressed={transitOpen} aria-label={transitOpen ? "Hide transit replay" : "See the curve with transit replay"} onClick={() => { setTransitOpen((current) => !current); setTransitProgress(transitOpen ? null : 0); }}><span className="planet-toggle-glyph" aria-hidden="true"><i /></span>See the curve</button></div></div><LightCurveChart points={curve?.points ?? []} signalFeatures={features} emptyMessage={curve === null ? loadError ?? (evaluationMissing ? "No normalized curve was published for this candidate." : "Waiting for the published light curve…") : emptyCurveMessage} transitProgress={transitOpen ? transitProgress : null} transitOverlay={transitOpen ? <TransitSimulation points={curve?.points ?? []} signalFeatures={features} onFrameChange={handleTransitFrameChange} /> : null} /></div>
           <div className="modal-section"><div className="section-heading"><div><p className="eyebrow">Interpretable evidence</p><h4>Assessment metrics</h4></div></div><div className="detail-metrics">{displayMetrics.map(([label, value]) => <Metric key={label} label={label} value={value} />)}</div></div>
           {candidate.stage === "stage3" && <div className="next-action stage3-context"><span>Stage 3 context</span><p>{insufficientStage3 ? "This candidate was admitted after its Stage 2 result was eligible for Stage 3. The Stage 3 test did not have a recoverable event in every chronological holdout, so no predictive metrics were produced yet." : "This candidate has a completed chronological holdout assessment."}</p><p>{productCount ? `${productCount} MAST / TESS products · ${numberFeature("total_samples", 0)} samples · ${windowCount || "—"} chronological windows.` : "No Stage 3 products are attached to this evaluation yet."}</p></div>}
         </div>
@@ -1866,6 +1867,7 @@ export default function HomePage() {
   const [curve, setCurve] = useState<LightCurveResponse | null>(null);
   const [history, setHistory] = useState<HistoryResponse | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
+  const [candidateDetailLoaded, setCandidateDetailLoaded] = useState(false);
   const [candidateLoadError, setCandidateLoadError] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   const [replayStates, setReplayStates] = useState<Record<RankingView, ReplayState>>(createReplayStates);
@@ -1886,6 +1888,7 @@ export default function HomePage() {
     setCandidate(null);
     setCurve(null);
     setHistory(null);
+    setCandidateDetailLoaded(false);
     setCandidateLoadError(null);
   }, []);
 
@@ -2062,6 +2065,7 @@ export default function HomePage() {
     setError(null);
     setCurve(null);
     setHistory(null);
+    setCandidateDetailLoaded(false);
     setCandidateLoadError(null);
     if (seed) {
       setCandidate({
@@ -2091,7 +2095,10 @@ export default function HomePage() {
     const curveRequest = fetchCandidateJson<LightCurveResponse>(`/api/candidates/${candidateId}/light-curve`);
 
     void detailRequest.then((detail) => {
-      if (selectedIdRef.current === candidateId) setCandidate(detail.candidate);
+      if (selectedIdRef.current === candidateId) {
+        setCandidate(detail.candidate);
+        setCandidateDetailLoaded(true);
+      }
       setModalLoading(false);
     }).catch((cause) => {
       if (!seed) {
@@ -2181,8 +2188,8 @@ export default function HomePage() {
   const modal = useMemo(() => {
     if (!selectedId) return null;
     if (modalLoading || !candidate) return <div className="modal-backdrop" role="presentation"><section className="candidate-modal modal-loading" role="dialog" aria-modal="true" aria-label="Loading candidate details"><span className="status-dot" /><p>Loading candidate evidence…</p></section></div>;
-    return <CandidateModal candidate={candidate} curve={curve} history={history} replaySequence={activeReplay.active ? activeReplay.cursor : null} loadError={candidateLoadError} onClose={closeCandidate} />;
-  }, [activeReplay.active, activeReplay.cursor, candidate, candidateLoadError, closeCandidate, curve, history, modalLoading, selectedId]);
+    return <CandidateModal candidate={candidate} curve={curve} history={history} replaySequence={activeReplay.active ? activeReplay.cursor : null} detailLoaded={candidateDetailLoaded} loadError={candidateLoadError} onClose={closeCandidate} />;
+  }, [activeReplay.active, activeReplay.cursor, candidate, candidateDetailLoaded, candidateLoadError, closeCandidate, curve, history, modalLoading, selectedId]);
 
   return <main className="observatory-shell">
     <div className="ambient-glow ambient-glow-one" aria-hidden="true" /><div className="ambient-glow ambient-glow-two" aria-hidden="true" />
