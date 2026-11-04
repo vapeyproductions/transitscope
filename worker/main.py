@@ -543,18 +543,35 @@ def main() -> None:
     )
     store = DuckDBStore(paths.database)
     store.initialize()
-    write_status(
-        data_dir,
-        "starting",
-        {"pipeline_paused": True, "reason": "Repairing persisted pipeline history."},
-    )
-    history_repair = repair_legacy_history(store)
-    write_status(
-        data_dir,
-        "starting",
-        {"pipeline_paused": True, "reason": "Rebuilding the overall ranking index."},
-    )
-    overall_ranking_rebuild = rebuild_overall_ranking(store)
+    # These repairs are intentionally opt-in. They are durable, idempotent
+    # maintenance operations, but running them inside the normal startup path
+    # can hold DuckDB's write transaction long enough to make the API report
+    # ``publication_busy`` and hide otherwise healthy persisted rankings. A
+    # live worker must be able to resume from its last published state first.
+    history_repair: dict[str, int | bool] = {"skipped": True}
+    overall_ranking_rebuild: dict[str, int | bool] = {"skipped": True}
+    if env_flag("RUN_STARTUP_MAINTENANCE", default=False):
+        write_status(
+            data_dir,
+            "starting",
+            {"pipeline_paused": True, "reason": "Repairing persisted pipeline history."},
+        )
+        history_repair = repair_legacy_history(store)
+        write_status(
+            data_dir,
+            "starting",
+            {"pipeline_paused": True, "reason": "Rebuilding the overall ranking index."},
+        )
+        overall_ranking_rebuild = rebuild_overall_ranking(store)
+    else:
+        write_status(
+            data_dir,
+            "starting",
+            {
+                "pipeline_paused": True,
+                "reason": "Resuming from the last published state; startup maintenance is deferred.",
+            },
+        )
 
     mode = os.getenv("WORKER_MODE", "bootstrap").lower()
     if mode == "live":
