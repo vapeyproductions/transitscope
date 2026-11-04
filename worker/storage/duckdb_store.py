@@ -57,6 +57,7 @@ class DuckDBStore:
 
     def __init__(self, database: Path) -> None:
         self.database = Path(database)
+        self._initialized = False
 
     def connect(self) -> Any:
         self.database.parent.mkdir(parents=True, exist_ok=True)
@@ -72,6 +73,8 @@ class DuckDBStore:
         return _LockedWriteConnection(connection, lock_file)
 
     def initialize(self) -> None:
+        if self._initialized:
+            return
         schema = SCHEMA_PATH.read_text()
         with self.connect() as connection:
             connection.execute(schema)
@@ -123,6 +126,7 @@ class DuckDBStore:
                    OR signal_resolution IN ('pending_alias_review', 'pending_independence_review', 'duplicate_signal')
                 """
             )
+        self._initialized = True
 
     def record_pipeline_cycle(self, cycle: Mapping[str, object]) -> None:
         """Persist one completed live-worker cycle for the ML Ops timeline."""
