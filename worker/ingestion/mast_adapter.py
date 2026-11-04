@@ -26,6 +26,10 @@ class MastProbeError(RuntimeError):
     """A provider or validation failure that should be visible to the operator."""
 
 
+class MastProbeTimeout(MastProbeError):
+    """The bounded time budget for one candidate's archive work expired."""
+
+
 @dataclass(frozen=True)
 class MastProbeConfig:
     data_dir: Path
@@ -34,6 +38,7 @@ class MastProbeConfig:
     product_family: str = "TESS SPOC light curve"
     max_observations: int = 5
     request_timeout_seconds: int = 60
+    deadline_monotonic: float | None = None
     api_endpoint: str = DEFAULT_API_ENDPOINT
     download_endpoint: str = DEFAULT_DOWNLOAD_ENDPOINT
 
@@ -68,6 +73,23 @@ class MastProbeConfig:
         if config.request_timeout_seconds < 1:
             raise ValueError("request_timeout_seconds must be positive")
         return config
+
+    def ensure_deadline(self) -> None:
+        if self.deadline_monotonic is not None and time.monotonic() >= self.deadline_monotonic:
+            raise MastProbeTimeout(
+                "MAST candidate time budget expired before the archive request completed"
+            )
+
+    def timeout_for_request(self) -> float:
+        """Return a socket timeout that cannot exceed the candidate deadline."""
+
+        self.ensure_deadline()
+        if self.deadline_monotonic is None:
+            return float(self.request_timeout_seconds)
+        remaining = self.deadline_monotonic - time.monotonic()
+        if remaining <= 0:
+            self.ensure_deadline()
+        return max(0.05, min(float(self.request_timeout_seconds), remaining))
 
 
 class MastProductAdapter:
@@ -304,7 +326,7 @@ class MastProductAdapter:
                     download_url,
                     headers={"Accept": "application/octet-stream"},
                 )
-                with urlopen(request, timeout=self.config.request_timeout_seconds) as response:
+                with urlopen(request, timeout=self.config.timeout_for_request()) as response:
                     headers = {
                         name.lower(): value
                         for name, value in response.headers.items()
@@ -313,6 +335,7 @@ class MastProductAdapter:
                     byte_count = 0
                     with part_path.open("wb") as output:
                         while True:
+                            self.config.ensure_deadline()
                             chunk = response.read(1024 * 1024)
                             if not chunk:
                                 break
@@ -368,8 +391,9 @@ class MastProductAdapter:
             method="POST",
         )
         try:
-            with urlopen(request, timeout=self.config.request_timeout_seconds) as response:
+            with urlopen(request, timeout=self.config.timeout_for_request()) as response:
                 body = response.read().decode("utf-8")
+            self.config.ensure_deadline()
         except (HTTPError, URLError, TimeoutError) as exc:
             raise MastProbeError(f"MAST metadata request failed: {exc}") from exc
 
@@ -384,7 +408,8 @@ class MastProductAdapter:
                 raise MastProbeError(
                     "MAST metadata request remained EXECUTING after 3 polls"
                 )
-            time.sleep(1)
+            self.config.ensure_deadline()
+            time.sleep(min(1.0, self.config.timeout_for_request()))
             return self._mast_request(request_payload, poll_attempt=poll_attempt + 1)
         if status != "COMPLETE":
             message = result.get("msg") or "unknown provider error"
@@ -499,6 +524,7 @@ def attach_product_to_target(
 __all__ = [
     "MastProbeConfig",
     "MastProbeError",
+    "MastProbeTimeout",
     "MastProductAdapter",
     "attach_product_to_target",
 ]

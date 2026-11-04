@@ -13,7 +13,12 @@ from threading import Lock
 from typing import Any, Callable
 
 from ingestion.exoplanet_archive import ExoplanetArchiveAdapter, ExoplanetArchiveConfig
-from ingestion.mast_adapter import MastProbeConfig, MastProductAdapter, MastProbeError
+from ingestion.mast_adapter import (
+    MastProbeConfig,
+    MastProductAdapter,
+    MastProbeError,
+    MastProbeTimeout,
+)
 from ingestion.mast_history import MastHistoryAdapter
 from pipeline.lifecycle import (
     active_candidates,
@@ -86,16 +91,41 @@ def _history_for_candidate(
     target_id: str,
     data_dir: Path,
     max_sectors: int,
+    progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> tuple[list[Path], dict[str, Any]]:
     target_digits = _digits(target_id)
+    candidate_timeout_seconds = max(
+        1.0,
+        float(os.getenv("MAST_CANDIDATE_TIMEOUT_SECONDS", "300")),
+    )
+    deadline_monotonic = time.monotonic() + candidate_timeout_seconds
+
+    def notify(event: str, details: dict[str, Any] | None = None) -> None:
+        if progress_callback:
+            progress_callback(
+                event,
+                {
+                    "target_id": target_id,
+                    "candidate_timeout_seconds": candidate_timeout_seconds,
+                    "elapsed_seconds": round(
+                        candidate_timeout_seconds
+                        - max(0.0, deadline_monotonic - time.monotonic()),
+                        2,
+                    ),
+                    **(details or {}),
+                },
+            )
+
     config = MastProbeConfig(
         data_dir=data_dir,
         sector=1,
         target_name=target_digits or None,
         max_observations=5,
         request_timeout_seconds=int(os.getenv("MAST_REQUEST_TIMEOUT_SECONDS", "60")),
+        deadline_monotonic=deadline_monotonic,
     )
-    discovery = MastHistoryAdapter(config)
+    notify("mast_history_started", {"max_sectors": max_sectors})
+    discovery = MastHistoryAdapter(config, progress_callback=notify)
     sectors = discovery.discover_sectors()
     if max_sectors > 0 and len(sectors) > max_sectors:
         # Keep the oldest and newest observations so a bounded fetch still
@@ -109,7 +139,20 @@ def _history_for_candidate(
                     break
                 chosen.add(sector)
             sectors = sorted(chosen)
-    history = MastHistoryAdapter(config, sectors).fetch()
+    config.ensure_deadline()
+    history = MastHistoryAdapter(
+        config,
+        sectors,
+        progress_callback=notify,
+    ).fetch()
+    notify(
+        "mast_history_completed",
+        {
+            "records": len(history.get("records", [])),
+            "failures": len(history.get("failures", [])),
+            "sectors": list(sectors),
+        },
+    )
     return _history_paths(history, data_dir), history
 
 
@@ -656,6 +699,7 @@ def _evaluate_stage2(
     *,
     data_dir: Path,
     max_history_sectors: int,
+    status_callback: Callable[[str, dict[str, Any]], None] | None = None,
     publish_lock: Any | None = None,
 ) -> dict[str, Any]:
     candidate_id = str(candidate["candidate_id"])
@@ -664,11 +708,34 @@ def _evaluate_stage2(
         return {"candidate_id": candidate_id, "status": "missing_stage1_input"}
     previous_signature = _latest_evaluation_signature(store, candidate_id, "stage2")
     previous_product_count = len(previous_signature[1]) if previous_signature else 0
-    paths, history = _history_for_candidate(
-        target_id=stage1_input["target_id"],
-        data_dir=data_dir,
-        max_sectors=_history_limit(max_history_sectors, previous_product_count),
-    )
+    def history_progress(event: str, details: dict[str, Any]) -> None:
+        if status_callback:
+            status_callback(
+                "processing_stage2",
+                {"candidate_id": candidate_id, "reason": event, **details},
+            )
+
+    try:
+        paths, history = _history_for_candidate(
+            target_id=stage1_input["target_id"],
+            data_dir=data_dir,
+            max_sectors=_history_limit(max_history_sectors, previous_product_count),
+            progress_callback=history_progress,
+        )
+    except MastProbeTimeout as exc:
+        return {
+            "candidate_id": candidate_id,
+            "status": "error",
+            "failure_reason": "mast_candidate_timeout",
+            "error": str(exc),
+        }
+    except (MastProbeError, OSError, ValueError) as exc:
+        return {
+            "candidate_id": candidate_id,
+            "status": "error",
+            "failure_reason": "mast_history_error",
+            "error": str(exc),
+        }
     product_ids = tuple(str(path) for path in paths)
     if previous_signature == (
         STAGE2_MODEL_VERSION,
@@ -761,6 +828,7 @@ def _run_stage2_manual_batch(
                 candidate,
                 data_dir=data_dir,
                 max_history_sectors=max_history_sectors,
+                status_callback=status_callback,
                 publish_lock=publish_lock,
             ): str(candidate["candidate_id"])
             for candidate in candidates
@@ -834,6 +902,7 @@ def _run_stage2_reassessment_batch(
                 candidate,
                 data_dir=data_dir,
                 max_history_sectors=max_history_sectors,
+                status_callback=status_callback,
                 publish_lock=publish_lock,
             ): str(candidate["candidate_id"])
             for candidate in candidates
@@ -867,6 +936,7 @@ def _evaluate_stage3(
     *,
     data_dir: Path,
     max_history_sectors: int,
+    status_callback: Callable[[str, dict[str, Any]], None] | None = None,
     dispatch_source_candidate_id: str | None = None,
     force_expanded_history: bool = False,
     publish_lock: Any | None = None,
@@ -885,15 +955,40 @@ def _evaluate_stage3(
                 os.getenv("HISTORY_EXPANSION_SECTORS", "4"),
             )
         )
-    paths, history = _history_for_candidate(
-        target_id=stage2_input["target_id"],
-        data_dir=data_dir,
-        max_sectors=_history_limit(
-            max_history_sectors,
-            previous_product_count,
-            expansion_sectors=history_expansion,
-        ),
-    )
+    def history_progress(event: str, details: dict[str, Any]) -> None:
+        if status_callback:
+            status_callback(
+                "processing_stage3",
+                {"candidate_id": candidate_id, "reason": event, **details},
+            )
+
+    try:
+        paths, history = _history_for_candidate(
+            target_id=stage2_input["target_id"],
+            data_dir=data_dir,
+            max_sectors=_history_limit(
+                max_history_sectors,
+                previous_product_count,
+                expansion_sectors=history_expansion,
+            ),
+            progress_callback=history_progress,
+        )
+    except MastProbeTimeout as exc:
+        return {
+            "candidate_id": candidate_id,
+            "status": "error",
+            "failure_reason": "mast_candidate_timeout",
+            "error": str(exc),
+            "dispatch_source_candidate_id": dispatch_source_candidate_id,
+        }
+    except (MastProbeError, OSError, ValueError) as exc:
+        return {
+            "candidate_id": candidate_id,
+            "status": "error",
+            "failure_reason": "mast_history_error",
+            "error": str(exc),
+            "dispatch_source_candidate_id": dispatch_source_candidate_id,
+        }
     product_ids = tuple(str(path) for path in paths)
     if previous_signature == (
         STAGE3_MODEL_VERSION,
@@ -1006,6 +1101,7 @@ def _run_stage3_reassessment_batch(
                 candidate,
                 data_dir=data_dir,
                 max_history_sectors=max_history_sectors,
+                status_callback=status_callback,
                 force_expanded_history=bool(
                     candidate.get("_stage3_prime_rank_movement_sequence")
                 ),
@@ -1462,6 +1558,7 @@ def run_live_cycle(
             candidate,
             data_dir=data_dir,
             max_history_sectors=max_history_sectors,
+            status_callback=status_callback,
         )
         result.update(
             {
@@ -1872,6 +1969,7 @@ def run_live_cycle(
                 candidate,
                 data_dir=data_dir,
                 max_history_sectors=max_history_sectors,
+                status_callback=status_callback,
             )
             result.update(
                 {
@@ -2169,6 +2267,7 @@ def run_live_cycle(
                 candidate,
                 data_dir=data_dir,
                 max_history_sectors=max_history_sectors,
+                status_callback=status_callback,
                 publish_lock=stage3_publish_lock,
             )
             result.update(
@@ -2327,6 +2426,7 @@ def run_live_cycle(
                 candidate,
                 data_dir=data_dir,
                 max_history_sectors=max_history_sectors,
+                status_callback=status_callback,
                 dispatch_source_candidate_id=(
                     None
                     if source_candidate_id == steady_state_source

@@ -1,7 +1,8 @@
 import unittest
+import time
 from pathlib import Path
 
-from ingestion.mast_adapter import MastProbeConfig, MastProductAdapter
+from ingestion.mast_adapter import MastProbeConfig, MastProbeTimeout, MastProductAdapter
 
 
 class MastAdapterTests(unittest.TestCase):
@@ -42,6 +43,15 @@ class MastAdapterTests(unittest.TestCase):
                     }
                 ]
             )
+
+    def test_expired_candidate_deadline_fails_before_network_request(self) -> None:
+        config = MastProbeConfig(
+            data_dir=Path("data"),
+            deadline_monotonic=time.monotonic() - 1,
+        )
+
+        with self.assertRaises(MastProbeTimeout):
+            config.timeout_for_request()
 
 
 if __name__ == "__main__":

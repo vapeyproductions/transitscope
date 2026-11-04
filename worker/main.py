@@ -4,6 +4,7 @@ import signal
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Lock
 
 from pipeline.live import run_live_cycle
 from pipeline.lifecycle import rebuild_overall_ranking, repair_legacy_history
@@ -12,6 +13,7 @@ from storage.paths import DataPaths
 
 
 running = True
+status_write_lock = Lock()
 
 
 def stop_worker(_signum: int, _frame: object) -> None:
@@ -35,30 +37,33 @@ def env_flag(name: str, *, default: bool = False) -> bool:
 
 
 def write_status(data_dir: Path, state: str, details: dict | None = None) -> None:
-    data_dir.mkdir(parents=True, exist_ok=True)
-    status_path = data_dir / "worker-status.json"
-    previous: dict = {}
-    try:
-        loaded = json.loads(status_path.read_text())
-        if isinstance(loaded, dict):
-            previous = loaded
-    except (OSError, json.JSONDecodeError):
-        previous = {}
-    payload = {
-        "service": "worker",
-        "state": state,
-        "mode": os.getenv("WORKER_MODE", "bootstrap"),
-        "last_heartbeat": utc_now(),
-    }
-    # Preserve the last completed cycle and its compact telemetry while a new
-    # cycle is running. This lets the API show the last known progress during
-    # a long publication lock instead of falling back to an empty dashboard.
-    for key in ("last_cycle", "last_cycle_metrics", "telemetry", "catalog_health"):
-        if key in previous:
-            payload[key] = previous[key]
-    if details:
-        payload.update(details)
-    status_path.write_text(json.dumps(payload, indent=2) + "\n")
+    with status_write_lock:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        status_path = data_dir / "worker-status.json"
+        previous: dict = {}
+        try:
+            loaded = json.loads(status_path.read_text())
+            if isinstance(loaded, dict):
+                previous = loaded
+        except (OSError, json.JSONDecodeError):
+            previous = {}
+        payload = {
+            "service": "worker",
+            "state": state,
+            "mode": os.getenv("WORKER_MODE", "bootstrap"),
+            "last_heartbeat": utc_now(),
+        }
+        # Preserve the last completed cycle and its compact telemetry while a new
+        # cycle is running. This lets the API show the last known progress during
+        # a long publication lock instead of falling back to an empty dashboard.
+        for key in ("last_cycle", "last_cycle_metrics", "telemetry", "catalog_health"):
+            if key in previous:
+                payload[key] = previous[key]
+        if details:
+            payload.update(details)
+        temporary_path = status_path.with_suffix(".json.tmp")
+        temporary_path.write_text(json.dumps(payload, indent=2) + "\n")
+        temporary_path.replace(status_path)
 
 
 def read_pipeline_control(data_dir: Path) -> dict:
