@@ -536,9 +536,24 @@ def main() -> None:
     heartbeat_seconds = float(os.getenv("WORKER_HEARTBEAT_SECONDS", "5"))
     paths = DataPaths(data_dir)
     paths.ensure()
+    write_status(
+        data_dir,
+        "starting",
+        {"pipeline_paused": True, "reason": "Opening the persistent worker database."},
+    )
     store = DuckDBStore(paths.database)
     store.initialize()
+    write_status(
+        data_dir,
+        "starting",
+        {"pipeline_paused": True, "reason": "Repairing persisted pipeline history."},
+    )
     history_repair = repair_legacy_history(store)
+    write_status(
+        data_dir,
+        "starting",
+        {"pipeline_paused": True, "reason": "Rebuilding the overall ranking index."},
+    )
     overall_ranking_rebuild = rebuild_overall_ranking(store)
 
     mode = os.getenv("WORKER_MODE", "bootstrap").lower()
