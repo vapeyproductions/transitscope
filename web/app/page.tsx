@@ -620,14 +620,18 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 async function fetchCandidateJson<T>(path: string): Promise<T> {
   let lastError: unknown;
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 3000);
     try {
-      return await fetchJson<T>(path);
+      return await fetchJson<T>(path, { signal: controller.signal });
     } catch (cause) {
       lastError = cause;
-      const retryable = cause instanceof Error && (cause as Error & { code?: string; retryable?: boolean }).code === "publication_busy";
-      if (!retryable || attempt === 7) throw cause;
+      const retryable = cause instanceof Error && ((cause as Error & { code?: string }).code === "publication_busy" || cause.name === "AbortError");
+      if (!retryable || attempt === 5) throw cause;
       await new Promise<void>((resolve) => window.setTimeout(resolve, Math.min(500 + attempt * 350, 2200)));
+    } finally {
+      window.clearTimeout(timeoutId);
     }
   }
   throw lastError instanceof Error ? lastError : new Error("Candidate evidence is temporarily unavailable.");
