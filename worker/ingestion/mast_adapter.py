@@ -490,6 +490,8 @@ def attach_product_to_target(
         target_name=provider_target_id,
         max_observations=5,
         request_timeout_seconds=request_timeout_seconds,
+        deadline_monotonic=time.monotonic()
+        + max(1.0, float(os.getenv("MAST_CANDIDATE_TIMEOUT_SECONDS", "300"))),
     )
     adapter = MastProductAdapter(config)
     observations = adapter.query_observations()
