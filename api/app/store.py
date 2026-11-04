@@ -1007,15 +1007,7 @@ class ReadOnlyStore:
                 SELECT c.candidate_id, c.target_id, c.current_stage, c.status,
                        c.overall_score, c.stage_score, c.rank_overall, c.rank_stage,
                        c.activity, c.rank_delta, c.movement_kind,
-                       COALESCE(
-                           (
-                               SELECT MAX(event.occurred_at)
-                               FROM pipeline_events AS event
-                               WHERE event.candidate_id = c.candidate_id
-                                 AND event.event_type IN ('stage1_evaluated', 'stage2_evaluated', 'stage3_evaluated')
-                           ),
-                           c.last_evaluated_at
-                       ) AS last_evaluated_at,
+                       c.last_evaluated_at,
                        c.known_match_id, c.active, c.signal_group_id,
                        c.signal_resolution, c.alias_of_candidate_id,
                        c.promotion_eligible
