@@ -1385,6 +1385,7 @@ def run_live_cycle(
                     stage_capacity=stage1_threshold,
                     target_pool_size=stage1_pool_size,
                 ),
+                progress_callback=status_callback,
             )
             result["intake_reason"] = replacement_reason
             return result
@@ -1500,6 +1501,7 @@ def run_live_cycle(
                     stage_capacity=stage1_threshold,
                     target_pool_size=stage1_pool_size,
                 ),
+                progress_callback=status_callback,
             )
         finally:
             add_timing("stage1_seconds", stage1_started)

@@ -10,7 +10,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from pipeline.stage1 import Stage1Config, Stage1ProcessingError, Stage1Processor, resolve_artifact_path
 from pipeline.lifecycle import STATUS_PRIORITY, movement_for_ranks, overall_sort_key
@@ -258,21 +258,51 @@ def process_targets(
     *,
     data_dir: Path,
     max_workers: int,
+    progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     payloads = [{"target": dict(target), "data_dir": str(data_dir)} for target in targets]
     results: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
+
+    def record_result(result: dict[str, Any], completed_count: int) -> None:
+        if not progress_callback:
+            return
+        target = result.get("target") if isinstance(result.get("target"), dict) else {}
+        progress_callback(
+            "processing_stage1",
+            {
+                "reason": "target_completed",
+                "target_id": target.get("target_id"),
+                "outcome": result.get("kind", "failed"),
+                "completed_count": completed_count,
+                "total_count": len(payloads),
+            },
+        )
+
     if max_workers == 1 or len(payloads) <= 1:
-        raw_results = [_process_target(payload) for payload in payloads]
+        raw_results = []
+        for completed_count, payload in enumerate(payloads, 1):
+            result = _process_target(payload)
+            raw_results.append(result)
+            record_result(result, completed_count)
     else:
         raw_results = []
         with ProcessPoolExecutor(max_workers=max_workers) as pool:
-            futures = [pool.submit(_process_target, payload) for payload in payloads]
-            for future in as_completed(futures):
+            futures = {
+                pool.submit(_process_target, payload): payload
+                for payload in payloads
+            }
+            for completed_count, future in enumerate(as_completed(futures), 1):
                 try:
-                    raw_results.append(future.result())
+                    result = future.result()
                 except Exception as exc:  # keep one worker failure from losing the batch
-                    raw_results.append({"kind": "failed", "target": {}, "error": repr(exc)})
+                    result = {
+                        "kind": "failed",
+                        "target": futures[future].get("target", {}),
+                        "error": repr(exc),
+                    }
+                raw_results.append(result)
+                record_result(result, completed_count)
     for result in raw_results:
         if result.get("kind") == "success":
             for signal_result in result.get("results", []):
@@ -1120,6 +1150,7 @@ def run_batch(
     manifest_path: Path,
     config: BatchConfig,
     retire_candidate_ids: Sequence[str] = (),
+    progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     paths = DataPaths(data_dir)
     paths.ensure()
@@ -1155,6 +1186,7 @@ def run_batch(
         selected,
         data_dir=data_dir,
         max_workers=min(config.max_workers, len(selected)),
+        progress_callback=progress_callback,
     )
     version = publish_stage1_batch(
         store,
@@ -1194,6 +1226,7 @@ def run_stage1_refresh(
     targets: Sequence[Mapping[str, Any]],
     config: BatchConfig,
     preserve_advanced_candidates: bool = False,
+    progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Re-evaluate Stage 1 candidates whose MAST coverage advanced.
 
@@ -1216,6 +1249,7 @@ def run_stage1_refresh(
         targets,
         data_dir=data_dir,
         max_workers=min(config.max_workers, len(targets)),
+        progress_callback=progress_callback,
     )
     successful_ids = [str(item["result"]["candidate_id"]) for item in results]
     batch_id = f"stage1-refresh-{utc_now().strftime('%Y%m%dT%H%M%S%fZ')}"
