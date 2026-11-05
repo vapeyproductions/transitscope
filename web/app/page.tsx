@@ -952,8 +952,12 @@ function LightCurveChart({ points, emptyMessage, signalFeatures, transitProgress
     }
   });
   if (currentPath) paths.push(currentPath);
-  const period = typeof signalFeatures?.period_days === "number" ? signalFeatures.period_days : null;
-  const transitTime = typeof signalFeatures?.transit_time === "number" ? signalFeatures.transit_time : null;
+  const period = typeof signalFeatures?.period_days === "number"
+    ? signalFeatures.period_days
+    : typeof signalFeatures?.stage1_period_days === "number" ? signalFeatures.stage1_period_days : null;
+  const transitTime = typeof signalFeatures?.transit_time === "number"
+    ? signalFeatures.transit_time
+    : typeof signalFeatures?.stage1_transit_time === "number" ? signalFeatures.stage1_transit_time : null;
   const markerTimes: number[] = [];
   if (period && period > 0 && transitTime !== null) {
     let marker = transitTime + Math.ceil((minTime - transitTime) / period) * period;
@@ -977,13 +981,30 @@ function TransitSimulation({ points, signalFeatures, onFrameChange }: { points: 
       : points;
     if (sampledPoints.length) {
       const values = sampledPoints.map((point) => point.normalized_flux);
-      const minFlux = Math.min(...values);
-      const maxFlux = Math.max(...values);
-      const range = maxFlux - minFlux || 1;
-      return sampledPoints.map((point) => ({
-        time: point.time,
-        brightness: 0.58 + ((point.normalized_flux - minFlux) / range) * 0.42,
-      }));
+      const sortedValues = [...values].sort((left, right) => left - right);
+      const baseline = sortedValues[Math.floor((sortedValues.length - 1) * 0.9)] || 1;
+      const period = typeof signalFeatures.period_days === "number"
+        ? signalFeatures.period_days
+        : typeof signalFeatures.stage1_period_days === "number" ? signalFeatures.stage1_period_days : null;
+      const transitTime = typeof signalFeatures.transit_time === "number"
+        ? signalFeatures.transit_time
+        : typeof signalFeatures.stage1_transit_time === "number" ? signalFeatures.stage1_transit_time : null;
+      return sampledPoints.map((point, index) => {
+        const measuredBrightness = Math.max(0.35, Math.min(1, point.normalized_flux / baseline));
+        const phase = period && period > 0 && transitTime !== null
+          ? ((point.time - transitTime) / period % 1 + 1) % 1
+          : index / Math.max(1, sampledPoints.length - 1);
+        const distanceFromTransit = Math.min(phase, 1 - phase);
+        const transitStrength = period && period > 0 && transitTime !== null
+          ? Math.max(0, 1 - distanceFromTransit / 0.075)
+          : Math.max(0, (1 - measuredBrightness) / 0.12);
+        return {
+          time: point.time,
+          brightness: measuredBrightness,
+          phase,
+          transitStrength,
+        };
+      });
     }
 
     const depth = typeof signalFeatures.depth === "number" && Number.isFinite(signalFeatures.depth)
@@ -993,17 +1014,20 @@ function TransitSimulation({ points, signalFeatures, onFrameChange }: { points: 
       const phase = index / 48;
       const distanceFromTransit = Math.abs(((phase + 0.5) % 1) - 0.5);
       const transitShape = distanceFromTransit < 0.075 ? 1 - distanceFromTransit / 0.075 : 0;
-      return { time: index, brightness: 1 - transitShape * depth };
+      return { time: index, brightness: 1 - transitShape * depth, phase, transitStrength: transitShape };
     });
   }, [points, signalFeatures]);
-  const frame = frames[Math.min(frameIndex, Math.max(0, frames.length - 1))] ?? { time: 0, brightness: 1 };
+  const frame = frames[Math.min(frameIndex, Math.max(0, frames.length - 1))] ?? { time: 0, brightness: 1, phase: 0, transitStrength: 0 };
   const starX = 110;
   const starY = 66;
   const starRadius = 28;
-  const orbitAngle = (frameIndex / Math.max(1, frames.length)) * Math.PI * 2 - Math.PI / 2;
-  const objectX = starX + 68 * Math.cos(orbitAngle);
-  const objectY = starY + 33 * Math.sin(orbitAngle);
-  const objectInFront = Math.abs(objectX - starX) < starRadius * 1.25 && Math.abs(objectY - starY) < starRadius * 0.62;
+  const orbitAngle = frame.phase * Math.PI * 2;
+  const orbitX = starX + 68 * Math.sin(orbitAngle);
+  const orbitY = starY + 33 * Math.cos(orbitAngle);
+  const objectInFront = frame.transitStrength > 0.15;
+  const transitOffset = Math.sin(orbitAngle) * 38;
+  const objectX = objectInFront ? starX + transitOffset : orbitX;
+  const objectY = objectInFront ? starY : orbitY;
   const displayBrightness = Math.max(0, Math.min(100, frame.brightness * 100));
 
   useEffect(() => {
@@ -1024,7 +1048,7 @@ function TransitSimulation({ points, signalFeatures, onFrameChange }: { points: 
 
   const planet = <circle className="transit-simulation-object" cx={objectX} cy={objectY} r="7" />;
   const star = <><circle className="transit-simulation-glow" cx={starX} cy={starY} r={starRadius + 11} opacity={0.14 + frame.brightness * 0.22} /><circle className="transit-simulation-star" cx={starX} cy={starY} r={starRadius} opacity={0.38 + frame.brightness * 0.62} /><circle className="transit-simulation-star-core" cx={starX - 10} cy={starY - 10} r="9" opacity={0.2 + frame.brightness * 0.3} /></>;
-  return <div className="transit-overlay" aria-label="Illustrative transit replay"><svg className="transit-overlay-scene" role="img" aria-label="Animated star and orbiting object synchronized to the candidate light curve" viewBox="0 0 220 130"><defs><radialGradient id="transit-star-gradient"><stop offset="0%" stopColor="#fff6c9" /><stop offset="62%" stopColor="#ffd978" /><stop offset="100%" stopColor="#e99c43" /></radialGradient></defs><ellipse className="transit-simulation-orbit" cx={starX} cy={starY} rx="68" ry="33" />{!objectInFront && planet}{star}{objectInFront && planet}</svg><div className="transit-overlay-readout"><span>Frame {frameIndex + 1} / {frames.length}</span><strong>{displayBrightness.toFixed(1)}% brightness</strong></div></div>;
+  return <div className="transit-overlay" aria-label="Illustrative transit replay"><svg className="transit-overlay-scene" role="img" aria-label="Animated star and orbiting object synchronized to the candidate light curve" viewBox="0 0 220 130"><defs><radialGradient id="transit-star-gradient"><stop offset="0%" stopColor="#fff6c9" /><stop offset="62%" stopColor="#ffd978" /><stop offset="100%" stopColor="#e99c43" /></radialGradient></defs><ellipse className="transit-simulation-orbit" cx={starX} cy={starY} rx="68" ry="33" />{!objectInFront && planet}{star}{objectInFront && planet}</svg><div className="transit-overlay-readout"><span>Frame {frameIndex + 1} / {frames.length}</span><strong>{displayBrightness.toFixed(1)}% measured flux</strong></div><small className="transit-overlay-note">The star dims from the recorded curve; the orbit drawing is illustrative.</small></div>;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {

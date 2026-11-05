@@ -473,6 +473,7 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .transit-overlay-scene { display: block; height: auto; width: 100%; }
 .transit-overlay-readout { align-items: center; color: var(--faint); display: flex; font-size: 8px; gap: 5px; justify-content: space-between; padding: 4px 1px 0; }
 .transit-overlay-readout strong { color: var(--cyan); font-size: 8px; }
+.transit-overlay-note { color: var(--faint); display: block; font-size: 7px; line-height: 1.25; padding: 3px 1px 1px; }
 .transit-simulation-orbit { fill: none; stroke: rgba(168, 148, 255, 0.38); stroke-dasharray: 4 4; stroke-width: 1; }
 .transit-simulation-glow { fill: #ffbf5f; filter: blur(7px); }
 .transit-simulation-star { fill: url(#transit-star-gradient); filter: drop-shadow(0 0 8px rgba(255, 201, 104, 0.65)); transition: opacity 140ms linear; }
