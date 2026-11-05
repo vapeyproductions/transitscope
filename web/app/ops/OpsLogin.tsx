@@ -35,7 +35,7 @@ export default function OpsLogin() {
         <div>
           <p className="eyebrow accent">Private operations view</p>
           <h3 id="ops-login-title">Open ML Ops</h3>
-          <p className="modal-subtitle">Enter the monitor password to view worker controls and pipeline telemetry.</p>
+          <p className="modal-subtitle">Enter the monitor password to view pipeline telemetry and model health.</p>
         </div>
       </header>
       <form className="access-form" onSubmit={submit}>
