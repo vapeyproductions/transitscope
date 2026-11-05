@@ -1165,8 +1165,6 @@ class ReadOnlyStore:
         return result
 
     def history(self, candidate_id: str) -> dict[str, Any] | None:
-        if self.candidate(candidate_id) is None:
-            return None
         connection = self.connect(timeout_seconds=1.25)
         if connection is None:
             if self.publication_busy:
@@ -1189,6 +1187,13 @@ class ReadOnlyStore:
                 """,
                 [candidate_id],
             ).fetchall()
+            if not events:
+                candidate_exists = connection.execute(
+                    "SELECT 1 FROM candidates WHERE candidate_id = ? LIMIT 1",
+                    [candidate_id],
+                ).fetchone()
+                if not candidate_exists:
+                    return None
             result = {
                 "candidate_id": candidate_id,
                 "data_version": self.latest_version(connection),
