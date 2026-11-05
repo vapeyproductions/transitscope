@@ -1,6 +1,6 @@
 # Live operations plan
 
-TransitScope is a continuously updating assessment service. The worker owns execution and publishes durable state; the authenticated ML Ops control endpoint can update only the durable operator pause gate.
+TransitScope is a continuously updating assessment service. The worker owns execution and publishes durable state; the authenticated ML Ops control endpoint can update only the durable operator pause gate. The API/worker container also has a supervisor that restarts a worker process after an exit or a prolonged active-job stall without taking the read API offline.
 
 ## Current safe state
 
@@ -14,6 +14,7 @@ Refreshing the dashboard reads the latest published state and never triggers pro
 - **Stage prioritization:** the Stage 1 top-100 priority window and Stage 2 top-100 reassessment window, plus counts for Promising, Needs More Data, Inconclusive, and Known Match. These are ranking windows, not caps on how many candidates a stage can retain. Stage 2 has no promotion cutoff: when Stage 3 calls for a candidate, it takes the highest-ranked eligible Promising signal. Stage 3 has no cutoff: it works its Needs More Data queue in rank order and is the only dispatcher for downstream movement.
 - **Models:** model version, evaluation count, evidence score, Stage 3 holdout F1, model lift over the baseline when available, classification counts, and data sufficiency.
 - **Data plane:** provider runs, successes/failures, products downloaded/failed, coverage products/windows, recent batches, and recent pipeline events.
+- **Liveness:** `last_heartbeat` means the worker process is alive; `last_progress_at` means the current pipeline has advanced. The monitoring API exposes both ages and labels an active worker as stalled when progress exceeds `WORKER_STALL_TIMEOUT_SECONDS`.
 - **Catalog audit:** after Stage 3 dispatches, the worker checks up to 100 previously unchecked Stage 2 candidates against the cached NASA catalog, records each check durably, and reports the remaining audit queue. This comparison does not rerun scientific models.
 - **Sampling:** checkpoint cursor and policy, selection-bucket outcomes, and coordinate cells summarized into evidence-bearing or known-dense regions. The UI labels these signals as observed guidance until adaptive selection is enabled.
 
@@ -24,7 +25,7 @@ Refreshing the dashboard reads the latest published state and never triggers pro
 3. Add a scheduler/queue with bounded concurrency, provider rate limits, retries, and idempotency keys. A multi-hour run is expected for the first 500-target pool; the dashboard should show queued, running, succeeded, deferred, failed, and paused work separately.
 4. Seed and validate the Stage 1 manifest for the first 500 targets without dispatching jobs. Confirm that the continuous intake is bounded and checkpointed, that waterfall replacements are still drawn when downstream work is released, and that only Promising candidates can advance.
 5. Enable execution deliberately by changing the worker environment to `RUN_LIVE_PIPELINE=true`. The authenticated ML Ops page can then pause or resume the operator gate without redeploying; deployment gates still take precedence. After the initial Stage 1 baseline, each worker cycle evaluates the small `STAGE1_CONTINUOUS_INTAKE_PER_CYCLE` batch from the unprocessed manifest. Stage 3 independently reassesses unresolved candidates and its durable resolution ledger calls the highest-ranked eligible Promising Stage 2 candidate. That Stage 2 handoff can cascade to a Stage 1 replacement; downstream stages still do not advance from an independent timer.
-6. Watch the ML Ops view for the first several cycles before increasing concurrency or enabling adaptive sampling. The current worker uses bounded Stage 3 reassessment/dispatch budgets and a 60-second poll interval; reduce those budgets if provider health or CPU pressure becomes unstable.
+6. Watch the ML Ops view for the first several cycles before increasing concurrency or enabling adaptive sampling. The current worker uses bounded Stage 3 reassessment/dispatch budgets and a 60-second poll interval; reduce those budgets if provider health or CPU pressure becomes unstable. The supervisor uses a 180-second startup grace period and restarts an active worker after 10 minutes without progress by default.
 
 ## Why this is not a Vercel-only workload
 

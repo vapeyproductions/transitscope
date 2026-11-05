@@ -20,16 +20,17 @@ would give the API and worker different database files.
 
 ## Safe launch state
 
-The worker is paused by default:
+Local Docker development keeps the worker paused by default:
 
 ```text
 RUN_LIVE_PIPELINE=false
 ```
 
 In this state the service writes a heartbeat but does not download MAST data,
-run models, populate the 500-target Stage 1 pool, or advance the queue. Do
-not change this variable until the API, volume, provider limits, and dashboard
-have been checked in the cloud.
+run models, populate the 500-target Stage 1 pool, or advance the queue. The
+production image defaults to `RUN_LIVE_PIPELINE=true` and
+`PIPELINE_PAUSED=false`; Railway variables remain the final authority and can
+still pause the deployment deliberately.
 
 ## Railway setup
 
@@ -89,6 +90,13 @@ The first live run should be enabled as a controlled deployment change:
 ```text
 RUN_LIVE_PIPELINE=true
 ```
+
+The production supervisor keeps the API available while restarting a worker
+that exits or stops making progress. The worker writes an independent heartbeat
+every `WORKER_HEARTBEAT_SECONDS` and records `last_progress_at` whenever a
+pipeline phase advances. An active phase that exceeds
+`WORKER_STALL_TIMEOUT_SECONDS` (600 seconds by default) is restarted after the
+configured backoff. Paused and idle workers are not restarted.
 
 Use the bounded acceleration profile of `STAGE1_BATCH_SIZE=32`,
 `STAGE1_MAX_WORKERS=8`, `STAGE1_CONTINUOUS_INTAKE_PER_CYCLE=8`,

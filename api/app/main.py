@@ -40,9 +40,55 @@ def worker_status() -> dict:
         return {"state": "starting", "last_heartbeat": None}
 
     try:
-        return json.loads(status_path.read_text())
+        payload = json.loads(status_path.read_text())
     except (OSError, json.JSONDecodeError):
         return {"state": "unknown", "last_heartbeat": None}
+    if not isinstance(payload, dict):
+        return {"state": "unknown", "last_heartbeat": None}
+
+    now = datetime.now(timezone.utc)
+
+    def age_seconds(value: object) -> float | None:
+        if not value:
+            return None
+        try:
+            timestamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        return round(max(0.0, (now - timestamp).total_seconds()), 2)
+
+    heartbeat_age = age_seconds(payload.get("last_heartbeat"))
+    progress_age = age_seconds(payload.get("last_progress_at"))
+    payload["heartbeat_age_seconds"] = heartbeat_age
+    payload["progress_age_seconds"] = progress_age
+    stall_timeout = max(30.0, float(os.getenv("WORKER_STALL_TIMEOUT_SECONDS", "600")))
+    state = str(payload.get("state") or "unknown")
+    active_states = {
+        "starting_cycle",
+        "processing_stage1",
+        "processing_stage2",
+        "processing_stage3",
+        "matching_catalog",
+        "populating_manifest",
+    }
+    if state in active_states and progress_age is not None and progress_age > stall_timeout:
+        payload["health"] = "stalled"
+        payload["health_message"] = (
+            "The worker heartbeat is alive, but no pipeline progress has been recorded "
+            f"for {round(progress_age / 60, 1)} minutes."
+        )
+    elif heartbeat_age is not None and heartbeat_age > max(30.0, float(os.getenv("WORKER_HEARTBEAT_SECONDS", "15")) * 3):
+        payload["health"] = "heartbeat_stale"
+        payload["health_message"] = "The worker has not refreshed its heartbeat recently."
+    elif state.startswith("paused") or payload.get("pipeline_paused"):
+        payload["health"] = "paused"
+        payload["health_message"] = "The worker is paused by configuration or operator control."
+    else:
+        payload["health"] = "healthy"
+        payload["health_message"] = "The worker is refreshing its heartbeat and progress telemetry."
+    return payload
 
 
 def _env_flag(name: str, *, default: bool = False) -> bool:

@@ -2,9 +2,10 @@ import json
 import os
 import signal
 import time
+import atexit
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock, Thread
 
 from pipeline.live import run_live_cycle
 from pipeline.lifecycle import rebuild_overall_ranking, repair_legacy_history
@@ -14,6 +15,8 @@ from storage.paths import DataPaths
 
 running = True
 status_write_lock = Lock()
+heartbeat_stop_event: Event | None = None
+heartbeat_thread: Thread | None = None
 
 
 def stop_worker(_signum: int, _frame: object) -> None:
@@ -36,34 +39,104 @@ def env_flag(name: str, *, default: bool = False) -> bool:
     }
 
 
-def write_status(data_dir: Path, state: str, details: dict | None = None) -> None:
+def _read_status_payload(status_path: Path) -> dict:
+    try:
+        loaded = json.loads(status_path.read_text())
+        return loaded if isinstance(loaded, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_status_payload(status_path: Path, payload: dict) -> None:
+    temporary_path = status_path.with_suffix(".json.tmp")
+    temporary_path.write_text(json.dumps(payload, indent=2) + "\n")
+    temporary_path.replace(status_path)
+
+
+def write_status(
+    data_dir: Path,
+    state: str,
+    details: dict | None = None,
+    *,
+    progress: bool = True,
+) -> None:
     with status_write_lock:
         data_dir.mkdir(parents=True, exist_ok=True)
         status_path = data_dir / "worker-status.json"
-        previous: dict = {}
-        try:
-            loaded = json.loads(status_path.read_text())
-            if isinstance(loaded, dict):
-                previous = loaded
-        except (OSError, json.JSONDecodeError):
-            previous = {}
+        previous = _read_status_payload(status_path)
+        now = utc_now()
         payload = {
             "service": "worker",
             "state": state,
             "mode": os.getenv("WORKER_MODE", "bootstrap"),
-            "last_heartbeat": utc_now(),
+            "last_heartbeat": now,
         }
         # Preserve the last completed cycle and its compact telemetry while a new
         # cycle is running. This lets the API show the last known progress during
         # a long publication lock instead of falling back to an empty dashboard.
-        for key in ("last_cycle", "last_cycle_metrics", "telemetry", "catalog_health"):
+        for key in (
+            "last_cycle",
+            "last_cycle_metrics",
+            "telemetry",
+            "catalog_health",
+            "last_progress_at",
+            "last_progress_state",
+            "cycle_id",
+            "cycle_started_at",
+            "cycle_elapsed_seconds",
+            "progress",
+            "heartbeat_count",
+        ):
             if key in previous:
                 payload[key] = previous[key]
+        if progress or "last_progress_at" not in payload:
+            payload["last_progress_at"] = now
+            payload["last_progress_state"] = state
         if details:
             payload.update(details)
-        temporary_path = status_path.with_suffix(".json.tmp")
-        temporary_path.write_text(json.dumps(payload, indent=2) + "\n")
-        temporary_path.replace(status_path)
+        _write_status_payload(status_path, payload)
+
+
+def touch_heartbeat(data_dir: Path) -> None:
+    """Refresh liveness without pretending the pipeline made progress.
+
+    The live cycle can spend minutes inside provider I/O or catalog matching.
+    A separate heartbeat must continue during that work, while
+    ``last_progress_at`` remains unchanged so the supervisor can distinguish a
+    healthy long-running job from a stuck one.
+    """
+
+    with status_write_lock:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        status_path = data_dir / "worker-status.json"
+        payload = _read_status_payload(status_path)
+        payload.setdefault("service", "worker")
+        payload.setdefault("state", "starting")
+        payload.setdefault("mode", os.getenv("WORKER_MODE", "bootstrap"))
+        payload["last_heartbeat"] = utc_now()
+        payload["heartbeat_count"] = int(payload.get("heartbeat_count") or 0) + 1
+        _write_status_payload(status_path, payload)
+
+
+def _heartbeat_loop(data_dir: Path, interval_seconds: float, stop_event: Event) -> None:
+    interval = max(1.0, float(interval_seconds))
+    while not stop_event.wait(interval):
+        try:
+            touch_heartbeat(data_dir)
+        except OSError:
+            # A transient volume write failure must not kill the worker. The
+            # supervisor will use the stale heartbeat as the failure signal.
+            continue
+
+
+def stop_heartbeat() -> None:
+    global heartbeat_stop_event, heartbeat_thread
+    if heartbeat_stop_event is not None:
+        heartbeat_stop_event.set()
+    if heartbeat_thread is not None and heartbeat_thread.is_alive():
+        heartbeat_thread.join(timeout=2.0)
+    heartbeat_stop_event = None
+    heartbeat_thread = None
 
 
 def read_pipeline_control(data_dir: Path) -> dict:
@@ -529,6 +602,7 @@ def auto_populate_manifest(data_dir: Path, manifest_path: Path) -> bool:
 
 
 def main() -> None:
+    global heartbeat_stop_event, heartbeat_thread
     signal.signal(signal.SIGTERM, stop_worker)
     signal.signal(signal.SIGINT, stop_worker)
 
@@ -541,6 +615,15 @@ def main() -> None:
         "starting",
         {"pipeline_paused": True, "reason": "Opening the persistent worker database."},
     )
+    heartbeat_stop_event = Event()
+    heartbeat_thread = Thread(
+        target=_heartbeat_loop,
+        args=(data_dir, heartbeat_seconds, heartbeat_stop_event),
+        name="worker-heartbeat",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+    atexit.register(stop_heartbeat)
     store = DuckDBStore(paths.database)
     store.initialize()
     # These repairs are intentionally opt-in. They are durable, idempotent
@@ -588,6 +671,7 @@ def main() -> None:
                 )
                 time.sleep(heartbeat_seconds)
             write_status(data_dir, "stopped", {"pipeline_paused": True})
+            stop_heartbeat()
             return
 
         manifest_path = Path(
@@ -625,7 +709,43 @@ def main() -> None:
                     continue
             cycle_started_at = datetime.now(timezone.utc)
             cycle_started_monotonic = time.perf_counter()
+            cycle_id = f"worker-cycle-{cycle_started_at.strftime('%Y%m%dT%H%M%S%fZ')}"
             manual_migrations = claim_manual_migrations(data_dir)
+            write_status(
+                data_dir,
+                "starting_cycle",
+                {
+                    "pipeline_paused": False,
+                    "cycle_id": cycle_id,
+                    "cycle_started_at": cycle_started_at.isoformat(),
+                    "cycle_elapsed_seconds": 0.0,
+                    "progress": {
+                        "state": "starting_cycle",
+                        "reason": "Beginning the next live pipeline cycle.",
+                    },
+                },
+            )
+
+            def cycle_status_callback(state: str, details: dict) -> None:
+                write_status(
+                    data_dir,
+                    state,
+                    {
+                        "pipeline_paused": False,
+                        "cycle_id": cycle_id,
+                        "cycle_started_at": cycle_started_at.isoformat(),
+                        "cycle_elapsed_seconds": round(
+                            max(0.0, time.perf_counter() - cycle_started_monotonic),
+                            2,
+                        ),
+                        "progress": {
+                            "state": state,
+                            "updated_at": utc_now(),
+                            **(details or {}),
+                        },
+                    },
+                )
+
             try:
                 result = run_live_cycle(
                     data_dir=data_dir,
@@ -648,7 +768,7 @@ def main() -> None:
                         os.getenv("STAGE3_REASSESSMENT_CONCURRENCY", "4")
                     ),
                     manual_migrations=manual_migrations,
-                    status_callback=lambda state, details: write_status(data_dir, state, details),
+                    status_callback=cycle_status_callback,
                 )
                 cycle_finished_at = datetime.now(timezone.utc)
                 cycle_metrics = cycle_payload(result, result.get("timings", {}), store)
@@ -702,6 +822,16 @@ def main() -> None:
                             "data_version": int(store.latest_published_version() or 0),
                         },
                         "catalog_health": catalog_health,
+                        "cycle_id": cycle_id,
+                        "cycle_started_at": cycle_started_at.isoformat(),
+                        "cycle_elapsed_seconds": round(
+                            max(0.0, time.perf_counter() - cycle_started_monotonic),
+                            2,
+                        ),
+                        "progress": {
+                            "state": "idle",
+                            "reason": "Cycle published successfully; waiting for the next poll.",
+                        },
                         "history_repair": history_repair,
                         "overall_ranking_rebuild": overall_ranking_rebuild,
                         "next_update_at": (datetime.now(timezone.utc) + timedelta(seconds=poll_seconds)).isoformat(),
@@ -735,6 +865,7 @@ def main() -> None:
                 continue
             time.sleep(float(os.getenv("LIVE_POLL_SECONDS", "60")))
         write_status(data_dir, "stopped")
+        stop_heartbeat()
         return
 
     while running:
@@ -742,6 +873,7 @@ def main() -> None:
         time.sleep(heartbeat_seconds)
 
     write_status(data_dir, "stopped")
+    stop_heartbeat()
 
 
 if __name__ == "__main__":
