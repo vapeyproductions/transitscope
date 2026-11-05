@@ -637,6 +637,22 @@ async function fetchCandidateJson<T>(path: string): Promise<T> {
   throw lastError instanceof Error ? lastError : new Error("Candidate evidence is temporarily unavailable.");
 }
 
+async function waitForCandidateJson<T>(path: string, isActive: () => boolean): Promise<T> {
+  while (isActive()) {
+    try {
+      return await fetchCandidateJson<T>(path);
+    } catch (cause) {
+      const retryable = cause instanceof Error && (
+        (cause as Error & { code?: string }).code === "publication_busy"
+        || cause.name === "AbortError"
+      );
+      if (!retryable) throw cause;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 2500));
+    }
+  }
+  throw new Error("Candidate evidence request cancelled.");
+}
+
 function formatDate(value: string | null | undefined): string {
   if (!value) return "Not evaluated";
   const date = new Date(value);
@@ -2104,9 +2120,10 @@ export default function HomePage() {
       setCandidate(null);
     }
 
-    const detailRequest = fetchCandidateJson<{ candidate: CandidateDetail }>(`/api/candidates/${candidateId}`);
-    const historyRequest = fetchCandidateJson<HistoryResponse>(`/api/candidates/${candidateId}/history`);
-    const curveRequest = fetchCandidateJson<LightCurveResponse>(`/api/candidates/${candidateId}/light-curve`);
+    const isActive = () => selectedIdRef.current === candidateId;
+    const detailRequest = waitForCandidateJson<{ candidate: CandidateDetail }>(`/api/candidates/${candidateId}`, isActive);
+    const historyRequest = waitForCandidateJson<HistoryResponse>(`/api/candidates/${candidateId}/history`, isActive);
+    const curveRequest = waitForCandidateJson<LightCurveResponse>(`/api/candidates/${candidateId}/light-curve`, isActive);
 
     void detailRequest.then((detail) => {
       candidateDetailCacheRef.current.set(candidateId, detail.candidate);
@@ -2116,6 +2133,7 @@ export default function HomePage() {
       }
       setModalLoading(false);
     }).catch((cause) => {
+      if (cause instanceof Error && cause.message === "Candidate evidence request cancelled.") return;
       if (!seed) {
         if (!cachedDetail) {
           setError(cause instanceof Error ? cause.message : "Candidate details are unavailable.");
@@ -2132,12 +2150,14 @@ export default function HomePage() {
       candidateHistoryCacheRef.current.set(candidateId, nextHistory);
       if (selectedIdRef.current === candidateId) setHistory(nextHistory);
     }).catch(() => {
+      if (!isActive()) return;
       if (selectedIdRef.current === candidateId && !cachedHistory) setCandidateLoadError((current) => current ?? "The persisted assessment history is temporarily unavailable. Reopen after the next worker snapshot.");
     });
     void curveRequest.then((nextCurve) => {
       candidateCurveCacheRef.current.set(candidateId, nextCurve);
       if (selectedIdRef.current === candidateId) setCurve(nextCurve);
     }).catch(() => {
+      if (!isActive()) return;
       if (selectedIdRef.current === candidateId && !cachedCurve) setCandidateLoadError((current) => current ?? "The persisted light curve is temporarily unavailable. Reopen after the next worker snapshot.");
     });
   }, [closeCandidate]);
