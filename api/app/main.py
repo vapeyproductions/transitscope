@@ -696,7 +696,23 @@ def monitoring_control(request: Request, payload: dict) -> dict:
             raise HTTPException(status_code=409, detail={"code": "deployment_gate_closed", "message": "PIPELINE_PAUSED is true; clear the deployment pause before resuming the worker."})
 
     control = _write_pipeline_control(action == "pause")
-    return {"action": action, "control": ReadOnlyStore().monitoring(worker_status())["control"], "updated_at": control["updated_at"]}
+    # Do not run the full monitoring projection before acknowledging a control
+    # action. A DuckDB publication lock can make that projection slow even
+    # though the durable pause gate was written successfully.
+    return {
+        "action": action,
+        "control": {
+            "pipeline_paused": bool(control.get("pipeline_paused")),
+            "operator_control": bool(control.get("pipeline_paused")),
+            "updated_at": control.get("updated_at"),
+            "reason": (
+                "Paused from ML Ops; no new jobs will start until resumed."
+                if action == "pause"
+                else "Resume requested; the worker will start on its next heartbeat."
+            ),
+        },
+        "updated_at": control["updated_at"],
+    }
 
 
 @app.post("/api/monitoring/migrations")
