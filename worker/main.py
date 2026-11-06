@@ -86,6 +86,9 @@ def write_status(
             "cycle_elapsed_seconds",
             "progress",
             "heartbeat_count",
+            "last_stage1_publish_at",
+            "last_stage1_published_count",
+            "last_stage1_batch_id",
         ):
             if key in previous:
                 payload[key] = previous[key]
@@ -727,23 +730,34 @@ def main() -> None:
             )
 
             def cycle_status_callback(state: str, details: dict) -> None:
+                status_details = {
+                    "pipeline_paused": False,
+                    "cycle_id": cycle_id,
+                    "cycle_started_at": cycle_started_at.isoformat(),
+                    "cycle_elapsed_seconds": round(
+                        max(0.0, time.perf_counter() - cycle_started_monotonic),
+                        2,
+                    ),
+                    "progress": {
+                        "state": state,
+                        "updated_at": utc_now(),
+                        **(details or {}),
+                    },
+                }
+                if state == "stage1_batch_published":
+                    status_details.update(
+                        {
+                            "last_stage1_publish_at": utc_now(),
+                            "last_stage1_published_count": details.get(
+                                "processed_target_count"
+                            ),
+                            "last_stage1_batch_id": details.get("batch_id"),
+                        }
+                    )
                 write_status(
                     data_dir,
                     state,
-                    {
-                        "pipeline_paused": False,
-                        "cycle_id": cycle_id,
-                        "cycle_started_at": cycle_started_at.isoformat(),
-                        "cycle_elapsed_seconds": round(
-                            max(0.0, time.perf_counter() - cycle_started_monotonic),
-                            2,
-                        ),
-                        "progress": {
-                            "state": state,
-                            "updated_at": utc_now(),
-                            **(details or {}),
-                        },
-                    },
+                    status_details,
                 )
 
             try:

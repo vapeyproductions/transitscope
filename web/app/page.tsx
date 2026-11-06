@@ -17,7 +17,15 @@ type DashboardStatus = {
   active_candidate_count: number;
   last_ingest_at: string | null;
   processed_history?: Array<{ occurred_at: string | null; processed_target_count: number }>;
-  worker: { state?: string; last_heartbeat?: string | null; next_update_at?: string | null };
+  worker: {
+    state?: string;
+    health?: string;
+    health_message?: string;
+    last_heartbeat?: string | null;
+    last_stage1_publish_at?: string | null;
+    stage1_publish_age_seconds?: number | null;
+    next_update_at?: string | null;
+  };
 };
 
 type RankingRow = {
@@ -2155,8 +2163,9 @@ export default function HomePage() {
   const displayRanking = activeReplay.active ? activeReplay.snapshot : liveRanking;
   const rows = displayRanking?.rows ?? [];
   const removals = activeReplay.active ? displayRanking?.removed ?? [] : [];
-  const dataState = status?.data_version ? "Published" : "Awaiting data";
-  const pipelineState = status?.data_version ? "Published" : status?.worker?.state === "idle" ? "Standby" : "Starting";
+  const workerNeedsAttention = ["stalled", "heartbeat_stale", "stage1_publish_stalled"].includes(status?.worker?.health ?? "");
+  const dataState = workerNeedsAttention ? "Needs attention" : status?.data_version ? "Published" : "Awaiting data";
+  const pipelineState = workerNeedsAttention ? "Needs attention" : status?.data_version ? "Published" : status?.worker?.state === "idle" ? "Standby" : "Starting";
   const copy = stageCopy(activeTab);
   const totalCandidates = displayRanking?.total_ranked_count ?? rows.length;
   const processedCount = activeReplay.active ? displayRanking?.processed_target_count ?? 0 : status?.processed_target_count ?? ranking?.processed_target_count ?? 0;

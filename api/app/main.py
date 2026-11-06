@@ -61,8 +61,10 @@ def worker_status() -> dict:
 
     heartbeat_age = age_seconds(payload.get("last_heartbeat"))
     progress_age = age_seconds(payload.get("last_progress_at"))
+    stage1_publish_age = age_seconds(payload.get("last_stage1_publish_at"))
     payload["heartbeat_age_seconds"] = heartbeat_age
     payload["progress_age_seconds"] = progress_age
+    payload["stage1_publish_age_seconds"] = stage1_publish_age
     stall_timeout = max(30.0, float(os.getenv("WORKER_STALL_TIMEOUT_SECONDS", "600")))
     state = str(payload.get("state") or "unknown")
     active_states = {
@@ -73,11 +75,29 @@ def worker_status() -> dict:
         "matching_catalog",
         "populating_manifest",
     }
+    stage1_publish_timeout = max(
+        300.0,
+        float(os.getenv("STAGE1_PUBLISH_STALL_TIMEOUT_SECONDS", "1800")),
+    )
+    stage1_published_count = int(payload.get("last_stage1_published_count") or 0)
+    target_universe = int(os.getenv("TARGET_UNIVERSE_SIZE", "126000"))
+    stage1_publish_stalled = (
+        state in active_states
+        and stage1_publish_age is not None
+        and stage1_publish_age > stage1_publish_timeout
+        and stage1_published_count < target_universe
+    )
     if state in active_states and progress_age is not None and progress_age > stall_timeout:
         payload["health"] = "stalled"
         payload["health_message"] = (
             "The worker heartbeat is alive, but no pipeline progress has been recorded "
             f"for {round(progress_age / 60, 1)} minutes."
+        )
+    elif stage1_publish_stalled:
+        payload["health"] = "stage1_publish_stalled"
+        payload["health_message"] = (
+            "The worker is active, but no new Stage 1 batch has been published "
+            f"for {round(stage1_publish_age / 60, 1)} minutes."
         )
     elif heartbeat_age is not None and heartbeat_age > max(30.0, float(os.getenv("WORKER_HEARTBEAT_SECONDS", "15")) * 3):
         payload["health"] = "heartbeat_stale"

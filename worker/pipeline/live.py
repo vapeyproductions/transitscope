@@ -1276,6 +1276,12 @@ def run_live_cycle(
     stage2_waterfall_gate_enabled = os.getenv(
         "STAGE2_WATERFALL_GATE_ENABLED", "false"
     ).strip().lower() in {"1", "true", "yes", "on"}
+    # A strict downstream gate must not stop the broad universe scan. Stage 1
+    # is the source of new evidence, so it keeps admitting a small bounded
+    # batch even while Stage 2 is waiting for a gate to resolve.
+    stage1_intake_bypasses_waterfall_gate = os.getenv(
+        "STAGE1_INTAKE_BYPASSES_WATERFALL_GATE", "true"
+    ).strip().lower() in {"1", "true", "yes", "on"}
     # Stage 1 -> Stage 2 intake is the current priority. Stage 2 Needs More
     # Data rows remain ranked and retained, but their expensive reassessment
     # jobs are deferred until an operator explicitly re-enables them after
@@ -1387,6 +1393,18 @@ def run_live_cycle(
                 ),
                 progress_callback=status_callback,
             )
+            if status_callback and result.get("status") == "published":
+                status_callback(
+                    "stage1_batch_published",
+                    {
+                        "reason": replacement_reason,
+                        "batch_id": result.get("batch_id"),
+                        "publish_version": result.get("publish_version"),
+                        "processed_target_count": result.get("processed_count"),
+                        "selected_count": result.get("selected_count", 0),
+                        "evaluated_count": result.get("evaluated_count", 0),
+                    },
+                )
             result["intake_reason"] = replacement_reason
             return result
         finally:
@@ -1467,6 +1485,51 @@ def run_live_cycle(
         enforced=stage2_waterfall_gate_enabled,
     )
     stage2_gate_bootstrap_used = 0
+
+    # Initialize this before downstream work so a slow Stage 2/3 job cannot
+    # postpone the next broad Stage 1 intake until the end of the cycle.
+    continuous_stage1_intake: dict[str, Any] = {
+        "status": "idle",
+        "message": (
+            "Continuous Stage 1 intake is disabled"
+            if stage1_continuous_intake_per_cycle == 0
+            else "Waiting for the initial Stage 1 baseline"
+            if not baseline_ready_at_cycle_start
+            else "Stage 1 intake will run before downstream work"
+        ),
+        "selected_count": 0,
+        "evaluated_count": 0,
+        "intake_reason": "continuous_stage1_intake",
+    }
+    continuous_stage1_intake_ran = False
+
+    if (
+        baseline_ready_at_cycle_start
+        and stage1_continuous_intake_per_cycle
+        and (
+            not stage2_waterfall_gate_enabled
+            or stage1_intake_bypasses_waterfall_gate
+        )
+    ):
+        if status_callback:
+            status_callback(
+                "processing_stage1",
+                {
+                    "reason": "continuous_stage1_intake",
+                    "requested_count": stage1_continuous_intake_per_cycle,
+                    "scheduled_before": "stage2_and_stage3_work",
+                },
+            )
+        continuous_stage1_intake = fill_stage1(
+            stage1_continuous_intake_per_cycle,
+            intake_reason="continuous_stage1_intake",
+        )
+        continuous_stage1_intake["scheduled_before"] = "downstream_work"
+        continuous_stage1_intake["stage2_gate_bypassed"] = bool(
+            stage2_waterfall_gate_enabled
+            and stage1_intake_bypasses_waterfall_gate
+        )
+        continuous_stage1_intake_ran = True
 
     def request_stage1_reassessment() -> dict[str, Any]:
         """Ask Stage 1 for more data only after Stage 3 requests a handoff."""
@@ -2466,23 +2529,12 @@ def run_live_cycle(
     # Stage 3 is the final assessment stage, so a catalog match here is a
     # legitimate Stage 3 removal and is retained in the identified/replay
     # history at that stage.
-    continuous_stage1_intake: dict[str, Any] = {
-        "status": "idle",
-        "message": (
-            "Continuous Stage 1 intake is disabled"
-            if stage1_continuous_intake_per_cycle == 0
-            else "Paused until the top Stage 2 gate window is fully Promising"
-            if stage2_waterfall_gate_enabled and not stage2_gate_open
-            else "Promising-first intake is active; Stage 2 Needs More Data remains backlogged"
-            if baseline_ready_at_cycle_start
-            else "Waiting for the initial Stage 1 baseline"
-        ),
-        "selected_count": 0,
-        "evaluated_count": 0,
-        "intake_reason": "continuous_stage1_intake",
-    }
+    # Under normal live settings this was already executed before downstream
+    # work. Keep this fallback only for an explicitly enforced gate that also
+    # disables the Stage 1 bypass.
     if (
-        baseline_ready_at_cycle_start
+        not continuous_stage1_intake_ran
+        and baseline_ready_at_cycle_start
         and stage1_continuous_intake_per_cycle
         and stage2_gate_open
     ):

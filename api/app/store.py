@@ -251,6 +251,19 @@ class ReadOnlyStore:
         if connection is None:
             cached = _cache_get(_STATUS_RESPONSE_CACHE, cache_key)
             if cached is not None:
+                cached = dict(cached)
+                # The worker writes this sidecar value immediately after a
+                # Stage 1 batch commits. If DuckDB is briefly locked by a
+                # downstream publication, expose that newer durable count
+                # instead of making the public dashboard look frozen.
+                worker_count = worker.get("last_stage1_published_count")
+                try:
+                    worker_count = int(worker_count)
+                except (TypeError, ValueError):
+                    worker_count = 0
+                if worker_count > int(cached.get("processed_target_count") or 0):
+                    cached["processed_target_count"] = worker_count
+                    cached["last_ingest_at"] = worker.get("last_stage1_publish_at")
                 cached["worker"] = worker
                 cached["served_from_cache"] = True
                 cached["read_state"] = "publication_busy"
