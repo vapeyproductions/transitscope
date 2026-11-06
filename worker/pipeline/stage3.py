@@ -884,7 +884,7 @@ def publish_stage3_result(
 
 def load_stage2_input(store: DuckDBStore, candidate_id: str) -> dict[str, Any] | None:
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         candidate = connection.execute(
             """
             SELECT candidate_id, target_id, status, overall_score, stage_score, current_stage

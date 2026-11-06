@@ -44,7 +44,7 @@ def release_alias_siblings(
 
 def active_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         rows = connection.execute(
             """
             SELECT candidate_id, target_id, current_stage, status,
@@ -64,7 +64,7 @@ def all_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
     """Return active and historical candidate rows for lifecycle decisions."""
 
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         rows = connection.execute(
             """
             SELECT candidate_id, target_id, current_stage, status,
@@ -93,7 +93,7 @@ def candidate_match_inputs(
     """
 
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         params: list[Any] = []
         where = "WHERE c.active = true"
         if prime_only:
@@ -158,7 +158,7 @@ def stage3_replacement_debt(store: DuckDBStore) -> list[dict[str, Any]]:
     """
 
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         rows = connection.execute(
             """
             SELECT candidate_id, stage, event_type, sequence_number, payload_json, occurred_at
@@ -1105,7 +1105,7 @@ def _first_float(features: Mapping[str, Any], *keys: str) -> float | None:
 
 def processed_target_count(store: DuckDBStore) -> int:
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         return int(
             connection.execute(
                 "SELECT COUNT(*) FROM target_manifest WHERE manifest_status = 'processed'"

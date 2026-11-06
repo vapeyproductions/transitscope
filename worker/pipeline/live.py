@@ -67,7 +67,7 @@ def _latest_evaluation_signature(
     stage: str,
 ) -> tuple[str, tuple[str, ...]] | None:
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         row = connection.execute(
             """
             SELECT model_version, input_product_ids
@@ -213,7 +213,7 @@ def _stage3_prime_rank_reassessment_queue(
     """
 
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         rows = connection.execute(
             """
             SELECT candidate_id, stage, event_type, sequence_number, payload_json
@@ -445,7 +445,7 @@ def _stage3_initial_intake_queue(
             "pending": [],
         }
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         started = connection.execute(
             """
             SELECT sequence_number, payload_json
@@ -517,7 +517,7 @@ def _stage3_initial_intake_queue(
         started_payload = {}
     batch_id = str(started_payload.get("batch_id") or "")
     started_sequence = int(started[0] or 0)
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         queued_rows = connection.execute(
             """
             SELECT q.candidate_id, q.sequence_number, q.payload_json,
@@ -605,7 +605,7 @@ def _stage1_refresh_targets(
     if max_targets < 1:
         return []
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         rows = connection.execute(
             """
             SELECT c.candidate_id, c.target_id, c.rank_stage,

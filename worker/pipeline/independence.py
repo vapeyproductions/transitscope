@@ -39,7 +39,7 @@ def latest_stage1_features(store: DuckDBStore, candidate_id: str) -> dict[str, A
     """Return the latest persisted Stage 1 feature payload for a candidate."""
 
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         row = connection.execute(
             """
             SELECT feature_json
@@ -63,7 +63,7 @@ def latest_independence_source(store: DuckDBStore, candidate_id: str) -> str | N
     """Return the Stage 1 normalized path used by the last independence run."""
 
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         row = connection.execute(
             """
             SELECT feature_json

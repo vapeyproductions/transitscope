@@ -106,6 +106,16 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM pipeline_events").fetchone()[0], 0)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM publish_versions").fetchone()[0], 0)
 
+    def test_read_connections_use_shared_lock_and_are_read_only(self) -> None:
+        self.store.initialize()
+
+        with self.store.read_connect() as first_reader:
+            with self.store.read_connect() as second_reader:
+                self.assertEqual(first_reader.execute("SELECT 1").fetchone()[0], 1)
+                self.assertEqual(second_reader.execute("SELECT 1").fetchone()[0], 1)
+                with self.assertRaises(Exception):
+                    first_reader.execute("CREATE TABLE read_only_should_fail(value INTEGER)")
+
 
 if __name__ == "__main__":
     unittest.main()

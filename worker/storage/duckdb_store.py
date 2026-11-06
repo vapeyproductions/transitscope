@@ -20,8 +20,8 @@ def _json_value(value: object) -> str:
     return json.dumps(value, sort_keys=True)
 
 
-class _LockedWriteConnection:
-    """DuckDB connection proxy that holds the worker's exclusive sidecar lock."""
+class _LockedConnection:
+    """DuckDB connection proxy that releases a sidecar lock on close."""
 
     def __init__(self, connection: duckdb.DuckDBPyConnection, lock_file: Any) -> None:
         self._connection = connection
@@ -31,7 +31,7 @@ class _LockedWriteConnection:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._connection, name)
 
-    def __enter__(self) -> "_LockedWriteConnection":
+    def __enter__(self) -> "_LockedConnection":
         self._connection.__enter__()
         return self
 
@@ -70,7 +70,30 @@ class DuckDBStore:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
             lock_file.close()
             raise
-        return _LockedWriteConnection(connection, lock_file)
+        return _LockedConnection(connection, lock_file)
+
+    def read_connect(self) -> Any:
+        """Open a read-only connection under a shared sidecar lock.
+
+        Worker reads used to call :meth:`connect`, which took an exclusive
+        lock even when the query only selected rows. During long live cycles
+        those reads could repeatedly block the API's shared readers and make
+        the published dashboard fall back to cache. Keep all writes on
+        ``connect`` and let independent reads coexist with other readers.
+        """
+
+        self.initialize()
+        self.database.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.database.with_suffix(self.database.suffix + ".lock")
+        lock_file = lock_path.open("a+")
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH)
+            connection = duckdb.connect(str(self.database), read_only=True)
+        except Exception:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            lock_file.close()
+            raise
+        return _LockedConnection(connection, lock_file)
 
     def initialize(self) -> None:
         if self._initialized:
@@ -596,7 +619,7 @@ class DuckDBStore:
 
     def latest_published_version(self) -> int | None:
         self.initialize()
-        with self.connect() as connection:
+        with self.read_connect() as connection:
             result = connection.execute(
                 """
                 SELECT version

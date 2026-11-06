@@ -147,7 +147,7 @@ def manifest_count(path: Path) -> int:
 
 def _processed_target_ids(store: DuckDBStore) -> set[str]:
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         rows = connection.execute(
             "SELECT target_id FROM target_manifest WHERE manifest_status = 'processed'"
         ).fetchall()
@@ -156,7 +156,7 @@ def _processed_target_ids(store: DuckDBStore) -> set[str]:
 
 def checkpoint_for(store: DuckDBStore, manifest_path: Path) -> dict[str, Any] | None:
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         row = connection.execute(
             """
             SELECT stage, manifest_path, cursor, universe_count, processed_count,
@@ -323,7 +323,7 @@ def process_targets(
 
 def _existing_candidates(store: DuckDBStore) -> list[dict[str, Any]]:
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         rows = connection.execute(
             """
             SELECT candidate_id, signal_id, target_id, current_stage, status, overall_score, stage_score,
@@ -588,7 +588,7 @@ def _existing_stage1_signals(
     if not candidates:
         return []
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         rows = connection.execute(
             """
             SELECT cs.signal_id, cs.candidate_id, cs.target_id, cs.signal_index, cs.signal_key,

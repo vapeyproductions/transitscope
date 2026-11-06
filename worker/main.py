@@ -210,7 +210,7 @@ def queue_snapshot(store: DuckDBStore) -> dict[str, dict[str, int]]:
     """Capture the active stage/status queues at a cycle boundary."""
 
     snapshot = {stage: {} for stage in ("stage1", "stage2", "stage3")}
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         rows = connection.execute(
             """
             SELECT current_stage, status, COUNT(*)
@@ -234,7 +234,7 @@ def ranked_queue_samples(store: DuckDBStore, limit: int = 100) -> dict[str, list
     """
 
     samples: dict[str, list[dict[str, object]]] = {}
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         for stage in ("stage1", "stage2", "stage3"):
             rows = connection.execute(
                 """
@@ -307,7 +307,7 @@ def candidate_status_summary(store: DuckDBStore, candidate_ids: list[object]) ->
     if not normalized_ids:
         return result_summary([])
     placeholders = ", ".join("?" for _ in normalized_ids)
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         rows = connection.execute(
             f"SELECT status FROM candidates WHERE candidate_id IN ({placeholders})",
             normalized_ids,
@@ -328,7 +328,7 @@ def candidate_cycle_events(store: DuckDBStore, candidate_ids: list[object]) -> l
     if not normalized_ids:
         return []
     placeholders = ", ".join("?" for _ in normalized_ids)
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         rows = connection.execute(
             f"SELECT candidate_id, status FROM candidates WHERE candidate_id IN ({placeholders})",
             normalized_ids,

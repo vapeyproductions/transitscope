@@ -365,7 +365,7 @@ class Stage2Processor:
 
 def _candidate_rows(store: DuckDBStore) -> list[dict[str, Any]]:
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         rows = connection.execute(
             """
             SELECT candidate_id, target_id, current_stage, status,
@@ -670,7 +670,7 @@ def publish_stage2_result(
 
 def load_stage1_input(store: DuckDBStore, candidate_id: str) -> dict[str, Any] | None:
     store.initialize()
-    with store.connect() as connection:
+    with store.read_connect() as connection:
         candidate = connection.execute(
             """
             SELECT candidate_id, target_id, status, overall_score, current_stage
