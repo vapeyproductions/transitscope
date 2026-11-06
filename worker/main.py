@@ -83,6 +83,7 @@ def write_status(
             "last_progress_state",
             "cycle_id",
             "cycle_started_at",
+            "last_cycle_finished_at",
             "cycle_elapsed_seconds",
             "progress",
             "heartbeat_count",
@@ -830,6 +831,7 @@ def main() -> None:
                     {
                         "last_cycle": result,
                         "last_cycle_metrics": cycle_metrics,
+                        "last_cycle_finished_at": cycle_finished_at.isoformat(),
                         "telemetry": {
                             "processed_target_count": int(processed_target_count(store)),
                             "active_candidate_count": len(active_candidates(store)),

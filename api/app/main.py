@@ -236,31 +236,45 @@ def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
 
     last_metrics = worker.get("last_cycle_metrics") if isinstance(worker.get("last_cycle_metrics"), dict) else {}
     saved_queue = last_metrics.get("queue") if isinstance(last_metrics.get("queue"), dict) else {}
+    has_cycle_snapshot = bool(last_metrics) and isinstance(last_metrics.get("queue"), dict)
     stages: dict[str, dict] = {}
     throughput: dict[str, dict] = {}
     current_queue: dict[str, dict] = {}
     for stage in ("stage1", "stage2", "stage3"):
-        counts_raw = saved_queue.get(stage) if isinstance(saved_queue.get(stage), dict) else {}
+        has_stage_snapshot = has_cycle_snapshot and stage in saved_queue and isinstance(saved_queue.get(stage), dict)
+        counts_raw = saved_queue.get(stage) if has_stage_snapshot else {}
         counts = {str(key): int(value or 0) for key, value in counts_raw.items() if isinstance(value, (int, float))}
         stage_metrics = last_metrics.get(stage) if isinstance(last_metrics.get(stage), dict) else {}
         total_candidates = sum(counts.values())
         stages[stage] = {
-            "total_candidates": total_candidates,
-            "priority_candidates": int(
-                stage_metrics.get("priority_queue_count")
-                or (counts.get("Needs More Data", 0) if stage == "stage3" else stage_metrics.get("selected", 0))
-                or 0
+            # An absent snapshot is not an empty pipeline. Keep it explicit so
+            # the health panel cannot turn a publication lock into false zeros.
+            "available": has_stage_snapshot,
+            "total_candidates": total_candidates if has_stage_snapshot else None,
+            "priority_candidates": (
+                int(
+                    stage_metrics.get("priority_queue_count")
+                    or (counts.get("Needs More Data", 0) if stage == "stage3" else stage_metrics.get("selected", 0))
+                    or 0
+                )
+                if has_stage_snapshot
+                else None
             ),
             "counts": counts,
-            "last_evaluated_at": worker.get("last_progress_at"),
+            "last_evaluated_at": (
+                worker.get("last_cycle_finished_at")
+                or last_metrics.get("finished_at")
+                or last_metrics.get("occurred_at")
+            ) if has_stage_snapshot else None,
         }
         throughput[stage] = {
             key: int(stage_metrics.get(key) or 0)
             for key in ("attempted", "evaluated", "promising", "needs_more_data", "inconclusive", "known_match", "errors", "handoffs")
-        }
-        throughput[stage]["per_hour"] = throughput[stage]["evaluated"]
-        throughput[stage]["per_minute"] = round(throughput[stage]["evaluated"] / 60, 2)
-        current_queue[stage] = {"jobs": int(stage_metrics.get("selected") or 0)}
+        } if has_stage_snapshot else {}
+        if has_stage_snapshot:
+            throughput[stage]["per_hour"] = throughput[stage]["evaluated"]
+            throughput[stage]["per_minute"] = round(throughput[stage]["evaluated"] / 60, 2)
+        current_queue[stage] = {"jobs": int(stage_metrics.get("selected") or 0)} if has_stage_snapshot else {}
 
     finished_at = worker.get("last_heartbeat") or status.get("checked_at") or utc_now()
     latest_cycle = {
@@ -273,6 +287,7 @@ def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
         "data_version": status.get("data_version"),
         "read_state": status.get("read_state", "published"),
         "served_from_cache": bool(status.get("served_from_cache")),
+        "last_ingest_at": status.get("last_ingest_at"),
         "universe": {
             "configured_count": int(status.get("total_target_count") or 0),
             "processed_count": int(status.get("processed_target_count") or 0),
@@ -286,6 +301,56 @@ def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
         },
         "data_health": {"providers": []},
         "timings": timings,
+        "control": _source_of_truth_control(worker),
+    }
+
+
+def _source_of_truth_control(worker: dict) -> dict:
+    """Derive the effective control state without trusting missing fields.
+
+    The full monitoring projection gets these values from deployment
+    configuration. The bounded health endpoint may be served while DuckDB is
+    locked, so it must use the worker's live state as the authority for what
+    is actually happening. In particular, a running worker must never be
+    rendered as ``autostart disabled`` merely because the compact projection
+    has no control object.
+    """
+
+    operator_control = _read_pipeline_control()
+    operator_paused = bool(operator_control.get("pipeline_paused"))
+    worker_state = str(worker.get("state") or "unknown")
+    worker_paused = bool(worker.get("pipeline_paused")) or worker_state.startswith("paused")
+    active_states = {
+        "starting_cycle",
+        "processing_stage1",
+        "processing_stage2",
+        "processing_stage3",
+        "matching_catalog",
+        "populating_manifest",
+    }
+    worker_active = worker_state in active_states and not worker_paused
+    configured_autostart = _env_flag("RUN_LIVE_PIPELINE")
+    configured_gate = configured_autostart and not _env_flag("PIPELINE_PAUSED", default=True)
+    # The worker can be in a live cycle even while the API process is serving
+    # a lock-bound response. Treat that observed activity as authoritative.
+    autostart_enabled = worker_active or configured_autostart
+    deployment_gate = worker_active or configured_gate
+    pipeline_paused = operator_paused or worker_paused
+    if pipeline_paused:
+        reason = str(worker.get("reason") or "The worker is paused by configuration or operator control.")
+    elif worker_active:
+        reason = f"The worker is actively processing {worker_state.replace('_', ' ')}."
+    elif not deployment_gate:
+        reason = "The deployment gate is closed; no new worker cycle will start."
+    else:
+        reason = f"Worker state: {worker_state}."
+    return {
+        "pipeline_paused": pipeline_paused,
+        "autostart_enabled": autostart_enabled,
+        "deployment_gate": deployment_gate,
+        "operator_control": operator_paused,
+        "updated_at": operator_control.get("updated_at"),
+        "reason": reason,
     }
 
 
@@ -341,10 +406,7 @@ def _monitoring_system_health(worker: dict) -> dict:
     except Exception as exc:  # pragma: no cover - defensive boundary for health reporting
         monitoring_error = str(exc)[:240]
 
-    control = monitoring.get("control") if isinstance(monitoring.get("control"), dict) else {
-        "pipeline_paused": bool(worker.get("pipeline_paused")),
-        "reason": "Control projection unavailable; worker status is authoritative.",
-    }
+    control = monitoring.get("control") if isinstance(monitoring.get("control"), dict) else _source_of_truth_control(worker)
     worker_health = str(worker.get("health") or "unknown")
     worker_status = {
         "stalled": "critical",
@@ -425,9 +487,22 @@ def _monitoring_system_health(worker: dict) -> dict:
     providers = data_health.get("providers") if isinstance(data_health.get("providers"), list) else []
     mast = next((item for item in providers if "mast" in str(item.get("provider", "")).lower()), None)
     if mast is None:
-        provider_status = "unknown"
-        provider_summary = "No MAST ingest run is recorded in the published data."
-        provider_details = ["A missing run is different from a successful empty result."]
+        last_ingest_at = monitoring.get("last_ingest_at")
+        if read_state == "publication_busy" or served_from_cache:
+            provider_status = "warning"
+            provider_summary = "MAST run history is temporarily unavailable while the published projection is locked."
+            provider_details = [
+                f"Last ingest timestamp from the compact status snapshot: {last_ingest_at or 'not recorded'}",
+                "This is not evidence of an empty or failed MAST run.",
+            ]
+        elif last_ingest_at:
+            provider_status = "unknown"
+            provider_summary = "A MAST ingest timestamp exists, but provider run details are not available in this response."
+            provider_details = [f"Last ingest timestamp: {last_ingest_at}"]
+        else:
+            provider_status = "unknown"
+            provider_summary = "No MAST ingest run is recorded in the published data."
+            provider_details = ["A missing run is different from a successful empty result."]
     elif mast.get("failed_runs", 0) and not mast.get("successful_runs", 0):
         provider_status = "critical"
         provider_summary = "All recorded MAST ingest runs failed."
@@ -494,19 +569,35 @@ def _monitoring_system_health(worker: dict) -> dict:
     stage_summaries = []
     for stage in ("stage1", "stage2", "stage3"):
         stage_data = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
+        stage_available = bool(stage_data.get("available"))
         counts = stage_data.get("counts") if isinstance(stage_data.get("counts"), dict) else {}
         stage_flow = throughput.get(stage) if isinstance(throughput.get(stage), dict) else {}
         stage_queue = current_queue.get(stage) if isinstance(current_queue.get(stage), dict) else {}
         jobs = sum(int(value or 0) for value in stage_queue.values() if isinstance(value, (int, float)))
         needs_more_data = int(counts.get("Needs More Data", 0) or 0)
-        stage_status = "paused" if control.get("pipeline_paused") else "healthy"
-        summary = f"{int(stage_data.get('total_candidates', 0) or 0):,} retained · {jobs:,} jobs in the latest queue."
-        details = [
-            f"Promising: {int(counts.get('Promising', 0) or 0):,}",
-            f"Needs More Data: {needs_more_data:,}",
-            f"Inconclusive: {int(counts.get('Inconclusive', 0) or 0):,}",
-            f"Latest assessed: {stage_data.get('last_evaluated_at') or 'not recorded'}",
-        ]
+        if stage_available:
+            stage_status = "paused" if control.get("pipeline_paused") else "healthy"
+            summary = f"{int(stage_data.get('total_candidates', 0) or 0):,} retained · {jobs:,} jobs in the latest queue."
+            details = [
+                f"Promising: {int(counts.get('Promising', 0) or 0):,}",
+                f"Needs More Data: {needs_more_data:,}",
+                f"Inconclusive: {int(counts.get('Inconclusive', 0) or 0):,}",
+                f"Latest assessed: {stage_data.get('last_evaluated_at') or 'not recorded'}",
+            ]
+        else:
+            worker_health = str(worker.get("health") or "unknown")
+            current_stage = str(worker.get("state") or "").replace("processing_", "")
+            stage_status = "paused" if control.get("pipeline_paused") else "unknown"
+            if worker_health in {"stalled", "stage1_publish_stalled"} and current_stage == stage:
+                stage_status = "critical"
+            summary = "No durable stage snapshot is available in this response."
+            if read_state == "publication_busy":
+                summary = "Stage counts are temporarily unavailable while the published projection is locked."
+            details = [
+                f"Worker state: {worker.get('state') or 'not recorded'}",
+                "The monitor will not display unavailable data as zero.",
+            ]
+            jobs = None
         if stage == "stage2" and int(stage2_reassessment.get("remaining_queue_count", 0) or 0) > 0:
             stage_status = "warning" if not control.get("pipeline_paused") else "paused"
             summary += f" {int(stage2_reassessment.get('remaining_queue_count', 0)):,} reassessments waiting."
@@ -518,12 +609,13 @@ def _monitoring_system_health(worker: dict) -> dict:
                 "status": stage_status,
                 "summary": summary,
                 "details": details,
-                "retained_candidates": int(stage_data.get("total_candidates", 0) or 0),
-                "priority_candidates": int(stage_data.get("priority_candidates", 0) or 0),
+                "available": stage_available,
+                "retained_candidates": int(stage_data.get("total_candidates", 0) or 0) if stage_available else None,
+                "priority_candidates": int(stage_data.get("priority_candidates", 0) or 0) if stage_available else None,
                 "jobs_in_latest_queue": jobs,
-                "evaluated_in_window": int(stage_flow.get("evaluated", 0) or 0),
-                "handoffs_in_window": int(stage_flow.get("handoffs", 0) or 0),
-                "last_evaluated_at": stage_data.get("last_evaluated_at"),
+                "evaluated_in_window": int(stage_flow.get("evaluated", 0) or 0) if stage_available else None,
+                "handoffs_in_window": int(stage_flow.get("handoffs", 0) or 0) if stage_available else None,
+                "last_evaluated_at": stage_data.get("last_evaluated_at") if stage_available else None,
             }
         )
 
