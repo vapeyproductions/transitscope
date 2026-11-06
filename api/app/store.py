@@ -438,15 +438,7 @@ class ReadOnlyStore:
                     SELECT c.candidate_id, c.target_id, c.current_stage, c.status,
                            c.overall_score, c.stage_score, c.rank_overall, c.rank_stage,
                            c.activity, c.rank_delta, c.movement_kind,
-                           COALESCE(
-                               (
-                                   SELECT MAX(event.occurred_at)
-                                   FROM pipeline_events AS event
-                                   WHERE event.candidate_id = c.candidate_id
-                                     AND event.event_type IN ('stage1_evaluated', 'stage2_evaluated', 'stage3_evaluated')
-                               ),
-                               c.last_evaluated_at
-                           ) AS last_evaluated_at,
+                           c.last_evaluated_at,
                            c.signal_group_id, c.signal_resolution,
                            c.alias_of_candidate_id, c.promotion_eligible
                     FROM candidates AS c
@@ -456,6 +448,25 @@ class ReadOnlyStore:
                     """,
                 [*where_params, effective_limit, offset],
             ).fetchall()
+
+            latest_evaluations: dict[str, object] = {}
+            if rows:
+                candidate_ids = [str(row[0]) for row in rows]
+                placeholders = ", ".join("?" for _ in candidate_ids)
+                evaluation_rows = connection.execute(
+                    f"""
+                    SELECT candidate_id, MAX(occurred_at)
+                    FROM pipeline_events
+                    WHERE candidate_id IN ({placeholders})
+                      AND event_type IN ('stage1_evaluated', 'stage2_evaluated', 'stage3_evaluated')
+                    GROUP BY candidate_id
+                    """,
+                    candidate_ids,
+                ).fetchall()
+                latest_evaluations = {
+                    str(candidate_id): occurred_at
+                    for candidate_id, occurred_at in evaluation_rows
+                }
 
             signal_indices = self._signal_indices(
                 connection,
@@ -479,7 +490,9 @@ class ReadOnlyStore:
                         "activity": row[8],
                         "rank_delta": int(row[9] or 0),
                         "movement": row[10] or "unchanged",
-                        "last_evaluated_at": isoformat(row[11]),
+                        "last_evaluated_at": isoformat(
+                            latest_evaluations.get(str(row[0]), row[11])
+                        ),
                         "signal_group_id": row[12],
                         "signal_resolution": row[13] or "independent",
                         "alias_of_candidate_id": row[14],
