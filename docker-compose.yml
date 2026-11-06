@@ -34,7 +34,7 @@ services:
       STAGE1_MANIFEST: /app/data/manifests/stage1-real-target-universe.jsonl
       WORKER_HEARTBEAT_SECONDS: 5
       LIVE_POLL_SECONDS: 60
-      TARGET_UNIVERSE_SIZE: 126000
+      TARGET_UNIVERSE_SIZE: 100000
       STAGE1_BATCH_SIZE: 32
       STAGE1_MAX_WORKERS: 8
       STAGE1_POOL_SIZE: 500

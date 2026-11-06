@@ -10,7 +10,7 @@ Refreshing the dashboard reads the latest published state and never triggers pro
 
 ## What the operations view monitors
 
-- **Universe:** configured 126,000-target universe, manifest coverage, processed count, remaining count, and the initial 500-target Stage 1 pool.
+- **Universe:** configured 100,000-target universe, manifest coverage, processed count, remaining count, and the initial 500-target Stage 1 pool.
 - **Stage prioritization:** the Stage 1 top-100 priority window and Stage 2 top-100 reassessment window, plus counts for Promising, Needs More Data, Inconclusive, and Known Match. These are ranking windows, not caps on how many candidates a stage can retain. Stage 2 has no promotion cutoff: when Stage 3 calls for a candidate, it takes the highest-ranked eligible Promising signal. Stage 3 has no cutoff: it works its Needs More Data queue in rank order and is the only dispatcher for downstream movement.
 - **Models:** model version, evaluation count, evidence score, Stage 3 holdout F1, model lift over the baseline when available, classification counts, and data sufficiency.
 - **Data plane:** provider runs, successes/failures, products downloaded/failed, coverage products/windows, recent batches, and recent pipeline events.

@@ -13,6 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .store import PublicationBusyError, ReadOnlyStore
 
+DEFAULT_TARGET_UNIVERSE_SIZE = 100_000
+
 
 app = FastAPI(
     title="TransitScope API",
@@ -87,7 +89,7 @@ def worker_status() -> dict:
         float(os.getenv("STAGE1_PUBLISH_STALL_TIMEOUT_SECONDS", "1800")),
     )
     stage1_published_count = int(payload.get("last_stage1_published_count") or 0)
-    target_universe = int(os.getenv("TARGET_UNIVERSE_SIZE", "126000"))
+    target_universe = int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE)))
     stage1_publish_stalled = (
         state in active_states
         and stage1_publish_age is not None
@@ -245,7 +247,7 @@ def _worker_compact_status(worker: dict) -> dict:
         except (TypeError, ValueError):
             continue
     processed_count = max(processed_values, default=0)
-    configured_count = int(os.getenv("TARGET_UNIVERSE_SIZE", "126000"))
+    configured_count = int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE)))
     return {
         "data_version": telemetry.get("data_version"),
         "sequence_number": telemetry.get("data_version"),
@@ -746,24 +748,11 @@ def health() -> dict:
 @app.get("/api/status")
 def status() -> dict:
     current_worker = worker_status()
-    worker_state = str(current_worker.get("state") or "")
-    live_states = {
-        "starting",
-        "starting_cycle",
-        "processing_stage1",
-        "processing_stage2",
-        "processing_stage3",
-        "matching_catalog",
-        "populating_manifest",
-    }
-    # The public shell should keep showing monotonic progress while the
-    # worker is active. A DuckDB read can block behind a publication even when
-    # the worker heartbeat is healthy, so prefer the worker sidecar for these
-    # transient states.
-    if worker_state in live_states:
-        response = _worker_compact_status(current_worker)
-    else:
-        response = ReadOnlyStore().status(current_worker)
+    # Numeric progress and data_version must come from the same committed
+    # projection as /api/sky and /api/rankings. The worker sidecar is still
+    # returned for heartbeat and active-lane telemetry, but its in-flight
+    # count must not replace the last published count while a cycle is running.
+    response = ReadOnlyStore().status(current_worker)
     response["checked_at"] = utc_now()
     return response
 

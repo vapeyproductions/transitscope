@@ -21,6 +21,7 @@ from storage.paths import DataPaths
 
 STAGE = "stage1"
 SELECTION_POLICY = "random-stratified-v1"
+DEFAULT_TARGET_UNIVERSE_SIZE = 100_000
 
 
 def utc_now() -> datetime:
@@ -192,13 +193,18 @@ def select_next_targets(
     cursor: int,
     count: int,
     processed_ids: set[str],
+    universe_limit: int | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Stream the next deterministic stratified slice and return its new cursor."""
 
     if count < 1:
         return [], cursor
     stream = iter_manifest(manifest_path)
-    skipped = itertools.islice(stream, cursor, None)
+    skipped = (
+        itertools.islice(stream, cursor, universe_limit)
+        if universe_limit is not None
+        else itertools.islice(stream, cursor, None)
+    )
     selected: list[dict[str, Any]] = []
     next_cursor = cursor
     for row in skipped:
@@ -1156,9 +1162,17 @@ def run_batch(
     paths.ensure()
     store = DuckDBStore(paths.database)
     store.initialize()
-    universe_count = manifest_count(manifest_path)
+    manifest_total = manifest_count(manifest_path)
+    configured_universe = max(
+        1,
+        int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE))),
+    )
+    # A persisted manifest may still contain legacy rows from a larger
+    # universe. Keep those rows recoverable, but make the configured universe
+    # an actual processing boundary instead of only a dashboard label.
+    universe_count = min(manifest_total, configured_universe)
     checkpoint = checkpoint_for(store, manifest_path)
-    cursor = int(checkpoint["cursor"]) if checkpoint else 0
+    cursor = min(int(checkpoint["cursor"]) if checkpoint else 0, universe_count)
     processed_count = int(checkpoint["processed_count"]) if checkpoint else 0
     if checkpoint and checkpoint["selection_policy"] != config.selection_policy:
         raise ValueError(
@@ -1171,6 +1185,7 @@ def run_batch(
         cursor=cursor,
         count=requested_count,
         processed_ids=processed_ids,
+        universe_limit=universe_count,
     )
     if not selected:
         return {
@@ -1244,7 +1259,14 @@ def run_stage1_refresh(
     checkpoint = checkpoint_for(store, manifest_path)
     cursor = int(checkpoint["cursor"]) if checkpoint else 0
     processed_count = int(checkpoint["processed_count"]) if checkpoint else 0
-    universe_count = int(checkpoint["universe_count"]) if checkpoint else manifest_count(manifest_path)
+    configured_universe = max(
+        1,
+        int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE))),
+    )
+    universe_count = min(
+        int(checkpoint["universe_count"]) if checkpoint else manifest_count(manifest_path),
+        configured_universe,
+    )
     results, failures = process_targets(
         targets,
         data_dir=data_dir,

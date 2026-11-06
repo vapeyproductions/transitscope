@@ -3,7 +3,7 @@
 
 The large universe is represented by deferred queue rows.  Only the bounded
 real seed pool is downloaded during a demo run, so the worker never pretends
-that 126,000 FITS files are already available locally.
+that 100,000 FITS files are already available locally.
 """
 
 from __future__ import annotations
@@ -32,7 +32,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=data_dir / "manifests" / "stage1-real-target-universe.jsonl",
     )
-    parser.add_argument("--universe-size", type=int, default=126_000)
+    parser.add_argument(
+        "--universe-size",
+        type=int,
+        default=int(os.getenv("TARGET_UNIVERSE_SIZE", "100000")),
+    )
     parser.add_argument("--target-count", type=int, default=8)
     parser.add_argument("--catalog-rows", type=int, default=500)
     parser.add_argument("--max-target-probes", type=int, default=80)

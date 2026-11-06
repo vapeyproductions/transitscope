@@ -13,13 +13,13 @@ docker compose up --build
 - API status: http://localhost:8000/api/status
 - ML operations view: open the `ML Ops` tab, or query http://localhost:8000/api/monitoring/overview
 
-The `data/` directory is a durable local volume for provider cache, normalized data, DuckDB state, and replay history. The current stack includes the official MAST/TESS probe, bounded/checkpointed Stage 1 processing, Stage 2 historical repeatability, Stage 3 chronological holdout prediction, NASA Exoplanet Archive matching, Overall/stage ranking snapshots, replay APIs, and the candidate investigation modal. The 126,000-row universe is represented as a durable queue; the local demo downloads a bounded real seed set so it can run official data without pretending that 126,000 FITS files are already local.
+The `data/` directory is a durable local volume for provider cache, normalized data, DuckDB state, and replay history. The current stack includes the official MAST/TESS probe, bounded/checkpointed Stage 1 processing, Stage 2 historical repeatability, Stage 3 chronological holdout prediction, NASA Exoplanet Archive matching, Overall/stage ranking snapshots, replay APIs, and the candidate investigation modal. The 100,000-row universe is represented as a durable queue; the local demo downloads a bounded real seed set so it can run official data without pretending that 100,000 FITS files are already local.
 
 The compose worker is intentionally paused by default with `RUN_LIVE_PIPELINE=false`. This is a safety gate: opening the site, refreshing the dashboard, or inspecting ML Ops never starts MAST downloads or model jobs. The live worker also honors `PIPELINE_PAUSED`; it defaults to `true` so a deployment cannot resume ingestion accidentally. Set `PIPELINE_PAUSED=false` only after the public deployment, durable state, provider limits, and monitoring have been reviewed.
 
 ## ML operations and eventual deployment
 
-The public [`ML Ops dashboard`](https://desirable-luck-production-ad18.up.railway.app/ops) is a read-only portfolio view for the system that runs the long-lived search. It reports the configured 500-target Stage 1 pool, progress through the 126,000-target manifest, occupied Stage 1/2/3 slots, status counts, model versions and aggregate metrics, MAST/catalog provider health, archive coverage watermarks, recent batches/events, selection buckets, 10-degree sky-cell outcome signals, queue motion, dispatch distribution, and cumulative throughput. Worker pause/resume and manual migration controls remain authenticated and are not exposed to public viewers. Sampling signals are descriptive until adaptive replacement sampling is explicitly enabled.
+The public [`ML Ops dashboard`](https://desirable-luck-production-ad18.up.railway.app/ops) is a read-only portfolio view for the system that runs the long-lived search. It reports the configured 500-target Stage 1 pool, progress through the 100,000-target manifest, occupied Stage 1/2/3 slots, status counts, model versions and aggregate metrics, MAST/catalog provider health, archive coverage watermarks, recent batches/events, selection buckets, 10-degree sky-cell outcome signals, queue motion, dispatch distribution, and cumulative throughput. Worker pause/resume and manual migration controls remain authenticated and are not exposed to public viewers. Sampling signals are descriptive until adaptive replacement sampling is explicitly enabled.
 
 The monitoring page also presents the engineering case study directly: the data path from MAST/TESS to feature extraction and staged workers, model-card descriptions for each assessment stage, data lineage, replay guarantees, and links into the live queue/latency/health metrics. See [`docs/portfolio.md`](docs/portfolio.md) for the concise portfolio narrative and metric definitions.
 
@@ -57,12 +57,12 @@ The default configuration queries one public Sector 1 TESS target, selects its S
 
 ## Stage 1 batching
 
-Populate a durable queue from the NASA Exoplanet Archive TOI table and official MAST/TESS SPOC light curves. This downloads a bounded real seed set and keeps the remaining 126,000-target queue explicit as deferred work:
+Populate a durable queue from the NASA Exoplanet Archive TOI table and official MAST/TESS SPOC light curves. This downloads a bounded real seed set and keeps the remaining 100,000-target queue explicit as deferred work:
 
 ```bash
 docker compose run --rm worker python populate_real_targets.py \
   --target-count 8 \
-  --universe-size 126000 \
+  --universe-size 100000 \
   --catalog-rows 500 \
   --force-refresh
 ```
@@ -71,7 +71,7 @@ For a synthetic/metadata-first queue, create a durable manifest directly. A prob
 
 ```bash
 docker compose run --rm worker python prepare_target_universe.py \
-  --universe-size 126000 \
+  --universe-size 100000 \
   --probe-manifest /app/data/manifests/<successful-probe-manifest>.json
 ```
 

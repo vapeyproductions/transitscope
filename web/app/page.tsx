@@ -1853,7 +1853,7 @@ const explainerScenes = [
   {
     kicker: "03 · INVESTIGATE",
     title: "Evidence moves through a ranked pipeline",
-    body: "A sample from the 126,000-target universe enters Stage 1, then the strongest surviving signals receive deeper tests in Stage 2 and Stage 3. Rankings change as evidence accumulates.",
+    body: "A sample from the 100,000-target universe enters Stage 1, then the strongest surviving signals receive deeper tests in Stage 2 and Stage 3. Rankings change as evidence accumulates.",
   },
 ] as const;
 
@@ -1896,7 +1896,7 @@ function ExplainerVisual({ sceneIndex }: { sceneIndex: number }) {
   }
 
   return <div className="explainer-visual explainer-visual-pipeline" aria-label="Animation showing sampled stars moving through three assessment stages" role="img">
-    <div className="explainer-universe"><span className="explainer-universe-count">126,000</span><span>target stars</span><div className="explainer-universe-dots">{Array.from({ length: 32 }, (_, index) => <i key={index} style={{ "--dot-delay": `${(index % 8) * 0.08}s`, "--dot-x": `${(index % 8) * 12 + 4}%`, "--dot-y": `${Math.floor(index / 8) * 25 + 10}%` } as CSSProperties} />)}</div></div>
+    <div className="explainer-universe"><span className="explainer-universe-count">100,000</span><span>target stars</span><div className="explainer-universe-dots">{Array.from({ length: 32 }, (_, index) => <i key={index} style={{ "--dot-delay": `${(index % 8) * 0.08}s`, "--dot-x": `${(index % 8) * 12 + 4}%`, "--dot-y": `${Math.floor(index / 8) * 25 + 10}%` } as CSSProperties} />)}</div></div>
     <div className="explainer-pipeline-arrow" aria-hidden="true">→</div>
     <div className="explainer-stage-track">
       {["Stage 1", "Stage 2", "Stage 3"].map((stage, index) => <div className={`explainer-stage explainer-stage-${index + 1}`} key={stage}><span>{stage}</span><div className="explainer-stage-dots">{Array.from({ length: index === 0 ? 10 : index === 1 ? 6 : 3 }, (_, dot) => <i key={dot} style={{ "--dot-delay": `${dot * 0.13}s` } as CSSProperties} />)}</div><small>{index === 0 ? "screen" : index === 1 ? "repeat" : "holdout"}</small></div>)}
@@ -2281,7 +2281,7 @@ export default function HomePage() {
   const copy = stageCopy(activeTab);
   const totalCandidates = displayRanking?.total_ranked_count ?? rows.length;
   const processedCount = activeReplay.active ? displayRanking?.processed_target_count ?? 0 : status?.processed_target_count ?? ranking?.processed_target_count ?? 0;
-  const targetCount = status?.total_target_count ?? ranking?.total_target_count ?? 126000;
+  const targetCount = status?.total_target_count ?? ranking?.total_target_count ?? 100000;
   const totalStars = displayRanking?.total_star_count ?? new Set(rows.map((row) => row.target_id)).size;
   const filterActive = activeTab === "overall" ? activeControls.stage !== null : activeControls.status !== null;
   const panelTitle = (waitingForPublishedState || loading) && !liveRanking && !activeReplay.active ? "Loading published state" : totalCandidates ? `Total candidates ${totalCandidates.toLocaleString()} · Total stars ${totalStars.toLocaleString()}` : filterActive ? "No candidates match this filter" : "No candidates published yet";

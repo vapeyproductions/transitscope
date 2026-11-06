@@ -18,7 +18,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path(os.getenv("DATA_DIR", "/app/data")) / "manifests" / "stage1-target-universe.jsonl",
     )
-    parser.add_argument("--universe-size", type=int, default=126_000)
+    parser.add_argument(
+        "--universe-size",
+        type=int,
+        default=int(os.getenv("TARGET_UNIVERSE_SIZE", "100000")),
+    )
     parser.add_argument("--probe-manifest", type=Path)
     return parser.parse_args()
 

@@ -3,7 +3,7 @@
 
 The script queries observation metadata only.  FITS light curves are fetched
 later, when a target enters a bounded Stage 1 batch, so initial population does
-not require storing 126,000 raw products.
+not require storing 100,000 raw products.
 """
 
 from __future__ import annotations
@@ -52,7 +52,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=data_dir / "manifests" / "stage1-real-target-universe.jsonl",
     )
-    parser.add_argument("--universe-size", type=int, default=126_000)
+    parser.add_argument(
+        "--universe-size",
+        type=int,
+        default=int(os.getenv("TARGET_UNIVERSE_SIZE", "100000")),
+    )
     parser.add_argument("--sectors", default=os.getenv("MAST_UNIVERSE_SECTORS", "1-26"))
     parser.add_argument(
         "--per-sector-limit",

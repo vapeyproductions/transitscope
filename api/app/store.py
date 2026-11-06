@@ -25,6 +25,7 @@ STATUS_PRIORITY = {
 }
 RANKING_STATUS_FILTERS = set(STATUS_PRIORITY) | {"Duplicate Signal"}
 RANKING_SORTS = {"rank", "last_assessed_desc", "last_assessed_asc"}
+DEFAULT_TARGET_UNIVERSE_SIZE = 100_000
 
 
 class PublicationBusyError(RuntimeError):
@@ -33,6 +34,7 @@ class PublicationBusyError(RuntimeError):
 _READ_CACHE_LOCK = threading.Lock()
 _RANKING_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _STATUS_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
+_SKY_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _MONITORING_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _CANDIDATE_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _HISTORY_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
@@ -240,7 +242,7 @@ class ReadOnlyStore:
             "data_version": None,
             "sequence_number": None,
             "processed_target_count": 0,
-            "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", "126000")),
+            "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE))),
             "active_candidate_count": 0,
             "last_ingest_at": None,
             "processed_history": [],
@@ -252,18 +254,10 @@ class ReadOnlyStore:
             cached = _cache_get(_STATUS_RESPONSE_CACHE, cache_key)
             if cached is not None:
                 cached = dict(cached)
-                # The worker writes this sidecar value immediately after a
-                # Stage 1 batch commits. If DuckDB is briefly locked by a
-                # downstream publication, expose that newer durable count
-                # instead of making the public dashboard look frozen.
-                worker_count = worker.get("last_stage1_published_count")
-                try:
-                    worker_count = int(worker_count)
-                except (TypeError, ValueError):
-                    worker_count = 0
-                if worker_count > int(cached.get("processed_target_count") or 0):
-                    cached["processed_target_count"] = worker_count
-                    cached["last_ingest_at"] = worker.get("last_stage1_publish_at")
+                # Keep the cached projection internally consistent. The
+                # worker sidecar may be ahead of this committed snapshot, but
+                # mixing its count into an older data_version makes /api/status
+                # disagree with /api/sky and /api/rankings.
                 cached["worker"] = worker
                 cached["served_from_cache"] = True
                 cached["read_state"] = "publication_busy"
@@ -279,19 +273,11 @@ class ReadOnlyStore:
                     "SELECT COUNT(*) FROM target_manifest WHERE manifest_status = 'processed'"
                 ).fetchone()[0]
             )
-            # A Stage 1 publish writes this sidecar count immediately after
-            # its durable batch commit. During a later publication/replica
-            # lag, a read connection can briefly observe an older manifest
-            # count and make the public progress number move backwards. The
-            # worker's completed publish count is the newer monotonic signal.
-            worker_processed_count = worker.get("last_stage1_published_count")
-            try:
-                worker_processed_count = int(worker_processed_count)
-            except (TypeError, ValueError):
-                worker_processed_count = 0
-            response["processed_target_count"] = max(durable_processed_count, worker_processed_count)
-            if worker_processed_count > durable_processed_count:
-                response["read_state"] = "worker_progress_ahead"
+            # The committed DuckDB projection is authoritative for numeric
+            # progress. The worker sidecar can be ahead while it processes the
+            # next cycle, but that work is not visible to the other published
+            # projections until a new version commits.
+            response["processed_target_count"] = durable_processed_count
             response["active_candidate_count"] = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM candidates WHERE active = true"
@@ -376,7 +362,7 @@ class ReadOnlyStore:
             "sequence_number": None,
             "occurred_at": None,
             "processed_target_count": 0,
-            "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", "126000")),
+            "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE))),
             "page": page,
             "page_size": limit,
             "display_cap": display_cap,
@@ -508,7 +494,7 @@ class ReadOnlyStore:
                 "sequence_number": snapshot[0] if snapshot else version,
                 "occurred_at": isoformat(snapshot[1]) if snapshot else None,
                 "processed_target_count": processed_count,
-                "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", "126000")),
+                "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE))),
                 "page": page,
                 "page_size": limit,
                 "display_cap": display_cap,
@@ -717,7 +703,7 @@ class ReadOnlyStore:
             "sequence_number": 0,
             "occurred_at": None,
             "processed_target_count": 0,
-            "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", "126000")),
+            "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE))),
             "page": page,
             "page_size": limit,
             "display_cap": 500,
@@ -785,7 +771,7 @@ class ReadOnlyStore:
                 "sequence_number": int(snapshot[0]),
                 "occurred_at": isoformat(snapshot[1]),
                 "processed_target_count": historical_processed,
-                "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", "126000")),
+                "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE))),
                 "page": page,
                 "page_size": limit,
                 "display_cap": display_cap,
@@ -1263,6 +1249,12 @@ class ReadOnlyStore:
         }
         connection = self.connect(timeout_seconds=1.5)
         if connection is None:
+            cached = _cache_get(_SKY_RESPONSE_CACHE, str(limit))
+            if cached is not None:
+                cached["served_from_cache"] = True
+                cached["read_state"] = "publication_busy"
+                return cached
+            empty["read_state"] = "publication_busy"
             return empty
         try:
             rows = connection.execute(
@@ -1388,7 +1380,7 @@ class ReadOnlyStore:
         )
         for sector in ordered_sectors:
             sector["status_counts"] = dict(sorted(sector["status_counts"].items()))
-        return {
+        response = {
             **empty,
             "generated_at": datetime.utcnow().isoformat() + "Z",
             "data_version": data_version,
@@ -1401,6 +1393,8 @@ class ReadOnlyStore:
             "sectors": ordered_sectors,
             "points": points,
         }
+        _cache_set(_SKY_RESPONSE_CACHE, str(limit), response)
+        return response
 
     def monitoring(self, worker: dict[str, Any]) -> dict[str, Any]:
         """Build an operations view for the authenticated ML/pipeline dashboard.
@@ -1449,7 +1443,7 @@ class ReadOnlyStore:
             "updated_at": operator_control.get("updated_at"),
             "reason": control_reason,
         }
-        configured_universe = int(os.getenv("TARGET_UNIVERSE_SIZE", "126000"))
+        configured_universe = int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE)))
         initial_stage1_pool = int(os.getenv("STAGE1_POOL_SIZE", "500"))
         stage_thresholds: dict[str, int | None] = {
             # These are ranking windows, not runtime compute capacities. A
@@ -1934,7 +1928,7 @@ class ReadOnlyStore:
             """
         ).fetchone()
         processed = int(checkpoint[2]) if checkpoint else 0
-        configured_count = int(checkpoint[1]) if checkpoint else universe_count
+        configured_count = min(int(checkpoint[1]), universe_count) if checkpoint else universe_count
         bucket_rows = connection.execute(
             """
             SELECT COALESCE(t.selection_bucket, 'unbucketed') AS bucket,

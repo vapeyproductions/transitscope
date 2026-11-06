@@ -471,7 +471,7 @@ def attach_product_to_target(
 
     The target universe intentionally stores lightweight MAST observation
     metadata.  FITS files are fetched only when a target enters a processing
-    batch, which keeps the 126,000-target queue inexpensive to maintain.
+            batch, which keeps the 100,000-target queue inexpensive to maintain.
     """
 
     provider_target_id = str(

@@ -145,6 +145,27 @@ class MonitoringStoreTests(unittest.TestCase):
         self.assertEqual(response["sampling"]["buckets"][0]["bucket"], "cell-a")
         self.assertEqual(response["models"][0]["mean_holdout_f1"], 0.8)
 
+    def test_status_keeps_published_count_with_worker_ahead(self) -> None:
+        previous = os.environ.get("TARGET_UNIVERSE_SIZE")
+        os.environ["TARGET_UNIVERSE_SIZE"] = "100000"
+        try:
+            response = self.store.status(
+                {
+                    "state": "processing_stage1",
+                    "last_stage1_published_count": 20,
+                }
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("TARGET_UNIVERSE_SIZE", None)
+            else:
+                os.environ["TARGET_UNIVERSE_SIZE"] = previous
+
+        self.assertEqual(response["data_version"], 7)
+        self.assertEqual(response["processed_target_count"], 2)
+        self.assertEqual(response["total_target_count"], 100000)
+        self.assertNotEqual(response.get("read_state"), "worker_progress_ahead")
+
 
 if __name__ == "__main__":
     unittest.main()
