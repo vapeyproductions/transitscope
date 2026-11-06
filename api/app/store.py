@@ -297,8 +297,13 @@ class ReadOnlyStore:
                 history_rows = connection.execute(
                     """
                     SELECT occurred_at, processed_target_count
-                    FROM ranking_snapshots
-                    WHERE view = 'overall'
+                    FROM (
+                        SELECT occurred_at, processed_target_count, sequence_number
+                        FROM ranking_snapshots
+                        WHERE view = 'overall'
+                        ORDER BY sequence_number DESC, occurred_at DESC
+                        LIMIT 120
+                    ) AS recent_snapshots
                     ORDER BY sequence_number ASC, occurred_at ASC
                     """
                 ).fetchall()
