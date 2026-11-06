@@ -26,6 +26,7 @@ STATUS_PRIORITY = {
 RANKING_STATUS_FILTERS = set(STATUS_PRIORITY) | {"Duplicate Signal"}
 RANKING_SORTS = {"rank", "last_assessed_desc", "last_assessed_asc"}
 DEFAULT_TARGET_UNIVERSE_SIZE = 100_000
+PUBLISHED_READ_TIMEOUT_SECONDS = 3.0
 
 
 class PublicationBusyError(RuntimeError):
@@ -249,9 +250,9 @@ class ReadOnlyStore:
             "worker": worker,
         }
         cache_key = str(self.database.resolve())
-        connection = self.connect(timeout_seconds=0.75)
+        connection = self.connect(timeout_seconds=PUBLISHED_READ_TIMEOUT_SECONDS)
         if connection is None:
-            cached = _cache_get(_STATUS_RESPONSE_CACHE, cache_key)
+            cached = self._cached_response(_STATUS_RESPONSE_CACHE, "status", cache_key)
             if cached is not None:
                 cached = dict(cached)
                 # Keep the cached projection internally consistent. The
@@ -317,7 +318,7 @@ class ReadOnlyStore:
                 for row in history_rows
             ]
             response["served_from_cache"] = False
-            _cache_set(_STATUS_RESPONSE_CACHE, cache_key, response)
+            self._remember_response(_STATUS_RESPONSE_CACHE, "status", cache_key, response)
             return response
         finally:
             connection.close()
@@ -360,7 +361,7 @@ class ReadOnlyStore:
             },
             sort_keys=True,
         )
-        connection = self.connect(timeout_seconds=0.75)
+        connection = self.connect(timeout_seconds=PUBLISHED_READ_TIMEOUT_SECONDS)
         empty = {
             "view": view,
             "data_version": None,
@@ -378,7 +379,7 @@ class ReadOnlyStore:
             "removed": [],
         }
         if connection is None:
-            cached = _cache_get(_RANKING_RESPONSE_CACHE, cache_key)
+            cached = self._cached_response(_RANKING_RESPONSE_CACHE, "rankings", cache_key)
             if cached is not None:
                 cached["served_from_cache"] = True
                 cached["read_state"] = "publication_busy"
@@ -513,7 +514,7 @@ class ReadOnlyStore:
                 "removed": [],
             }
             response["served_from_cache"] = False
-            _cache_set(_RANKING_RESPONSE_CACHE, cache_key, response)
+            self._remember_response(_RANKING_RESPONSE_CACHE, "rankings", cache_key, response)
             return response
         finally:
             connection.close()
