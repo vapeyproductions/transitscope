@@ -245,6 +245,7 @@ def _process_target(payload: Mapping[str, Any]) -> dict[str, Any]:
     try:
         results = Stage1Processor(
             Stage1Config(
+                promising_score=float(os.getenv("STAGE1_PROMISING_SCORE", "55.0")),
                 max_signals_per_target=int(os.getenv("STAGE1_MAX_SIGNALS_PER_TARGET", "3")),
                 additional_signal_snr=float(os.getenv("STAGE1_ADDITIONAL_SIGNAL_SNR", "7.0")),
             )

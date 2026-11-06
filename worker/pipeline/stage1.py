@@ -32,7 +32,7 @@ class Stage1Config:
     period_min_days: float = 0.5
     period_max_days: float = 14.0
     period_grid_size: int = 2400
-    promising_score: float = 45.0
+    promising_score: float = 55.0
     promising_snr: float = 7.0
     max_signals_per_target: int = 3
     additional_signal_snr: float = 7.0
