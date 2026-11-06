@@ -16,7 +16,7 @@ async function proxy(request: NextRequest, { params }: RouteContext) {
 
   const { path } = await params;
   const method = request.method.toUpperCase();
-  const isMonitoringEndpoint = path[0] === "monitoring" && (path[1] === "overview" || path[1] === "control" || path[1] === "migrations");
+  const isMonitoringEndpoint = path[0] === "monitoring" && (path[1] === "overview" || path[1] === "system-health" || path[1] === "control" || path[1] === "migrations");
   if (isMonitoringEndpoint) {
     const session = (await cookies()).get(OPS_SESSION_COOKIE)?.value;
     if (!isOpsSessionToken(session)) {

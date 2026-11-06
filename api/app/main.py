@@ -1,8 +1,11 @@
 import json
 import os
 import secrets
+import time
+import urllib.error
+import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -28,6 +31,10 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+_RAILWAY_STATUS_CACHE: tuple[float, dict] | None = None
+_RAILWAY_STATUS_CACHE_TTL_SECONDS = 30.0
 
 
 def utc_now() -> str:
@@ -134,6 +141,354 @@ def _require_ops_token(request: Request) -> None:
         )
 
 
+def _health_check(
+    check_id: str,
+    label: str,
+    status: str,
+    summary: str,
+    checked_at: str,
+    *,
+    details: list[str] | None = None,
+    source: str,
+    latency_ms: float | None = None,
+) -> dict:
+    return {
+        "id": check_id,
+        "label": label,
+        "status": status,
+        "summary": summary,
+        "details": details or [],
+        "source": source,
+        "latency_ms": latency_ms,
+        "checked_at": checked_at,
+    }
+
+
+def _railway_platform_check() -> dict:
+    """Read Railway's public status API without making it a hard dependency.
+
+    A status-page timeout is reported as unknown, never healthy. The short
+    process-local cache keeps a slow third-party status page from blocking the
+    health tab on every 15-second poll.
+    """
+
+    global _RAILWAY_STATUS_CACHE
+    now = time.monotonic()
+    if _RAILWAY_STATUS_CACHE and now - _RAILWAY_STATUS_CACHE[0] < _RAILWAY_STATUS_CACHE_TTL_SECONDS:
+        cached = dict(_RAILWAY_STATUS_CACHE[1])
+        cached["cached"] = True
+        return cached
+
+    url = os.getenv("RAILWAY_STATUS_URL", "https://status.railway.com/api/v2/status.json")
+    started = time.perf_counter()
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "TransitScope-health-probe/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2.5) as response:
+            payload = json.loads(response.read(100_000).decode("utf-8"))
+        status_payload = payload.get("status", {}) if isinstance(payload, dict) else {}
+        indicator = str(status_payload.get("indicator") or "unknown").lower()
+        description = str(status_payload.get("description") or "No status description returned.")
+        state = {
+            "none": "healthy",
+            "minor": "warning",
+            "major": "critical",
+            "critical": "critical",
+        }.get(indicator, "unknown")
+        result = {
+            "status": state,
+            "indicator": indicator,
+            "summary": description,
+            "source": url,
+            "checked_at": utc_now(),
+            "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+            "cached": False,
+        }
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        result = {
+            "status": "unknown",
+            "indicator": "unknown",
+            "summary": "Railway status page could not be reached from the API service.",
+            "source": url,
+            "checked_at": utc_now(),
+            "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+            "cached": False,
+            "error": str(exc)[:240],
+        }
+
+    _RAILWAY_STATUS_CACHE = (now, result)
+    return result
+
+
+def _monitoring_system_health(worker: dict) -> dict:
+    """Build the operator source-of-truth projection from live checks.
+
+    This deliberately returns a useful response even if the published DuckDB
+    read is temporarily busy. The worker status file and control gate remain
+    independently visible, and the affected check is marked accordingly.
+    """
+
+    checked_at = utc_now()
+    request_started = time.perf_counter()
+    monitoring: dict = {}
+    monitoring_error: str | None = None
+    try:
+        monitoring = ReadOnlyStore().monitoring(worker)
+    except Exception as exc:  # pragma: no cover - defensive boundary for health reporting
+        monitoring_error = str(exc)[:240]
+
+    control = monitoring.get("control") if isinstance(monitoring.get("control"), dict) else {
+        "pipeline_paused": bool(worker.get("pipeline_paused")),
+        "reason": "Control projection unavailable; worker status is authoritative.",
+    }
+    worker_health = str(worker.get("health") or "unknown")
+    worker_status = {
+        "stalled": "critical",
+        "heartbeat_stale": "critical",
+        "stage1_publish_stalled": "critical",
+        "paused": "paused",
+        "healthy": "healthy",
+    }.get(worker_health, "unknown")
+    checks: list[dict] = [
+        _health_check(
+            "api-server",
+            "API server",
+            "healthy",
+            "Health endpoint is responding.",
+            checked_at,
+            source="This request",
+            latency_ms=round((time.perf_counter() - request_started) * 1000, 1),
+        ),
+        _health_check(
+            "worker-heartbeat",
+            "Worker heartbeat",
+            worker_status,
+            str(worker.get("health_message") or f"Worker state: {worker.get('state') or 'unknown'}"),
+            checked_at,
+            source="worker-status.json",
+            details=[
+                f"State: {worker.get('state') or 'unknown'}",
+                f"Last heartbeat: {worker.get('last_heartbeat') or 'not recorded'}",
+                f"Last progress: {worker.get('last_progress_at') or 'not recorded'}",
+            ],
+        ),
+    ]
+
+    control_status = "paused" if control.get("pipeline_paused") else "healthy"
+    checks.append(
+        _health_check(
+            "pipeline-control",
+            "Pipeline control gate",
+            control_status,
+            str(control.get("reason") or "The worker is armed."),
+            checked_at,
+            source="pipeline-control.json + deployment environment",
+            details=[
+                f"Autostart: {'enabled' if control.get('autostart_enabled') else 'disabled'}",
+                f"Deployment gate: {'open' if control.get('deployment_gate') else 'closed'}",
+                f"Operator pause: {'on' if control.get('operator_control') else 'off'}",
+            ],
+        )
+    )
+
+    read_state = str(monitoring.get("read_state") or "published")
+    served_from_cache = bool(monitoring.get("served_from_cache"))
+    publication_status = "warning" if read_state == "publication_busy" or served_from_cache else "healthy"
+    publication_summary = (
+        "Showing the last durable projection while a publication lock is active."
+        if publication_status == "warning"
+        else "The latest durable data projection was read successfully."
+    )
+    checks.append(
+        _health_check(
+            "published-state",
+            "Published data state",
+            publication_status,
+            publication_summary,
+            checked_at,
+            source="published DuckDB projection",
+            details=[
+                f"Data version: {monitoring.get('data_version') or 'not recorded'}",
+                f"Read state: {read_state}",
+                f"Processed targets: {monitoring.get('universe', {}).get('processed_count', 0):,}",
+            ],
+        )
+    )
+    if monitoring_error:
+        checks[-1]["details"].append(f"Projection error: {monitoring_error}")
+
+    data_health = monitoring.get("data_health") if isinstance(monitoring.get("data_health"), dict) else {}
+    providers = data_health.get("providers") if isinstance(data_health.get("providers"), list) else []
+    mast = next((item for item in providers if "mast" in str(item.get("provider", "")).lower()), None)
+    if mast is None:
+        provider_status = "unknown"
+        provider_summary = "No MAST ingest run is recorded in the published data."
+        provider_details = ["A missing run is different from a successful empty result."]
+    elif mast.get("failed_runs", 0) and not mast.get("successful_runs", 0):
+        provider_status = "critical"
+        provider_summary = "All recorded MAST ingest runs failed."
+        provider_details = [f"{mast.get('failed_runs', 0)} failed runs · {mast.get('products_failed', 0)} failed products"]
+    elif mast.get("failed_runs", 0):
+        provider_status = "warning"
+        provider_summary = "MAST has recorded failures, but successful ingest runs also exist."
+        provider_details = [f"{mast.get('successful_runs', 0)} successful · {mast.get('failed_runs', 0)} failed runs"]
+    else:
+        provider_status = "healthy"
+        provider_summary = "MAST ingest runs are succeeding."
+        provider_details = [f"{mast.get('successful_runs', 0)} successful runs · {mast.get('products_downloaded', 0)} products downloaded"]
+    checks.append(
+        _health_check(
+            "mast-ingest",
+            "MAST / TESS ingest",
+            provider_status,
+            provider_summary,
+            checked_at,
+            source="ingest_runs in published DuckDB projection",
+            details=provider_details,
+        )
+    )
+
+    catalog = worker.get("catalog_health") if isinstance(worker.get("catalog_health"), dict) else {}
+    catalog_state = str(catalog.get("status") or "")
+    if worker.get("state") == "matching_catalog":
+        catalog_status = "warning"
+        catalog_summary = "Catalog cross-reference is the active worker lane."
+    elif catalog_state in {"error", "failed"}:
+        catalog_status = "critical"
+        catalog_summary = "The latest catalog cross-reference failed."
+    elif catalog_state:
+        catalog_status = "healthy"
+        catalog_summary = f"Catalog projection status: {catalog_state}."
+    else:
+        catalog_status = "unknown"
+        catalog_summary = "No completed catalog cross-reference is recorded."
+    checks.append(
+        _health_check(
+            "catalog-cross-reference",
+            "Known-object cross-reference",
+            catalog_status,
+            catalog_summary,
+            checked_at,
+            source="worker catalog telemetry",
+            details=[
+                f"Matches: {catalog.get('matches', 0)}",
+                f"Catalog rows: {catalog.get('record_count', 0)}",
+                f"Last fetched: {catalog.get('fetched_at') or 'not recorded'}",
+            ],
+        )
+    )
+
+    stages = monitoring.get("stages") if isinstance(monitoring.get("stages"), dict) else {}
+    activity = monitoring.get("cycle_activity") if isinstance(monitoring.get("cycle_activity"), dict) else {}
+    throughput = activity.get("throughput") if isinstance(activity.get("throughput"), dict) else {}
+    queue = activity.get("queue") if isinstance(activity.get("queue"), dict) else {}
+    current_queue = queue.get("current") if isinstance(queue.get("current"), dict) else {}
+    latest_cycle = (activity.get("runs") or [])[-1] if activity.get("runs") else {}
+    if not isinstance(latest_cycle, dict):
+        latest_cycle = {}
+    stage2_reassessment = latest_cycle.get("stage2_reassessment") if isinstance(latest_cycle.get("stage2_reassessment"), dict) else {}
+    stage_summaries = []
+    for stage in ("stage1", "stage2", "stage3"):
+        stage_data = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
+        counts = stage_data.get("counts") if isinstance(stage_data.get("counts"), dict) else {}
+        stage_flow = throughput.get(stage) if isinstance(throughput.get(stage), dict) else {}
+        stage_queue = current_queue.get(stage) if isinstance(current_queue.get(stage), dict) else {}
+        jobs = sum(int(value or 0) for value in stage_queue.values() if isinstance(value, (int, float)))
+        needs_more_data = int(counts.get("Needs More Data", 0) or 0)
+        stage_status = "paused" if control.get("pipeline_paused") else "healthy"
+        summary = f"{int(stage_data.get('total_candidates', 0) or 0):,} retained · {jobs:,} jobs in the latest queue."
+        details = [
+            f"Promising: {int(counts.get('Promising', 0) or 0):,}",
+            f"Needs More Data: {needs_more_data:,}",
+            f"Inconclusive: {int(counts.get('Inconclusive', 0) or 0):,}",
+            f"Latest assessed: {stage_data.get('last_evaluated_at') or 'not recorded'}",
+        ]
+        if stage == "stage2" and int(stage2_reassessment.get("remaining_queue_count", 0) or 0) > 0:
+            stage_status = "warning" if not control.get("pipeline_paused") else "paused"
+            summary += f" {int(stage2_reassessment.get('remaining_queue_count', 0)):,} reassessments waiting."
+        if stage == "stage3" and needs_more_data:
+            details.append("Stage 3 works Needs More Data in ranked order.")
+        stage_summaries.append(
+            {
+                "stage": stage,
+                "status": stage_status,
+                "summary": summary,
+                "details": details,
+                "retained_candidates": int(stage_data.get("total_candidates", 0) or 0),
+                "priority_candidates": int(stage_data.get("priority_candidates", 0) or 0),
+                "jobs_in_latest_queue": jobs,
+                "evaluated_in_window": int(stage_flow.get("evaluated", 0) or 0),
+                "handoffs_in_window": int(stage_flow.get("handoffs", 0) or 0),
+                "last_evaluated_at": stage_data.get("last_evaluated_at"),
+            }
+        )
+
+    checks.extend(
+        _health_check(
+            f"{item['stage']}-pipeline",
+            f"{item['stage'].replace('stage', 'Stage ')} pipeline",
+            item["status"],
+            item["summary"],
+            checked_at,
+            details=item["details"],
+            source="published stage counts + cycle queue telemetry",
+        )
+        for item in stage_summaries
+    )
+
+    railway = _railway_platform_check()
+    checks.append(
+        _health_check(
+            "railway-platform",
+            "Railway platform",
+            railway.get("status", "unknown"),
+            railway.get("summary", "Railway status is unknown."),
+            checked_at,
+            source=railway.get("source", "Railway status API"),
+            details=[f"Status-page indicator: {railway.get('indicator', 'unknown')}"],
+            latency_ms=railway.get("latency_ms"),
+        )
+    )
+
+    # A known pause should be more informative than an unrecorded optional
+    # check, while a provider/platform warning or hard failure must dominate
+    # the headline state.
+    severity = {"healthy": 0, "unknown": 1, "paused": 2, "warning": 3, "critical": 4}
+    overall_status = max(checks, key=lambda item: severity.get(item["status"], 2))["status"]
+    alerts = [check for check in checks if check["status"] != "healthy"]
+    next_check = datetime.fromisoformat(checked_at) + timedelta(seconds=15)
+    return {
+        "checked_at": checked_at,
+        "next_check_at": next_check.isoformat(),
+        "refresh_interval_seconds": 15,
+        "stale_after_seconds": 45,
+        "overall_status": overall_status,
+        "alerts": alerts,
+        "checks": checks,
+        "pipeline": {
+            "control": control,
+            "worker": worker,
+            "data_version": monitoring.get("data_version"),
+            "universe": monitoring.get("universe", {}),
+            "stages": stage_summaries,
+            "latest_cycle_id": latest_cycle.get("cycle_id"),
+        },
+        "read_state": monitoring.get("read_state", "published"),
+        "served_from_cache": bool(monitoring.get("served_from_cache")),
+        "source_of_truth": [
+            "worker-status.json for heartbeat, progress, and active lane",
+            "pipeline-control.json and deployment gates for pause state",
+            "published DuckDB projection for counts, queues, stages, and provider runs",
+            "Railway public status API for platform incidents",
+        ],
+    }
+
+
 def _pipeline_control_path() -> Path:
     return Path(os.getenv("DATA_DIR", "/app/data")) / "pipeline-control.json"
 
@@ -216,6 +571,14 @@ def monitoring_overview(request: Request) -> dict:
     response = ReadOnlyStore().monitoring(worker_status())
     response["manual_migrations"] = _manual_migration_requests()
     return response
+
+
+@app.get("/api/monitoring/system-health")
+def monitoring_system_health(request: Request) -> dict:
+    """Return the independently computed operator source-of-truth checks."""
+
+    _require_ops_token(request)
+    return _monitoring_system_health(worker_status())
 
 
 @app.post("/api/monitoring/control")

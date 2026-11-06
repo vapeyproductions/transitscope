@@ -497,6 +497,59 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .timeline-event span { color: var(--faint); font-size: 10px; }
 .modal-footer { border-top: 1px solid var(--border); color: var(--faint); display: flex; font-size: 10px; gap: 12px; justify-content: space-between; padding: 15px 28px; }
 .operations-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 18px 60px rgba(0, 0, 0, 0.18); overflow: hidden; }
+.ops-monitor-tabs { align-items: center; border-bottom: 1px solid var(--border); display: flex; gap: 6px; margin: 0 0 13px; padding: 0 3px; }
+.ops-monitor-tab { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 11px; padding: 10px 13px 9px; transition: border-color 180ms ease, color 180ms ease; }
+.ops-monitor-tab:hover, .ops-monitor-tab.active { border-bottom-color: var(--cyan); color: var(--text); }
+.ops-monitor-tab.active { color: var(--cyan); }
+.system-health-panel { overflow: hidden; }
+.system-health-hero { align-items: flex-start; background: linear-gradient(135deg, rgba(15, 29, 49, 0.94), rgba(15, 23, 39, 0.76)); border-bottom: 1px solid var(--border); display: flex; gap: 20px; justify-content: space-between; padding: 25px 28px 22px; }
+.system-health-hero h2 { font-size: clamp(21px, 2.5vw, 30px); letter-spacing: -0.04em; margin: 7px 0 8px; }
+.system-health-hero p:not(.eyebrow) { color: var(--muted); font-size: 12px; line-height: 1.55; margin: 0; max-width: 720px; }
+.system-health-overall { align-items: flex-start; border: 1px solid rgba(116, 214, 172, 0.3); border-radius: 10px; display: flex; flex: 0 0 168px; flex-direction: column; gap: 6px; padding: 13px; }
+.system-health-overall strong { font-size: 14px; }
+.system-health-overall small { color: var(--muted); font-size: 9px; }
+.system-health-status-healthy { border-color: rgba(116, 214, 172, 0.32); color: var(--green); }
+.system-health-status-warning, .system-health-status-paused { border-color: rgba(239, 190, 93, 0.38); color: var(--gold); }
+.system-health-status-critical { border-color: rgba(255, 117, 117, 0.4); color: var(--red); }
+.system-health-status-unknown { border-color: rgba(146, 169, 205, 0.3); color: var(--muted); }
+.system-health-status { align-items: center; border: 1px solid currentColor; border-radius: 99px; display: inline-flex; flex: 0 0 auto; font-size: 9px; gap: 5px; padding: 4px 7px; white-space: nowrap; }
+.system-health-status-healthy .status-dot { background: var(--green); box-shadow: 0 0 8px rgba(116, 214, 172, 0.6); }
+.system-health-status-warning .status-dot, .system-health-status-paused .status-dot { background: var(--gold); box-shadow: 0 0 8px rgba(239, 190, 93, 0.6); }
+.system-health-status-critical .status-dot { background: var(--red); box-shadow: 0 0 8px rgba(255, 117, 117, 0.6); }
+.system-health-status-unknown .status-dot { background: var(--muted); }
+.system-health-meta { color: var(--muted); display: flex; flex-wrap: wrap; font-size: 9px; gap: 15px; padding: 12px 28px; }
+.system-health-meta strong { color: var(--text); font-weight: 500; margin-right: 4px; }
+.system-health-refresh-warning { align-items: center; background: rgba(239, 190, 93, 0.08); border: 1px solid rgba(239, 190, 93, 0.28); color: var(--gold); display: flex; flex-wrap: wrap; font-size: 10px; gap: 6px 8px; margin: 0 22px 18px; padding: 10px 12px; }
+.system-health-refresh-warning span:last-child { color: var(--muted); }
+.system-health-alerts, .system-health-checks, .system-health-pipeline { border-top: 1px solid var(--border); padding: 23px 22px 0; }
+.system-health-alerts .ops-section-heading, .system-health-checks .ops-section-heading, .system-health-pipeline .ops-section-heading { margin-bottom: 13px; }
+.system-health-alert-list { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.system-health-alert { align-items: flex-start; background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(239, 190, 93, 0.22); border-left: 3px solid var(--gold); border-radius: 8px; display: flex; gap: 10px; padding: 11px; }
+.system-health-alert-critical { border-color: rgba(255, 117, 117, 0.3); border-left-color: var(--red); }
+.system-health-alert-unknown { border-color: rgba(146, 169, 205, 0.22); border-left-color: var(--muted); }
+.system-health-alert > div { min-width: 0; }
+.system-health-alert strong { display: block; font-size: 11px; margin-bottom: 4px; }
+.system-health-alert p { color: var(--muted); font-size: 10px; line-height: 1.4; margin: 0 0 5px; }
+.system-health-alert small { color: var(--faint); display: block; font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.system-health-clear { align-items: center; background: rgba(116, 214, 172, 0.06); border: 1px solid rgba(116, 214, 172, 0.2); border-radius: 8px; color: var(--green); display: flex; font-size: 11px; gap: 8px; padding: 12px; }
+.system-health-check-grid, .system-health-stage-grid { display: grid; gap: 9px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.system-health-check-card, .system-health-stage-card { background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(146, 169, 205, 0.14); border-radius: 9px; min-width: 0; padding: 13px; }
+.system-health-card-warning, .system-health-card-paused { border-color: rgba(239, 190, 93, 0.27); }
+.system-health-card-critical { border-color: rgba(255, 117, 117, 0.3); }
+.system-health-card-unknown { border-color: rgba(146, 169, 205, 0.24); }
+.system-health-card-heading { align-items: center; display: flex; gap: 8px; justify-content: space-between; }
+.system-health-card-heading strong { font-size: 11px; }
+.system-health-check-card > p, .system-health-stage-card > p { color: var(--muted); font-size: 10px; line-height: 1.45; margin: 11px 0; }
+.system-health-check-card ul, .system-health-stage-card ul { color: var(--faint); font-size: 9px; line-height: 1.55; margin: 0 0 11px; padding-left: 15px; }
+.system-health-check-card footer { border-top: 1px solid rgba(146, 169, 205, 0.1); color: var(--faint); display: flex; font-size: 8px; gap: 7px; justify-content: space-between; margin-top: 11px; padding-top: 9px; }
+.system-health-check-card footer span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.system-health-stage-metrics { display: grid; gap: 6px; grid-template-columns: repeat(2, 1fr); margin: 12px 0; }
+.system-health-stage-metrics span { background: rgba(255, 255, 255, 0.035); border-radius: 6px; color: var(--faint); display: flex; flex-direction: column; font-size: 8px; gap: 3px; padding: 7px; }
+.system-health-stage-metrics strong { color: var(--text); font-size: 13px; }
+.system-health-stage-card > small { color: var(--faint); display: block; font-size: 9px; }
+.system-health-footer { border-top: 1px solid var(--border); color: var(--faint); display: flex; font-size: 9px; gap: 14px; justify-content: space-between; margin-top: 23px; padding: 15px 22px; }
+.system-health-footer div { display: flex; flex-wrap: wrap; gap: 7px; }
+.system-health-footer strong { color: var(--text); }
 .operations-header { align-items: flex-start; border-bottom: 1px solid var(--border); display: flex; gap: 24px; justify-content: space-between; padding: 25px 28px 23px; }
 .operations-header h3 { margin-bottom: 8px; }
 .operations-header p:not(.eyebrow) { color: var(--muted); font-size: 13px; line-height: 1.55; margin-bottom: 0; max-width: 690px; }
@@ -893,6 +946,10 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
   .operations-grid-primary, .operations-grid-secondary { grid-template-columns: 1fr; }
   .operations-opening-panel { grid-template-columns: 1fr; }
   .operations-status-rail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .system-health-hero { flex-direction: column; }
+  .system-health-overall { flex-basis: auto; width: 100%; }
+  .system-health-alert-list, .system-health-check-grid, .system-health-stage-grid { grid-template-columns: 1fr; }
+  .system-health-footer { align-items: flex-start; flex-direction: column; }
   .current-jobs-track { grid-template-columns: 1fr; }
   .current-job-arrow { display: none; }
   .pipeline-motion-shell { overflow-x: auto; }
@@ -926,5 +983,9 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
   .sampling-row { align-items: flex-start; grid-template-columns: 1fr; }
   .sampling-row em { text-align: left; }
   .pipeline-flow-track, .pipeline-insight-metrics, .operations-status-rail { grid-template-columns: 1fr; }
+  .ops-monitor-tabs { overflow-x: auto; }
+  .ops-monitor-tab { flex: 0 0 auto; }
+  .system-health-hero { padding-left: 17px; padding-right: 17px; }
+  .system-health-meta { padding-left: 17px; padding-right: 17px; }
 }
 
