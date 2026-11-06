@@ -274,11 +274,24 @@ class ReadOnlyStore:
             version = self.latest_version(connection)
             response["data_version"] = version
             response["sequence_number"] = version
-            response["processed_target_count"] = int(
+            durable_processed_count = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM target_manifest WHERE manifest_status = 'processed'"
                 ).fetchone()[0]
             )
+            # A Stage 1 publish writes this sidecar count immediately after
+            # its durable batch commit. During a later publication/replica
+            # lag, a read connection can briefly observe an older manifest
+            # count and make the public progress number move backwards. The
+            # worker's completed publish count is the newer monotonic signal.
+            worker_processed_count = worker.get("last_stage1_published_count")
+            try:
+                worker_processed_count = int(worker_processed_count)
+            except (TypeError, ValueError):
+                worker_processed_count = 0
+            response["processed_target_count"] = max(durable_processed_count, worker_processed_count)
+            if worker_processed_count > durable_processed_count:
+                response["read_state"] = "worker_progress_ahead"
             response["active_candidate_count"] = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM candidates WHERE active = true"

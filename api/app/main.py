@@ -459,12 +459,13 @@ def _monitoring_system_health(worker: dict) -> dict:
 
     read_state = str(monitoring.get("read_state") or "published")
     served_from_cache = bool(monitoring.get("served_from_cache"))
-    publication_status = "warning" if read_state == "publication_busy" or served_from_cache else "healthy"
-    publication_summary = (
-        "Showing the last durable projection while a publication lock is active."
-        if publication_status == "warning"
-        else "The latest durable data projection was read successfully."
-    )
+    publication_status = "warning" if read_state in {"publication_busy", "worker_progress_ahead"} or served_from_cache else "healthy"
+    if read_state == "worker_progress_ahead":
+        publication_summary = "The worker has published progress newer than the read replica; the monotonic worker count is being shown."
+    elif publication_status == "warning":
+        publication_summary = "Showing the last durable projection while a publication lock is active."
+    else:
+        publication_summary = "The latest durable data projection was read successfully."
     checks.append(
         _health_check(
             "published-state",
