@@ -101,30 +101,12 @@ def _worker_is_stalled(
         float(environment.get("WORKER_STALL_TIMEOUT_SECONDS", "600")),
     )
     if age_seconds <= timeout_seconds:
-        # A worker can continue emitting stage-level progress while never
-        # publishing the independent Stage 1 intake that keeps the broad
-        # search moving. Treat that as a separate stall condition so a slow
-        # downstream lane cannot make the service look healthy forever.
-        last_stage1_publish = _parse_timestamp(status.get("last_stage1_publish_at"))
-        published_count = int(status.get("last_stage1_published_count") or 0)
-        target_universe = int(environment.get("TARGET_UNIVERSE_SIZE", "126000"))
-        stage1_publish_timeout = max(
-            300.0,
-            float(environment.get("STAGE1_PUBLISH_STALL_TIMEOUT_SECONDS", "1800")),
-        )
-        if (
-            last_stage1_publish is not None
-            and published_count < target_universe
-            and time.time() - last_stage1_publish > stage1_publish_timeout
-        ):
-            return True, {
-                **status,
-                "progress_age_seconds": round(age_seconds, 2),
-                "stage1_publish_age_seconds": round(time.time() - last_stage1_publish, 2),
-                "stage1_publish_stall_timeout_seconds": stage1_publish_timeout,
-                "stall_reason": "stage1_publish_stale",
-                "stall_timeout_seconds": timeout_seconds,
-            }
+        # A stale Stage 1 publish is an operational alert, not proof that the
+        # current MAST/history job is frozen. Restarting here used to kill
+        # long-running but still-progressing work, then repeat the same cycle
+        # from the beginning. The API health projection reports the publish
+        # lag separately; only the general no-progress watchdog may restart
+        # the worker.
         return False, status
     return True, {
         **status,
