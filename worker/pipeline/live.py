@@ -1393,6 +1393,15 @@ def run_live_cycle(
                 ),
                 progress_callback=status_callback,
             )
+            # ``run_batch.processed_count`` is the checkpoint cursor: it counts
+            # targets attempted in the batch, including targets for which MAST
+            # returned no usable product.  The public dashboard's processed
+            # count is intentionally stricter and counts only durable
+            # ``manifest_status='processed'`` rows.  Report that same durable
+            # number in worker telemetry so the two surfaces cannot disagree.
+            durable_processed_count = processed_target_count(store)
+            result["attempted_target_count"] = result.get("processed_count")
+            result["durable_processed_target_count"] = durable_processed_count
             if status_callback and result.get("status") == "published":
                 status_callback(
                     "stage1_batch_published",
@@ -1400,9 +1409,11 @@ def run_live_cycle(
                         "reason": replacement_reason,
                         "batch_id": result.get("batch_id"),
                         "publish_version": result.get("publish_version"),
-                        "processed_target_count": result.get("processed_count"),
+                        "processed_target_count": durable_processed_count,
+                        "attempted_target_count": result.get("processed_count"),
                         "selected_count": result.get("selected_count", 0),
                         "evaluated_count": result.get("evaluated_count", 0),
+                        "failed_count": result.get("failed_count", 0),
                     },
                 )
             result["intake_reason"] = replacement_reason
@@ -1475,6 +1486,11 @@ def run_live_cycle(
     attempted_stage2_reassessments: set[str] = set()
     attempted_stage3: set[str] = set()
     stage2_reassessments_used = 0
+    interleaved_stage1_intake_per_job = max(
+        0,
+        int(os.getenv("STAGE1_INTERLEAVED_INTAKE_PER_JOB", "2")),
+    )
+    interleaved_stage1_intakes = 0
     # The gate starts closed for each cycle and is opened only after the
     # current Stage 2 top window has been re-ranked and every slot is
     # Promising. Stage 2 may continue to work while the other stages pause.
@@ -1530,6 +1546,39 @@ def run_live_cycle(
             and stage1_intake_bypasses_waterfall_gate
         )
         continuous_stage1_intake_ran = True
+
+    def interleave_stage1_intake(reason: str) -> dict[str, Any]:
+        """Keep Stage 1 publishing while a downstream job is slow.
+
+        A live cycle can spend several minutes in a bounded MAST history
+        request.  Previously the worker waited for the entire Stage 2/3
+        section to finish before admitting another Stage 1 batch, making a
+        healthy worker look frozen.  Admit a small, separately published
+        slice after each completed downstream job/batch.  The sidecar lock
+        serializes the short publish transaction with downstream writes, while
+        the provider/model work remains outside the database lock.
+        """
+
+        nonlocal interleaved_stage1_intakes
+        if (
+            not baseline_ready_at_cycle_start
+            or interleaved_stage1_intake_per_job < 1
+            or (
+                stage2_waterfall_gate_enabled
+                and not stage1_intake_bypasses_waterfall_gate
+            )
+        ):
+            return {"status": "idle", "selected_count": 0}
+        result = fill_stage1(
+            interleaved_stage1_intake_per_job,
+            intake_reason=reason,
+        )
+        if result.get("status") == "published":
+            interleaved_stage1_intakes += int(
+                result.get("evaluated_count") or result.get("selected_count") or 0
+            )
+            stage1_requests.append(result)
+        return result
 
     def request_stage1_reassessment() -> dict[str, Any]:
         """Ask Stage 1 for more data only after Stage 3 requests a handoff."""
@@ -1641,6 +1690,7 @@ def run_live_cycle(
             replacement = fill_stage1(released)
             if replacement.get("status") != "idle":
                 stage1_requests.append(replacement)
+        interleave_stage1_intake("interleaved_after_stage2_job")
         return result
 
     stage2_reassessment_budget = max(
@@ -1807,6 +1857,7 @@ def run_live_cycle(
 
             processed += len(results)
             stage2_reassessments_used += len(results)
+            interleave_stage1_intake("interleaved_after_stage2_reassessment")
 
             # An inconclusive Stage 2 result releases its processing slot, so
             # the waterfall immediately asks Stage 1 for the replacement.
@@ -1902,6 +1953,7 @@ def run_live_cycle(
             fallback_attempts += len(results)
             stage2_reassessment_telemetry["fallback_attempts"] = fallback_attempts
             stage2_reassessments_used += len(results)
+            interleave_stage1_intake("interleaved_after_stage2_fallback")
             # A changed/evaluated candidate consumed its replacement slot. An
             # unchanged fallback keeps the slot open and causes the next
             # ranked candidate to be tried.
@@ -2345,6 +2397,7 @@ def run_live_cycle(
             add_timing("stage3_seconds", stage3_started)
             stage3_results.append(result)
             check_catalog("stage3")
+            interleave_stage1_intake("interleaved_after_stage3_intake")
             if result.get("publish_version") is not None:
                 request_stage2_replacement()
                 run_stage2_reassessment_queue()
@@ -2434,6 +2487,7 @@ def run_live_cycle(
                 check_catalog("stage3")
             if result.get("status") in {"Promising", "Inconclusive"}:
                 resolved_sources.append(str(result["candidate_id"]))
+        interleave_stage1_intake("interleaved_after_stage3_reassessment")
 
         dispatch_sources: list[str] = []
         dispatch_seen: set[str] = set()
@@ -2516,6 +2570,7 @@ def run_live_cycle(
                 timings["stage3_needs_more_data_seconds"] += dispatch_elapsed
             stage3_results.append(result)
             check_catalog("stage3")
+            interleave_stage1_intake("interleaved_after_stage3_dispatch")
             if result.get("publish_version") is not None:
                 # Every actual Stage 2 -> Stage 3 handoff opens a Stage 2
                 # request, regardless of whether the Stage 3 result later
@@ -2577,6 +2632,10 @@ def run_live_cycle(
         "replacement_batch": stage1_requests[-1] if stage1_requests else {"status": "idle", "selected_count": 0},
         "stage1_requests": stage1_requests,
         "continuous_stage1_intake": continuous_stage1_intake,
+        "interleaved_stage1_intake": {
+            "per_completed_downstream_job": interleaved_stage1_intake_per_job,
+            "evaluated_count": interleaved_stage1_intakes,
+        },
         "exploration_batch": continuous_stage1_intake,
         "stage2_intake": stage2_intake_telemetry,
         "stage2": stage2_results,
