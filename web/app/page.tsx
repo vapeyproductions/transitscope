@@ -1652,7 +1652,7 @@ export function MonitoringPanel({ refreshKey }: { refreshKey: number }) {
   const activeStage = (overview?.worker.stage?.toLowerCase() ?? overview?.worker.state?.match(/stage[123]/i)?.[0]?.toLowerCase()) as AssessmentStage | undefined;
 
   if (loading && !overview) {
-    return <section className="operations-panel"><div className="empty-state"><div className="loading-ring" aria-hidden="true" /><h4>Reading ML operations state.</h4><p>This view only reads persisted metrics. It never starts the worker.</p></div></section>;
+    return <section className="operations-panel"><div className="empty-state"><div className="loading-ring" aria-hidden="true" /><h4>Reading ML operations state.</h4></div></section>;
   }
   if (error && !overview) {
     return <section className="operations-panel"><div className="error-state" role="alert"><span className="status-dot muted" /><h4>ML operations data unavailable</h4><p>{error}</p></div></section>;
