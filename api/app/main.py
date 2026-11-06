@@ -225,6 +225,41 @@ def _railway_platform_check() -> dict:
     return result
 
 
+def _worker_compact_status(worker: dict) -> dict:
+    """Build a non-blocking status projection from worker-status.json.
+
+    The API and worker may briefly contend on DuckDB during a publish. The
+    worker sidecar is the only source that can be read without waiting on that
+    database, so health/status callers use its monotonic publish counter while
+    a live cycle is active.
+    """
+
+    telemetry = worker.get("telemetry") if isinstance(worker.get("telemetry"), dict) else {}
+    processed_values: list[int] = []
+    for value in (
+        telemetry.get("processed_target_count"),
+        worker.get("last_stage1_published_count"),
+    ):
+        try:
+            processed_values.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    processed_count = max(processed_values, default=0)
+    configured_count = int(os.getenv("TARGET_UNIVERSE_SIZE", "126000"))
+    return {
+        "data_version": telemetry.get("data_version"),
+        "sequence_number": telemetry.get("data_version"),
+        "processed_target_count": processed_count,
+        "total_target_count": configured_count,
+        "active_candidate_count": int(telemetry.get("active_candidate_count") or 0),
+        "last_ingest_at": worker.get("last_ingest_at") or telemetry.get("last_ingest_at"),
+        "processed_history": [],
+        "read_state": "worker_snapshot",
+        "served_from_cache": True,
+        "worker": worker,
+    }
+
+
 def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
     """Project the latest durable worker snapshot without the full monitor query.
 
@@ -365,46 +400,12 @@ def _monitoring_system_health(worker: dict) -> dict:
     checked_at = utc_now()
     request_started = time.perf_counter()
     monitoring: dict = {}
-    monitoring_error: str | None = None
-    try:
-        store = ReadOnlyStore()
-        compact_status = store.status(worker)
-        monitoring = _fast_monitoring_projection(compact_status, worker)
-        # Provider history is a single compact aggregate and is safe to read
-        # independently. If publication is busy, the check remains explicitly
-        # unknown instead of delaying the whole health response.
-        provider_connection = store.connect(timeout_seconds=0.25)
-        if provider_connection is not None:
-            try:
-                provider_rows = provider_connection.execute(
-                    """
-                    SELECT provider, COUNT(*),
-                           COUNT(*) FILTER (WHERE status IN ('success', 'complete')),
-                           COUNT(*) FILTER (WHERE status IN ('failed', 'error')),
-                           COALESCE(SUM(products_downloaded), 0),
-                           COALESCE(SUM(products_failed), 0),
-                           MAX(finished_at)
-                    FROM ingest_runs
-                    GROUP BY provider
-                    ORDER BY provider
-                    """
-                ).fetchall()
-                monitoring["data_health"]["providers"] = [
-                    {
-                        "provider": row[0],
-                        "runs": int(row[1] or 0),
-                        "successful_runs": int(row[2] or 0),
-                        "failed_runs": int(row[3] or 0),
-                        "products_downloaded": int(row[4] or 0),
-                        "products_failed": int(row[5] or 0),
-                        "last_finished_at": row[6].isoformat() if row[6] else None,
-                    }
-                    for row in provider_rows
-                ]
-            finally:
-                provider_connection.close()
-    except Exception as exc:  # pragma: no cover - defensive boundary for health reporting
-        monitoring_error = str(exc)[:240]
+    # Do not touch DuckDB here. This endpoint is deliberately bounded and
+    # must remain responsive while the worker is opening, publishing, or
+    # recovering the database. The full ops projection still owns the detailed
+    # provider/catalog/history reads.
+    compact_status = _worker_compact_status(worker)
+    monitoring = _fast_monitoring_projection(compact_status, worker)
 
     control = monitoring.get("control") if isinstance(monitoring.get("control"), dict) else _source_of_truth_control(worker)
     worker_health = str(worker.get("health") or "unknown")
@@ -481,20 +482,19 @@ def _monitoring_system_health(worker: dict) -> dict:
             ],
         )
     )
-    if monitoring_error:
-        checks[-1]["details"].append(f"Projection error: {monitoring_error}")
+    checks[-1]["details"].append("This bounded check uses worker-status.json; full DuckDB reads remain in the detailed ops projection.")
 
     data_health = monitoring.get("data_health") if isinstance(monitoring.get("data_health"), dict) else {}
     providers = data_health.get("providers") if isinstance(data_health.get("providers"), list) else []
     mast = next((item for item in providers if "mast" in str(item.get("provider", "")).lower()), None)
     if mast is None:
         last_ingest_at = monitoring.get("last_ingest_at")
-        if read_state == "publication_busy" or served_from_cache:
+        if read_state in {"publication_busy", "worker_progress_ahead", "worker_snapshot"} or served_from_cache:
             provider_status = "warning"
-            provider_summary = "MAST run history is temporarily unavailable while the published projection is locked."
+            provider_summary = "MAST run history is not included in this bounded worker check."
             provider_details = [
                 f"Last ingest timestamp from the compact status snapshot: {last_ingest_at or 'not recorded'}",
-                "This is not evidence of an empty or failed MAST run.",
+                "This is not evidence of an empty or failed MAST run; the detailed projection owns provider history.",
             ]
         elif last_ingest_at:
             provider_status = "unknown"
@@ -592,8 +592,8 @@ def _monitoring_system_health(worker: dict) -> dict:
             if worker_health in {"stalled", "stage1_publish_stalled"} and current_stage == stage:
                 stage_status = "critical"
             summary = "No durable stage snapshot is available in this response."
-            if read_state == "publication_busy":
-                summary = "Stage counts are temporarily unavailable while the published projection is locked."
+            if read_state in {"publication_busy", "worker_snapshot"}:
+                summary = "Stage counts are not included in this bounded worker snapshot."
             details = [
                 f"Worker state: {worker.get('state') or 'not recorded'}",
                 "The monitor will not display unavailable data as zero.",
@@ -745,7 +745,25 @@ def health() -> dict:
 
 @app.get("/api/status")
 def status() -> dict:
-    response = ReadOnlyStore().status(worker_status())
+    current_worker = worker_status()
+    worker_state = str(current_worker.get("state") or "")
+    live_states = {
+        "starting",
+        "starting_cycle",
+        "processing_stage1",
+        "processing_stage2",
+        "processing_stage3",
+        "matching_catalog",
+        "populating_manifest",
+    }
+    # The public shell should keep showing monotonic progress while the
+    # worker is active. A DuckDB read can block behind a publication even when
+    # the worker heartbeat is healthy, so prefer the worker sidecar for these
+    # transient states.
+    if worker_state in live_states:
+        response = _worker_compact_status(current_worker)
+    else:
+        response = ReadOnlyStore().status(current_worker)
     response["checked_at"] = utc_now()
     return response
 
