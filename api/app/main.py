@@ -225,6 +225,70 @@ def _railway_platform_check() -> dict:
     return result
 
 
+def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
+    """Project the latest durable worker snapshot without the full monitor query.
+
+    The regular monitoring view intentionally computes model aggregates and
+    long histories. The source-of-truth tab must remain responsive while that
+    projection is locked or expensive, so it uses the worker's persisted
+    last-cycle payload plus the compact status read instead.
+    """
+
+    last_metrics = worker.get("last_cycle_metrics") if isinstance(worker.get("last_cycle_metrics"), dict) else {}
+    saved_queue = last_metrics.get("queue") if isinstance(last_metrics.get("queue"), dict) else {}
+    stages: dict[str, dict] = {}
+    throughput: dict[str, dict] = {}
+    current_queue: dict[str, dict] = {}
+    for stage in ("stage1", "stage2", "stage3"):
+        counts_raw = saved_queue.get(stage) if isinstance(saved_queue.get(stage), dict) else {}
+        counts = {str(key): int(value or 0) for key, value in counts_raw.items() if isinstance(value, (int, float))}
+        stage_metrics = last_metrics.get(stage) if isinstance(last_metrics.get(stage), dict) else {}
+        total_candidates = sum(counts.values())
+        stages[stage] = {
+            "total_candidates": total_candidates,
+            "priority_candidates": int(
+                stage_metrics.get("priority_queue_count")
+                or (counts.get("Needs More Data", 0) if stage == "stage3" else stage_metrics.get("selected", 0))
+                or 0
+            ),
+            "counts": counts,
+            "last_evaluated_at": worker.get("last_progress_at"),
+        }
+        throughput[stage] = {
+            key: int(stage_metrics.get(key) or 0)
+            for key in ("attempted", "evaluated", "promising", "needs_more_data", "inconclusive", "known_match", "errors", "handoffs")
+        }
+        throughput[stage]["per_hour"] = throughput[stage]["evaluated"]
+        throughput[stage]["per_minute"] = round(throughput[stage]["evaluated"] / 60, 2)
+        current_queue[stage] = {"jobs": int(stage_metrics.get("selected") or 0)}
+
+    finished_at = worker.get("last_heartbeat") or status.get("checked_at") or utc_now()
+    latest_cycle = {
+        "cycle_id": worker.get("cycle_id") or "last-completed-cycle",
+        "finished_at": finished_at,
+        "stage2_reassessment": last_metrics.get("stage2_reassessment", {}),
+    }
+    timings = last_metrics.get("timings") if isinstance(last_metrics.get("timings"), dict) else {}
+    return {
+        "data_version": status.get("data_version"),
+        "read_state": status.get("read_state", "published"),
+        "served_from_cache": bool(status.get("served_from_cache")),
+        "universe": {
+            "configured_count": int(status.get("total_target_count") or 0),
+            "processed_count": int(status.get("processed_target_count") or 0),
+            "remaining_count": max(0, int(status.get("total_target_count") or 0) - int(status.get("processed_target_count") or 0)),
+        },
+        "stages": stages,
+        "cycle_activity": {
+            "throughput": throughput,
+            "queue": {"current": current_queue},
+            "runs": [latest_cycle] if last_metrics else [],
+        },
+        "data_health": {"providers": []},
+        "timings": timings,
+    }
+
+
 def _monitoring_system_health(worker: dict) -> dict:
     """Build the operator source-of-truth projection from live checks.
 
@@ -238,7 +302,42 @@ def _monitoring_system_health(worker: dict) -> dict:
     monitoring: dict = {}
     monitoring_error: str | None = None
     try:
-        monitoring = ReadOnlyStore().monitoring(worker)
+        store = ReadOnlyStore()
+        compact_status = store.status(worker)
+        monitoring = _fast_monitoring_projection(compact_status, worker)
+        # Provider history is a single compact aggregate and is safe to read
+        # independently. If publication is busy, the check remains explicitly
+        # unknown instead of delaying the whole health response.
+        provider_connection = store.connect(timeout_seconds=0.25)
+        if provider_connection is not None:
+            try:
+                provider_rows = provider_connection.execute(
+                    """
+                    SELECT provider, COUNT(*),
+                           COUNT(*) FILTER (WHERE status IN ('success', 'complete')),
+                           COUNT(*) FILTER (WHERE status IN ('failed', 'error')),
+                           COALESCE(SUM(products_downloaded), 0),
+                           COALESCE(SUM(products_failed), 0),
+                           MAX(finished_at)
+                    FROM ingest_runs
+                    GROUP BY provider
+                    ORDER BY provider
+                    """
+                ).fetchall()
+                monitoring["data_health"]["providers"] = [
+                    {
+                        "provider": row[0],
+                        "runs": int(row[1] or 0),
+                        "successful_runs": int(row[2] or 0),
+                        "failed_runs": int(row[3] or 0),
+                        "products_downloaded": int(row[4] or 0),
+                        "products_failed": int(row[5] or 0),
+                        "last_finished_at": row[6].isoformat() if row[6] else None,
+                    }
+                    for row in provider_rows
+                ]
+            finally:
+                provider_connection.close()
     except Exception as exc:  # pragma: no cover - defensive boundary for health reporting
         monitoring_error = str(exc)[:240]
 

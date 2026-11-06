@@ -1793,7 +1793,7 @@ export function MonitoringSystemHealthPanel({ refreshKey }: { refreshKey: number
 
   const loadHealth = useCallback(async () => {
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 7000);
+    const timeoutId = window.setTimeout(() => controller.abort(), 12000);
     setLoading(true);
     try {
       const nextSnapshot = await fetchJson<SystemHealthResponse>("/api/monitoring/system-health", { signal: controller.signal });
