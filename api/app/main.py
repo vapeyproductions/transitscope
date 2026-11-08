@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from .store import PublicationBusyError, ReadOnlyStore
+from .store import PublicationBusyError, ReadOnlyStore, handoff_count_for_cycle
 
 DEFAULT_TARGET_UNIVERSE_SIZE = 100_000
 
@@ -325,7 +325,7 @@ def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
         if has_stage_snapshot:
             jobs = int(stage_metrics.get("selected") or stage_metrics.get("attempted") or 0)
             evaluated = int(stage_metrics.get("evaluated") or stage_metrics.get("attempted") or 0)
-            handoffs = int(stage_metrics.get("handoffs") or 0)
+            handoffs = handoff_count_for_cycle(last_metrics, stage)
             throughput[stage] = {
                 key: int(stage_metrics.get(key) or 0)
                 for key in ("attempted", "evaluated", "promising", "needs_more_data", "inconclusive", "known_match", "errors", "handoffs")

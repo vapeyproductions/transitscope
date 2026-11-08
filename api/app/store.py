@@ -27,10 +27,29 @@ RANKING_STATUS_FILTERS = set(STATUS_PRIORITY) | {"Duplicate Signal"}
 RANKING_SORTS = {"rank", "last_assessed_desc", "last_assessed_asc"}
 DEFAULT_TARGET_UNIVERSE_SIZE = 100_000
 PUBLISHED_READ_TIMEOUT_SECONDS = 3.0
+HANDOFF_QUEUE_KINDS = {"handoff", "manual_handoff", "gate_bootstrap"}
 
 
 class PublicationBusyError(RuntimeError):
     """Raised when the worker is publishing and a read cannot get a snapshot."""
+
+
+def handoff_count_for_cycle(cycle: dict[str, Any], stage: str) -> int:
+    """Count persisted stage handoffs, including legacy queue-ledger cycles."""
+
+    stages = cycle.get("stages") if isinstance(cycle.get("stages"), dict) else cycle
+    summary = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
+    explicit = int(summary.get("handoffs") or 0)
+    queue_events = cycle.get("queue_events") if isinstance(cycle.get("queue_events"), list) else []
+    derived = sum(
+        1
+        for event in queue_events
+        if isinstance(event, dict)
+        and event.get("stage") == stage
+        and event.get("kind") in HANDOFF_QUEUE_KINDS
+        and event.get("candidate_id")
+    )
+    return max(explicit, derived)
 
 _READ_CACHE_LOCK = threading.Lock()
 _RANKING_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
@@ -2475,7 +2494,7 @@ class ReadOnlyStore:
                     needs_timing_values.append(float(summary["needs_more_data_seconds"]))
                 if isinstance(summary.get("dispatch_seconds"), (int, float)):
                     dispatch_timing_values.append(float(summary["dispatch_seconds"]))
-                handoffs += int(summary.get("handoffs") or 0)
+                handoffs += handoff_count_for_cycle(run, stage)
             throughput[stage] = {
                 "attempted": attempted,
                 "evaluated": evaluated,

@@ -618,6 +618,16 @@ def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -
         # Stage 1 evaluates a batch concurrently, so this is the wall-clock
         # batch interval rather than a sum of per-candidate CPU time.
         stage1_summary["needs_more_data_seconds"] = stage1_summary["timing_seconds"]
+    queue_events = queue_cycle_events(result, store)
+    handoffs_by_stage = {
+        stage: sum(
+            1
+            for event in queue_events
+            if event.get("stage") == stage
+            and event.get("kind") in {"handoff", "manual_handoff", "gate_bootstrap"}
+        )
+        for stage in ("stage1", "stage2", "stage3")
+    }
     stage2_summary = result_summary(result.get("stage2"))
     stage2_reassessment = result.get("stage2_reassessment")
     if isinstance(stage2_reassessment, dict):
@@ -637,13 +647,14 @@ def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -
         int(stage2_summary.get("queued_needs_more_data") or 0),
     )
     stage2_summary.update({
+        "handoffs": handoffs_by_stage["stage2"],
         "timing_seconds": round(float(timings.get("stage2_seconds") or 0.0), 3),
         "needs_more_data_seconds": round(float(timings.get("stage2_needs_more_data_seconds") or 0.0), 3),
     })
     stage3_results = result.get("stage3") if isinstance(result.get("stage3"), list) else []
     stage3_summary = result_summary(stage3_results)
     stage3_summary.update({
-        "handoffs": sum(1 for item in stage3_results if isinstance(item, dict) and item.get("dispatch_source_candidate_id")),
+        "handoffs": handoffs_by_stage["stage3"],
         "timing_seconds": round(float(timings.get("stage3_seconds") or 0.0), 3),
         "needs_more_data_seconds": round(float(timings.get("stage3_needs_more_data_seconds") or 0.0), 3),
         "dispatch_seconds": round(float(timings.get("stage3_dispatch_seconds") or 0.0), 3),
@@ -658,7 +669,7 @@ def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -
         "timings": {key: round(float(value), 3) for key, value in timings.items()},
         "queue": queue_snapshot(store),
         "ranked_samples": ranked_queue_samples(store),
-        "queue_events": queue_cycle_events(result, store),
+        "queue_events": queue_events,
         "events": events,
         "stage2_intake": result.get("stage2_intake", {}),
         "stage2_reassessment": result.get("stage2_reassessment", {}),
