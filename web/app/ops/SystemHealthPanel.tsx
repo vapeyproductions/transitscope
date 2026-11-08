@@ -413,7 +413,7 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
       </div>
     </section>
 
-    {view.publicationBusy && countDifference != null && <div className="monitor-publication-note"><strong>Why the numbers differ</strong><span>Status projection: {formatMetric(publicCount)} · worker publish counter: {formatMetric(workerCount)} · {formatMetric(Math.abs(countDifference))} {countDifference >= 0 ? "results are waiting to be published" : "result difference is being reconciled"}.</span></div>}
+    {view.publicationBusy && countDifference != null && <div className="monitor-publication-note"><span>Status projection: {formatMetric(publicCount)} · worker publish counter: {formatMetric(workerCount)} · {formatMetric(Math.abs(countDifference))} {countDifference >= 0 ? "results are waiting to be published" : "result difference is being reconciled"}.</span></div>}
 
     <footer className="monitor-footer"><span>Source: <strong>/api/status</strong> · worker heartbeat, progress telemetry, and published projection</span><span>{lastSuccessfulLoad ? `Snapshot received ${formatAge((view.now - lastSuccessfulLoad) / 1000)}` : "Snapshot received just now"}</span></footer>
   </section>;
