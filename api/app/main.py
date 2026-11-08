@@ -956,18 +956,12 @@ def rankings(
 
 @app.get("/api/identified")
 def identified(limit: int = Query(100, ge=1, le=500)) -> dict:
-    store = ReadOnlyStore()
-    current_worker = worker_status()
-    if str(current_worker.get("state") or "") in {
-        "starting_cycle",
-        "processing_stage1",
-        "processing_stage2",
-        "processing_stage3",
-        "matching_catalog",
-        "populating_manifest",
-    }:
-        return store.identified_cached(limit)
-    return store.identified(limit)
+    # The store already coordinates reads with the worker's publication lock
+    # and falls back to the last persisted response if a publish is in flight.
+    # Do not short-circuit merely because the worker is active: that made a
+    # never-before-loaded Identified tab appear empty even when durable match
+    # records were available in DuckDB.
+    return ReadOnlyStore().identified(limit)
 
 
 @app.get("/api/sky")
