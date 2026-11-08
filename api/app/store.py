@@ -236,7 +236,9 @@ class ReadOnlyStore:
                         # over waiting behind the worker's coordination lock;
                         # the API never writes through this connection.
                         try:
-                            return duckdb.connect(str(self.database), read_only=True)
+                            direct_connection = duckdb.connect(str(self.database), read_only=True)
+                            lock_file.close()
+                            return direct_connection
                         except Exception:
                             pass
                         if time.monotonic() >= deadline:

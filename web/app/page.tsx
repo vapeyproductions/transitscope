@@ -683,6 +683,11 @@ async function fetchReplayJson<T>(path: string): Promise<T> {
   const timeoutId = window.setTimeout(() => controller.abort(), 1800);
   try {
     return await fetchJson<T>(path, { signal: controller.signal });
+  } catch (cause) {
+    if (cause instanceof Error && cause.name === "AbortError") {
+      throw new Error("Saved replay is waiting for the latest committed snapshot.");
+    }
+    throw cause;
   } finally {
     window.clearTimeout(timeoutId);
   }
