@@ -161,6 +161,37 @@ class ReadOnlyStore:
         _cache_set(cache, key, payload)
         self._write_disk_cache(kind, key, payload)
 
+    def _cached_overall_star_count(self) -> int | None:
+        """Return the latest cached distinct-star count for the overall view.
+
+        The status endpoint deliberately avoids waiting on DuckDB while the
+        worker publishes a cycle. During that window, worker telemetry can
+        legitimately lag the last published ranking. Reusing the same cached
+        ranking projection as the public dashboard keeps the monitor from
+        reporting a false zero.
+        """
+
+        cache_key = json.dumps(
+            {
+                "database": str(self.database.resolve()),
+                "view": "overall",
+                "limit": 100,
+                "page": 1,
+                "stage_filter": None,
+                "status_filter": None,
+                "sort": "rank",
+            },
+            sort_keys=True,
+        )
+        cached = self._cached_response(_RANKING_RESPONSE_CACHE, "rankings", cache_key)
+        if not cached:
+            return None
+        try:
+            count = int(cached.get("total_star_count") or 0)
+        except (TypeError, ValueError):
+            return None
+        return count if count > 0 else None
+
     def connect(self, *, timeout_seconds: float | None = None) -> Any | None:
         self.publication_busy = False
         if not self.database.exists():
@@ -291,7 +322,13 @@ class ReadOnlyStore:
             if telemetry.get("active_candidate_count") is not None:
                 fallback["active_candidate_count"] = int(telemetry.get("active_candidate_count") or 0)
             if telemetry.get("active_star_count") is not None:
-                fallback["active_star_count"] = int(telemetry.get("active_star_count") or 0)
+                telemetry_star_count = int(telemetry.get("active_star_count") or 0)
+                fallback["active_star_count"] = telemetry_star_count
+                if telemetry_star_count == 0 and fallback.get("active_candidate_count", 0) > 0:
+                    fallback["active_star_count"] = max(
+                        int(fallback.get("active_star_count") or 0),
+                        int(self._cached_overall_star_count() or 0),
+                    )
             fallback["last_ingest_at"] = worker.get("last_ingest_at") or fallback.get("last_ingest_at")
             fallback["worker"] = worker
             fallback["served_from_cache"] = True
@@ -478,7 +515,13 @@ class ReadOnlyStore:
         if telemetry.get("active_candidate_count") is not None:
             response["active_candidate_count"] = int(telemetry.get("active_candidate_count") or 0)
         if telemetry.get("active_star_count") is not None:
-            response["active_star_count"] = int(telemetry.get("active_star_count") or 0)
+            telemetry_star_count = int(telemetry.get("active_star_count") or 0)
+            response["active_star_count"] = telemetry_star_count
+            if telemetry_star_count == 0 and response.get("active_candidate_count", 0) > 0:
+                response["active_star_count"] = max(
+                    int(response.get("active_star_count") or 0),
+                    int(self._cached_overall_star_count() or 0),
+                )
         response["total_target_count"] = int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE)))
         response["last_ingest_at"] = worker.get("last_ingest_at") or response.get("last_ingest_at")
         response["last_published_at"] = (
