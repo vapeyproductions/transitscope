@@ -399,6 +399,7 @@ type MonitoringStage2Reassessment = {
   last_queue_count?: number;
   remaining_queue_count?: number;
   evaluated_count?: number;
+  status?: string;
   unchanged_candidate_ids?: string[];
   published_candidate_ids?: string[];
   dispatch_batches?: string[][];
@@ -496,6 +497,8 @@ type MonitoringOverview = {
     candidate_id?: string;
     source_candidate_id?: string;
     last_heartbeat?: string | null;
+    last_progress_at?: string | null;
+    last_stage1_publish_at?: string | null;
     reason?: string;
     catalog_health?: CatalogHealth;
   };
@@ -579,12 +582,14 @@ type SystemHealthStage = {
   status: SystemHealthStatus;
   summary: string;
   details: string[];
+  available?: boolean;
   retained_candidates: number;
   priority_candidates: number;
   jobs_in_latest_queue: number;
   evaluated_in_window: number;
   handoffs_in_window: number;
   last_evaluated_at: string | null;
+  last_activity_at?: string | null;
 };
 
 type SystemHealthResponse = {
@@ -1786,6 +1791,55 @@ function SystemHealthStatusPill({ status }: { status: SystemHealthStatus }) {
   return <span className={`system-health-status system-health-status-${status}`}><span className="status-dot" />{systemHealthStatusLabel(status)}</span>;
 }
 
+function systemStageNextAction(stage: SystemHealthStage, activeStage: AssessmentStage | undefined): string {
+  if (stage.status === "paused") return "Paused by the pipeline control gate.";
+  if (!stage.available) {
+    return activeStage === stage.stage
+      ? "The worker is active; waiting for the next durable stage snapshot."
+      : "No completed stage snapshot is available yet.";
+  }
+  if (stage.stage === "stage1") {
+    return stage.jobs_in_latest_queue > 0
+      ? "Process the current Stage 1 screening jobs."
+      : "Call replacement targets as downstream work opens. ";
+  }
+  if (stage.stage === "stage2") {
+    return stage.summary.includes("reassessments waiting")
+      ? "Reassess queued Needs More Data before the next handoff."
+      : "Wait for Stage 3 to call the next Promising candidate.";
+  }
+  return stage.jobs_in_latest_queue > 0
+    ? "Work the current Stage 3 queue in ranked order."
+    : "Reassess the highest-ranked Needs More Data, then call Stage 2 when a slot opens.";
+}
+
+function SystemStageLanes({ snapshot }: { snapshot: SystemHealthResponse }) {
+  const worker = snapshot.pipeline.worker;
+  const activeStage = (worker.stage ?? worker.state?.match(/stage[123]/i)?.[0]?.toLowerCase()) as AssessmentStage | undefined;
+  const workerLastProgress = worker.last_progress_at ?? null;
+  const stage1LastPublish = worker.last_stage1_publish_at ?? null;
+
+  return <section className="system-health-pipeline system-stage-lanes" aria-labelledby="system-health-pipeline-title">
+    <div className="ops-section-heading"><div><p className="eyebrow">Pipeline lanes</p><h3 id="system-health-pipeline-title">What each stage is doing</h3></div><span className="section-note">Updated {formatDate(snapshot.checked_at)}</span></div>
+    <div className="system-stage-lane-grid">
+      {snapshot.pipeline.stages.map((stage) => {
+        const activityAt = stage.last_activity_at ?? stage.last_evaluated_at ?? (activeStage === stage.stage ? workerLastProgress : stage.stage === "stage1" ? stage1LastPublish : null);
+        const available = stage.available !== false;
+        const candidates = stage.retained_candidates == null ? "—" : stage.retained_candidates.toLocaleString();
+        const jobs = stage.jobs_in_latest_queue == null ? "—" : stage.jobs_in_latest_queue.toLocaleString();
+        const assessed = stage.evaluated_in_window == null ? "—" : stage.evaluated_in_window.toLocaleString();
+        const handoffs = stage.handoffs_in_window == null ? "—" : stage.handoffs_in_window.toLocaleString();
+        return <article className={`system-stage-lane system-health-card-${stage.status}`} key={stage.stage}>
+          <div className="system-stage-lane-heading"><div><strong>{stageName(stage.stage)}</strong><span>{available ? `${candidates} candidates` : "Snapshot pending"}</span></div><SystemHealthStatusPill status={stage.status} /></div>
+          <div className="system-stage-lane-metrics"><span><strong>{jobs}</strong><small>jobs latest cycle</small></span><span><strong>{assessed}</strong><small>assessed in window</small></span><span><strong>{handoffs}</strong><small>handoffs</small></span></div>
+          <div className="system-stage-lane-activity"><span>Last stage activity</span><strong>{activityAt ? formatDate(activityAt) : "No completed assessment in this snapshot"}</strong></div>
+          <div className="system-stage-lane-next"><span>Next action</span><strong>{systemStageNextAction(stage, activeStage)}</strong></div>
+        </article>;
+      })}
+    </div>
+  </section>;
+}
+
 export function MonitoringSystemHealthPanel({ refreshKey }: { refreshKey: number }) {
   const [snapshot, setSnapshot] = useState<SystemHealthResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1834,7 +1888,7 @@ export function MonitoringSystemHealthPanel({ refreshKey }: { refreshKey: number
     {stale && !error && <div className="system-health-refresh-warning" role="status"><span className="status-dot" /><strong>Check is stale.</strong><span>The last response is older than the declared {snapshot.stale_after_seconds}-second freshness window.</span></div>}
     <section className="system-health-alerts" aria-labelledby="system-health-alerts-title"><div className="ops-section-heading"><div><p className="eyebrow">Action queue</p><h3 id="system-health-alerts-title">Active alerts</h3></div><span className="section-note">{alerts.length ? `${alerts.length} check${alerts.length === 1 ? "" : "s"} need attention` : "No active alerts"}</span></div>{alerts.length ? <div className="system-health-alert-list">{alerts.map((check) => <article className={`system-health-alert system-health-alert-${check.status}`} key={check.id}><SystemHealthStatusPill status={check.status} /><div><strong>{check.label}</strong><p>{check.summary}</p><small>Source: {check.source}</small></div></article>)}</div> : <div className="system-health-clear"><span className="status-dot" />Every check returned healthy at the last poll.</div>}</section>
     <section className="system-health-checks" aria-labelledby="system-health-checks-title"><div className="ops-section-heading"><div><p className="eyebrow">Live checks</p><h3 id="system-health-checks-title">What is being checked right now</h3></div><span className="section-note">Each card includes its authoritative source</span></div><div className="system-health-check-grid">{snapshot.checks.map((check) => <article className={`system-health-check-card system-health-card-${check.status}`} key={check.id}><div className="system-health-card-heading"><strong>{check.label}</strong><SystemHealthStatusPill status={check.status} /></div><p>{check.summary}</p>{check.details.length ? <ul>{check.details.map((detail) => <li key={detail}>{detail}</li>)}</ul> : null}<footer><span>{check.source}</span>{check.latency_ms != null && <span>{check.latency_ms.toFixed(0)} ms</span>}</footer></article>)}</div></section>
-    <section className="system-health-pipeline" aria-labelledby="system-health-pipeline-title"><div className="ops-section-heading"><div><p className="eyebrow">Waterfall state</p><h3 id="system-health-pipeline-title">Stage-by-stage pipeline check</h3></div><span className="section-note">Queue counts are from the latest durable cycle telemetry</span></div><div className="system-health-stage-grid">{snapshot.pipeline.stages.map((stage) => <article className={`system-health-stage-card system-health-card-${stage.status}`} key={stage.stage}><div className="system-health-card-heading"><strong>{stageName(stage.stage)}</strong><SystemHealthStatusPill status={stage.status} /></div><p>{stage.summary}</p><div className="system-health-stage-metrics"><span><strong>{stage.retained_candidates.toLocaleString()}</strong>retained</span><span><strong>{stage.priority_candidates.toLocaleString()}</strong>priority</span><span><strong>{stage.jobs_in_latest_queue.toLocaleString()}</strong>latest jobs</span><span><strong>{stage.evaluated_in_window.toLocaleString()}</strong>assessed</span></div><ul>{stage.details.map((detail) => <li key={detail}>{detail}</li>)}</ul><small>Last assessed: {formatDate(stage.last_evaluated_at)}</small></article>)}</div></section>
+    <SystemStageLanes snapshot={snapshot} />
     <footer className="system-health-footer"><div><strong>Source of truth</strong><span>{snapshot.source_of_truth.join(" · ")}</span></div><span>Last cycle: {snapshot.pipeline.latest_cycle_id ?? "not recorded"}</span></footer>
   </section>;
 }

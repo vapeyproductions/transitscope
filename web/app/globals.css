@@ -989,3 +989,96 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
   .system-health-meta { padding-left: 17px; padding-right: 17px; }
 }
 
+/* Compact live status view: the monitor should answer “is it running?” first. */
+.monitor-header { align-items: flex-start; background: linear-gradient(135deg, rgba(15, 29, 49, 0.94), rgba(15, 23, 39, 0.76)); border-bottom: 1px solid var(--border); display: flex; gap: 20px; justify-content: space-between; padding: 24px 28px 20px; }
+.monitor-header h2 { font-size: clamp(21px, 2.5vw, 30px); letter-spacing: -0.04em; margin: 7px 0 7px; }
+.monitor-header p:not(.eyebrow) { color: var(--muted); font-size: 12px; line-height: 1.45; margin: 0; }
+.monitor-header-status { align-items: flex-end; display: flex; flex: 0 0 auto; flex-direction: column; gap: 7px; padding-top: 2px; }
+.monitor-header-status small { color: var(--muted); font-size: 9px; }
+.monitor-status-pill { align-items: center; border: 1px solid currentColor; border-radius: 99px; display: inline-flex; font-size: 10px; gap: 6px; padding: 6px 9px; white-space: nowrap; }
+.monitor-status-healthy { color: var(--green); }
+.monitor-status-warning { color: var(--gold); }
+.monitor-status-critical { color: var(--red); }
+.monitor-status-paused { color: var(--blue); }
+.monitor-status-healthy .status-dot { background: var(--green); box-shadow: 0 0 8px rgba(116, 214, 172, 0.6); }
+.monitor-status-warning .status-dot { background: var(--gold); box-shadow: 0 0 8px rgba(239, 190, 93, 0.6); }
+.monitor-status-critical .status-dot { background: var(--red); box-shadow: 0 0 8px rgba(255, 117, 117, 0.6); }
+.monitor-status-paused .status-dot { background: var(--blue); box-shadow: 0 0 8px rgba(118, 168, 255, 0.6); }
+.monitor-meta { color: var(--muted); display: flex; flex-wrap: wrap; font-size: 9px; gap: 12px 18px; padding: 11px 28px; }
+.monitor-meta strong { color: var(--text); font-weight: 500; margin-right: 4px; }
+.monitor-refresh-warning { align-items: center; background: rgba(239, 190, 93, 0.08); border: 1px solid rgba(239, 190, 93, 0.28); color: var(--gold); display: flex; flex-wrap: wrap; font-size: 10px; gap: 6px 8px; margin: 0 22px 15px; padding: 9px 11px; }
+.monitor-refresh-warning span:last-child { color: var(--muted); }
+.monitor-diagnosis { border-left: 3px solid var(--green); margin: 4px 22px 16px; padding: 13px 15px; }
+.monitor-diagnosis-warning { background: rgba(239, 190, 93, 0.06); border-left-color: var(--gold); }
+.monitor-diagnosis-critical { background: rgba(255, 117, 117, 0.06); border-left-color: var(--red); }
+.monitor-diagnosis-paused { background: rgba(118, 168, 255, 0.06); border-left-color: var(--blue); }
+.monitor-diagnosis > div { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
+.monitor-diagnosis > div > strong { font-size: 13px; }
+.monitor-diagnosis > p { color: var(--muted); font-size: 11px; line-height: 1.45; margin: 8px 0 0; }
+.monitor-metrics { border-top: 1px solid var(--border); display: grid; gap: 8px; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 17px 22px; }
+.monitor-metric { background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(146, 169, 205, 0.14); border-radius: 9px; display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 12px 13px; }
+.monitor-metric-warning { border-color: rgba(239, 190, 93, 0.3); }
+.monitor-metric-critical { border-color: rgba(255, 117, 117, 0.3); }
+.monitor-metric-paused { border-color: rgba(118, 168, 255, 0.3); }
+.monitor-metric > span { color: var(--muted); font-size: 9px; }
+.monitor-metric > strong { font-size: 16px; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.monitor-metric > small { color: var(--faint); font-size: 9px; line-height: 1.35; }
+.monitor-current-job { border-top: 1px solid var(--border); padding: 18px 22px 19px; }
+.monitor-section-heading { align-items: flex-end; display: flex; gap: 14px; justify-content: space-between; margin-bottom: 12px; }
+.monitor-section-heading h3 { font-size: 15px; margin: 5px 0 0; }
+.monitor-section-heading > span { color: var(--cyan); font-size: 10px; }
+.monitor-job-grid { display: grid; gap: 8px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.monitor-job-grid > div { background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(146, 169, 205, 0.1); border-radius: 8px; display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 10px 11px; }
+.monitor-job-grid span, .monitor-job-grid small { color: var(--faint); font-size: 9px; }
+.monitor-job-grid strong { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.monitor-publication-note { background: rgba(118, 228, 237, 0.06); border: 1px solid rgba(118, 228, 237, 0.2); border-radius: 8px; color: var(--muted); display: flex; flex-wrap: wrap; font-size: 10px; gap: 5px 10px; margin: 0 22px 18px; padding: 10px 12px; }
+.monitor-publication-note strong { color: var(--cyan); }
+.monitor-footer { border-top: 1px solid var(--border); color: var(--faint); display: flex; font-size: 9px; gap: 12px; justify-content: space-between; padding: 13px 22px; }
+.monitor-footer strong { color: var(--text); font-weight: 500; }
+.monitor-loading, .monitor-error { align-items: center; display: flex; gap: 10px; min-height: 180px; padding: 24px 28px; }
+.monitor-loading { color: var(--muted); flex-direction: column; justify-content: center; text-align: center; }
+.monitor-loading strong { color: var(--text); font-size: 13px; }
+.monitor-loading span { font-size: 10px; }
+.monitor-error { color: var(--red); }
+.monitor-error > div { display: flex; flex: 1; flex-direction: column; gap: 4px; }
+.monitor-error > div span { color: var(--muted); font-size: 10px; }
+
+@media (max-width: 800px) {
+  .monitor-header { flex-direction: column; }
+  .monitor-header-status { align-items: flex-start; }
+  .monitor-metrics, .monitor-job-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 480px) {
+  .monitor-header, .monitor-meta { padding-left: 17px; padding-right: 17px; }
+  .monitor-metrics, .monitor-job-grid { grid-template-columns: 1fr; }
+  .monitor-diagnosis, .monitor-current-job, .monitor-publication-note { margin-left: 17px; margin-right: 17px; }
+  .monitor-metrics { padding-left: 17px; padding-right: 17px; }
+  .monitor-footer { align-items: flex-start; flex-direction: column; }
+}
+
+/* Compact stage-by-stage health lanes. */
+.system-stage-lanes { padding-top: 20px; }
+.system-stage-lane-grid { display: grid; gap: 9px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.system-stage-lane { background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(146, 169, 205, 0.14); border-radius: 9px; min-width: 0; padding: 13px; }
+.system-stage-lane.system-health-card-warning { border-color: rgba(239, 190, 93, 0.3); }
+.system-stage-lane.system-health-card-critical { border-color: rgba(255, 117, 117, 0.3); }
+.system-stage-lane.system-health-card-paused { border-color: rgba(118, 168, 255, 0.3); }
+.system-stage-lane-heading { align-items: flex-start; display: flex; gap: 8px; justify-content: space-between; }
+.system-stage-lane-heading > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.system-stage-lane-heading strong { font-size: 13px; }
+.system-stage-lane-heading span { color: var(--muted); font-size: 9px; }
+.system-stage-lane-metrics { display: grid; gap: 6px; grid-template-columns: repeat(3, 1fr); margin: 13px 0; }
+.system-stage-lane-metrics span { background: rgba(255, 255, 255, 0.035); border-radius: 6px; display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 7px; }
+.system-stage-lane-metrics strong { font-size: 13px; }
+.system-stage-lane-metrics small { color: var(--faint); font-size: 8px; line-height: 1.2; }
+.system-stage-lane-activity, .system-stage-lane-next { border-top: 1px solid rgba(146, 169, 205, 0.1); display: flex; flex-direction: column; gap: 4px; padding-top: 9px; }
+.system-stage-lane-next { margin-top: 9px; }
+.system-stage-lane-activity span, .system-stage-lane-next span { color: var(--faint); font-size: 8px; text-transform: uppercase; letter-spacing: 0.08em; }
+.system-stage-lane-activity strong { color: var(--muted); font-size: 10px; font-weight: 500; }
+.system-stage-lane-next strong { color: var(--text); font-size: 10px; font-weight: 500; line-height: 1.35; }
+
+@media (max-width: 800px) {
+  .system-stage-lane-grid { grid-template-columns: 1fr; }
+}
+

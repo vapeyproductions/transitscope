@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import secrets
 import time
 import urllib.error
@@ -277,12 +278,24 @@ def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
     stages: dict[str, dict] = {}
     throughput: dict[str, dict] = {}
     current_queue: dict[str, dict] = {}
+    worker_state = str(worker.get("state") or "")
+    active_stage_match = re.search(r"stage[123]", worker_state, re.IGNORECASE)
+    active_stage = active_stage_match.group(0).lower() if active_stage_match else None
     for stage in ("stage1", "stage2", "stage3"):
         has_stage_snapshot = has_cycle_snapshot and stage in saved_queue and isinstance(saved_queue.get(stage), dict)
         counts_raw = saved_queue.get(stage) if has_stage_snapshot else {}
         counts = {str(key): int(value or 0) for key, value in counts_raw.items() if isinstance(value, (int, float))}
         stage_metrics = last_metrics.get(stage) if isinstance(last_metrics.get(stage), dict) else {}
         total_candidates = sum(counts.values())
+        last_activity_at = (
+            worker.get("last_cycle_finished_at")
+            or last_metrics.get("finished_at")
+            or last_metrics.get("occurred_at")
+        ) if has_stage_snapshot else (
+            worker.get("last_progress_at") if active_stage == stage else None
+        )
+        if last_activity_at is None and stage == "stage1":
+            last_activity_at = worker.get("last_stage1_publish_at")
         stages[stage] = {
             # An absent snapshot is not an empty pipeline. Keep it explicit so
             # the health panel cannot turn a publication lock into false zeros.
@@ -298,11 +311,8 @@ def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
                 else None
             ),
             "counts": counts,
-            "last_evaluated_at": (
-                worker.get("last_cycle_finished_at")
-                or last_metrics.get("finished_at")
-                or last_metrics.get("occurred_at")
-            ) if has_stage_snapshot else None,
+            "last_evaluated_at": last_activity_at,
+            "last_activity_at": last_activity_at,
         }
         throughput[stage] = {
             key: int(stage_metrics.get(key) or 0)
@@ -578,6 +588,11 @@ def _monitoring_system_health(worker: dict) -> dict:
         stage_queue = current_queue.get(stage) if isinstance(current_queue.get(stage), dict) else {}
         jobs = sum(int(value or 0) for value in stage_queue.values() if isinstance(value, (int, float)))
         needs_more_data = int(counts.get("Needs More Data", 0) or 0)
+        stage_activity_at = (
+            stage_data.get("last_evaluated_at")
+            or (worker.get("last_progress_at") if str(worker.get("state") or "").replace("processing_", "") == stage else None)
+            or (worker.get("last_stage1_publish_at") if stage == "stage1" else None)
+        )
         if stage_available:
             stage_status = "paused" if control.get("pipeline_paused") else "healthy"
             summary = f"{int(stage_data.get('total_candidates', 0) or 0):,} retained · {jobs:,} jobs in the latest queue."
@@ -585,7 +600,7 @@ def _monitoring_system_health(worker: dict) -> dict:
                 f"Promising: {int(counts.get('Promising', 0) or 0):,}",
                 f"Needs More Data: {needs_more_data:,}",
                 f"Inconclusive: {int(counts.get('Inconclusive', 0) or 0):,}",
-                f"Latest assessed: {stage_data.get('last_evaluated_at') or 'not recorded'}",
+                f"Last stage activity: {stage_activity_at or 'no completed assessment in this snapshot'}",
             ]
         else:
             worker_health = str(worker.get("health") or "unknown")
@@ -619,6 +634,7 @@ def _monitoring_system_health(worker: dict) -> dict:
                 "evaluated_in_window": int(stage_flow.get("evaluated", 0) or 0) if stage_available else None,
                 "handoffs_in_window": int(stage_flow.get("handoffs", 0) or 0) if stage_available else None,
                 "last_evaluated_at": stage_data.get("last_evaluated_at") if stage_available else None,
+                "last_activity_at": stage_activity_at,
             }
         )
 
