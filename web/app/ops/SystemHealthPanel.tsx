@@ -434,12 +434,10 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
         ? "critical"
         : "warning";
 
-  return <section className="system-health-panel operations-panel" aria-labelledby="system-health-title">
+  return <section className="system-health-panel operations-panel" aria-label="Live pipeline status">
     <header className="monitor-header">
       <div>
         <p className="eyebrow accent">Live pipeline status</p>
-        <h2 id="system-health-title">What is happening right now</h2>
-        <p>Worker state, published data, and the current bottleneck in one view.</p>
       </div>
       <div className="monitor-header-status"><StatusPill tone={view.tone} /><small>{loading ? "Refreshing now…" : "Auto-refreshes every 15 seconds"}</small></div>
     </header>
