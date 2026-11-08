@@ -621,7 +621,12 @@ def _monitoring_system_health(worker: dict) -> dict:
         )
         if stage_available:
             stage_status = "paused" if control.get("pipeline_paused") else "healthy"
-            summary = f"{int(stage_data.get('total_candidates', 0) or 0):,} retained · {jobs:,} jobs in the latest queue."
+            retained = stage_data.get("total_candidates")
+            summary = (
+                f"{int(retained):,} retained · {jobs:,} jobs in the latest queue."
+                if retained is not None
+                else f"Live cycle telemetry · {jobs:,} jobs in the latest queue; retained counts come from the published status projection."
+            )
             details = [
                 f"Promising: {int(counts.get('Promising', 0) or 0):,}",
                 f"Needs More Data: {needs_more_data:,}",
@@ -654,8 +659,16 @@ def _monitoring_system_health(worker: dict) -> dict:
                 "summary": summary,
                 "details": details,
                 "available": stage_available,
-                "retained_candidates": int(stage_data.get("total_candidates", 0) or 0) if stage_available else None,
-                "priority_candidates": int(stage_data.get("priority_candidates", 0) or 0) if stage_available else None,
+                "retained_candidates": (
+                    int(stage_data.get("total_candidates"))
+                    if stage_available and stage_data.get("total_candidates") is not None
+                    else None
+                ),
+                "priority_candidates": (
+                    int(stage_data.get("priority_candidates"))
+                    if stage_available and stage_data.get("priority_candidates") is not None
+                    else None
+                ),
                 "jobs_in_latest_queue": jobs,
                 "evaluated_in_window": int(stage_flow.get("evaluated", 0) or 0) if stage_available else None,
                 "handoffs_in_window": int(stage_flow.get("handoffs", 0) or 0) if stage_available else None,
