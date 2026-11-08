@@ -3,6 +3,7 @@
 import { useState } from "react";
 import PortfolioBrief from "./PortfolioBrief";
 import SystemHealthPanel from "./SystemHealthPanel";
+import { MonitoringSystemHealthPanel } from "../page";
 
 export default function OpsDashboardClient() {
   const [refreshKey, setRefreshKey] = useState(0);
@@ -14,6 +15,7 @@ export default function OpsDashboardClient() {
     </header>
     <PortfolioBrief />
     <SystemHealthPanel refreshKey={refreshKey} />
+    <MonitoringSystemHealthPanel refreshKey={refreshKey} />
     <footer className="footer-note"><span className="footer-pulse" aria-hidden="true" /><span>ML Ops telemetry · operator access</span></footer>
   </main>;
 }
