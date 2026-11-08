@@ -2196,6 +2196,10 @@ export default function HomePage() {
     closeCandidate();
     updateReplay(view, { active: true, playing: false, cursor: 0, snapshot: null, loading: true, error: null });
     try {
+      // Sequence zero is a valid saved replay state and can be returned
+      // without opening DuckDB. Render it first so metadata work can never
+      // leave the user staring at a generic loading state.
+      await loadReplaySnapshot(view, 0);
       let meta: ReplayMeta | null = null;
       for (let attempt = 0; attempt < 6; attempt += 1) {
         meta = await fetchJson<ReplayMeta>(`/api/replay/${view}/meta`);
@@ -2206,7 +2210,6 @@ export default function HomePage() {
         throw new Error("Saved replay is temporarily unavailable while the worker publishes a snapshot.");
       }
       updateReplay(view, { meta, maxSequence: meta.last_sequence });
-      await loadReplaySnapshot(view, 0);
     } catch (cause) {
       updateReplay(view, { loading: false, error: cause instanceof Error ? cause.message : "Replay metadata unavailable." });
     }
