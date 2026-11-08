@@ -1018,7 +1018,9 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .monitor-top-alerts { align-items: stretch; display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); margin: 4px 22px 16px; }
 .monitor-top-alerts .monitor-diagnosis { margin: 0; }
 .monitor-top-alert-list { min-width: 0; width: 100%; }
-.monitor-top-alert-list .system-health-alert { border-radius: 9px; min-height: 0; padding: 12px 13px; }
+.monitor-top-alert-list .system-health-alert { border-radius: 9px; height: 75px; min-height: 75px; overflow: hidden; padding: 8px 13px; }
+.monitor-top-alert-list .system-health-alert p { font-size: 9px; line-height: 1.25; margin-bottom: 3px; }
+.monitor-top-alert-list .system-health-alert small { font-size: 8px; }
 .monitor-metrics { border-top: 1px solid var(--border); display: grid; gap: 8px; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 17px 22px; }
 .monitor-metric { background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(146, 169, 205, 0.14); border-radius: 9px; display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 12px 13px; }
 .monitor-metric-warning { border-color: rgba(239, 190, 93, 0.3); }
@@ -1059,6 +1061,7 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
   .monitor-header { flex-direction: column; }
   .monitor-header-status { align-items: flex-start; }
   .monitor-top-alerts { grid-template-columns: 1fr; }
+  .monitor-top-alert-list .system-health-alert { height: auto; min-height: 0; }
   .monitor-metrics, .monitor-job-grid, .monitor-publication-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
