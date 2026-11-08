@@ -1832,6 +1832,7 @@ export function MonitoringSystemHealthPanel({ refreshKey }: { refreshKey: number
   const [snapshot, setSnapshot] = useState<SystemHealthResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [expandedChecks, setExpandedChecks] = useState<Record<string, boolean>>({});
 
   const loadHealth = useCallback(async () => {
     const controller = new AbortController();
@@ -1873,7 +1874,17 @@ export function MonitoringSystemHealthPanel({ refreshKey }: { refreshKey: number
     <div className="system-health-meta"><span><strong>Last checked</strong> {formatDate(snapshot.checked_at)}</span><span><strong>Next check</strong> {formatDate(snapshot.next_check_at)}</span><span><strong>Data version</strong> {snapshot.pipeline.data_version ?? "—"}</span><span><strong>Read state</strong> {snapshot.read_state ?? "published"}{snapshot.served_from_cache ? " · cached projection" : ""}</span></div>
     {error && <div className="system-health-refresh-warning" role="status"><span className="status-dot" /><strong>Live refresh failed.</strong><span>{error} Showing the last successful check from {formatDate(snapshot.checked_at)} until the next check succeeds.</span></div>}
     {stale && !error && <div className="system-health-refresh-warning" role="status"><span className="status-dot" /><strong>Check is stale.</strong><span>The last response is older than the declared {snapshot.stale_after_seconds}-second freshness window.</span></div>}
-    <section className="system-health-checks" aria-labelledby="system-health-checks-title"><div className="ops-section-heading"><div><p className="eyebrow">Live checks</p><h3 id="system-health-checks-title">What is being checked right now</h3></div><span className="section-note">Each card includes its authoritative source</span></div><div className="system-health-check-grid">{snapshot.checks.map((check) => <article className={`system-health-check-card system-health-card-${check.status}`} key={check.id}><div className="system-health-card-heading"><strong>{check.label}</strong><SystemHealthStatusPill status={check.status} /></div><p>{check.summary}</p>{check.details.length ? <ul>{check.details.map((detail) => <li key={detail}>{detail}</li>)}</ul> : null}<footer><span>{check.source}</span>{check.latency_ms != null && <span>{check.latency_ms.toFixed(0)} ms</span>}</footer></article>)}</div></section>
+    <section className="system-health-checks" aria-labelledby="system-health-checks-title"><div className="ops-section-heading"><div><p className="eyebrow">Live checks</p><h3 id="system-health-checks-title">What is being checked right now</h3></div><span className="section-note">Click a card to expand details</span></div><div className="system-health-check-grid">{snapshot.checks.map((check) => {
+      const expanded = Boolean(expandedChecks[check.id]);
+      return <article className={`system-health-check-card system-health-card-${check.status}${expanded ? " expanded" : ""}`} key={check.id}>
+        <button className="system-health-check-toggle" type="button" aria-expanded={expanded} onClick={() => setExpandedChecks((current) => ({ ...current, [check.id]: !current[check.id] }))}>
+          <span className="system-health-card-heading"><strong>{check.label}</strong><SystemHealthStatusPill status={check.status} /></span>
+          <span className="system-health-check-summary">{check.summary}</span>
+          <span className="system-health-check-expand">{expanded ? "Hide details" : "Expand details"}<span aria-hidden="true">{expanded ? " ↑" : " ↓"}</span></span>
+        </button>
+        {expanded && <div className="system-health-check-details">{check.details.length ? <ul>{check.details.map((detail) => <li key={detail}>{detail}</li>)}</ul> : null}<footer><span>{check.source}</span>{check.latency_ms != null && <span>{check.latency_ms.toFixed(0)} ms</span>}</footer></div>}
+      </article>;
+    })}</div></section>
   </section>;
 }
 
