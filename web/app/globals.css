@@ -998,7 +998,8 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 }
 
 /* Compact live status view: the monitor should answer “is it running?” first. */
-.monitor-header { align-items: flex-start; background: linear-gradient(135deg, rgba(15, 29, 49, 0.94), rgba(15, 23, 39, 0.76)); border-bottom: 1px solid var(--border); display: flex; gap: 20px; justify-content: space-between; padding: 11px 28px 10px; }
+.monitor-header { align-items: flex-start; background: linear-gradient(135deg, rgba(15, 29, 49, 0.94), rgba(15, 23, 39, 0.76)); border-bottom: 1px solid var(--border); display: flex; gap: 20px; justify-content: space-between; padding: 8px 28px 7px; }
+.monitor-header .eyebrow { margin-bottom: 0; }
 .monitor-header h2 { font-size: clamp(21px, 2.5vw, 30px); letter-spacing: -0.04em; margin: 7px 0 7px; }
 .monitor-header p:not(.eyebrow) { color: var(--muted); font-size: 12px; line-height: 1.45; margin: 0; }
 .monitor-header-status { align-items: flex-end; display: flex; flex: 0 0 auto; flex-direction: column; gap: 4px; padding-top: 0; }

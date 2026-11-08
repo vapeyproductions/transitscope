@@ -173,17 +173,6 @@ function reasonLabel(value: string | null | undefined): string {
   return value === "mast_history_completed" ? "MAST history completed" : humanize(value);
 }
 
-function statusLabel(tone: PanelTone): string {
-  if (tone === "healthy") return "Running normally";
-  if (tone === "paused") return "Paused";
-  if (tone === "critical") return "Worker not responding";
-  return "Needs attention";
-}
-
-function StatusPill({ tone }: { tone: PanelTone }) {
-  return <span className={`monitor-status-pill monitor-status-${tone}`}><span className="status-dot" />{statusLabel(tone)}</span>;
-}
-
 function alertStatusLabel(status: SystemHealthAlertStatus): string {
   if (status === "healthy") return "Healthy";
   if (status === "paused") return "Paused";
@@ -439,7 +428,7 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
       <div>
         <p className="eyebrow accent">Live pipeline status</p>
       </div>
-      <div className="monitor-header-status"><StatusPill tone={view.tone} /><small>{loading ? "Refreshing now…" : "Auto-refreshes every 15 seconds"}</small></div>
+      <div className="monitor-header-status"><small>{loading ? "Refreshing now…" : "Auto-refreshes every 15 seconds"}</small></div>
     </header>
 
     <div className="monitor-meta">
