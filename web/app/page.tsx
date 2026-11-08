@@ -118,6 +118,7 @@ type ReplayMeta = {
   available_sequences: number[];
   first_occurred_at: string | null;
   last_occurred_at: string | null;
+  read_state?: "publication_busy";
 };
 
 type ReplayState = {
@@ -2176,7 +2177,15 @@ export default function HomePage() {
   const loadReplaySnapshot = useCallback(async (view: RankingView, cursor: number, page = rankingPage) => {
     updateReplay(view, { cursor, loading: true, error: null });
     try {
-      const snapshot = await fetchJson<RankingResponse>(`/api/replay/${view}/snapshot?sequence=${cursor}&limit=100&page=${page}`);
+      let snapshot: RankingResponse | null = null;
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        snapshot = await fetchJson<RankingResponse>(`/api/replay/${view}/snapshot?sequence=${cursor}&limit=100&page=${page}`);
+        if (snapshot.read_state !== "publication_busy" || attempt === 5) break;
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 900));
+      }
+      if (!snapshot || snapshot.read_state === "publication_busy") {
+        throw new Error("Saved replay is temporarily unavailable while the worker publishes a snapshot.");
+      }
       updateReplay(view, { snapshot, loading: false });
     } catch (cause) {
       updateReplay(view, { loading: false, error: cause instanceof Error ? cause.message : "Replay snapshot unavailable." });
@@ -2187,7 +2196,15 @@ export default function HomePage() {
     closeCandidate();
     updateReplay(view, { active: true, playing: false, cursor: 0, snapshot: null, loading: true, error: null });
     try {
-      const meta = await fetchJson<ReplayMeta>(`/api/replay/${view}/meta`);
+      let meta: ReplayMeta | null = null;
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        meta = await fetchJson<ReplayMeta>(`/api/replay/${view}/meta`);
+        if (meta.read_state !== "publication_busy" || attempt === 5) break;
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 900));
+      }
+      if (!meta || meta.read_state === "publication_busy") {
+        throw new Error("Saved replay is temporarily unavailable while the worker publishes a snapshot.");
+      }
       updateReplay(view, { meta, maxSequence: meta.last_sequence });
       await loadReplaySnapshot(view, 0);
     } catch (cause) {

@@ -925,7 +925,7 @@ class ReadOnlyStore:
 
         if view not in RANKING_VIEWS:
             raise ValueError(f"unsupported ranking view: {view}")
-        connection = self.connect()
+        connection = self.connect(timeout_seconds=PUBLISHED_READ_TIMEOUT_SECONDS)
         empty = {
             "view": view,
             "data_version": None,
@@ -938,6 +938,8 @@ class ReadOnlyStore:
             "last_occurred_at": None,
         }
         if connection is None:
+            if self.publication_busy:
+                return {**empty, "read_state": "publication_busy"}
             return empty
         try:
             rows = connection.execute(
@@ -970,7 +972,6 @@ class ReadOnlyStore:
 
         if view not in RANKING_VIEWS:
             raise ValueError(f"unsupported ranking view: {view}")
-        connection = self.connect()
         empty = {
             "view": view,
             "data_version": None,
@@ -987,9 +988,12 @@ class ReadOnlyStore:
             "rows": [],
             "removed": [],
         }
-        if connection is None or sequence <= 0:
-            if connection is not None:
-                connection.close()
+        if sequence <= 0:
+            return empty
+        connection = self.connect(timeout_seconds=PUBLISHED_READ_TIMEOUT_SECONDS)
+        if connection is None:
+            if self.publication_busy:
+                return {**empty, "read_state": "publication_busy"}
             return empty
         try:
             snapshot = connection.execute(
@@ -1063,7 +1067,7 @@ class ReadOnlyStore:
 
         if view not in RANKING_VIEWS:
             raise ValueError(f"unsupported ranking view: {view}")
-        connection = self.connect()
+        connection = self.connect(timeout_seconds=PUBLISHED_READ_TIMEOUT_SECONDS)
         if connection is None or end_sequence < start_sequence:
             if connection is not None:
                 connection.close()
