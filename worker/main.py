@@ -312,6 +312,15 @@ def _record_live_cycle_event(
         return
 
     reason = str(details.get("reason") or "")
+    if stage_name == "stage1" and state == "processing_stage1" and reason == "target_completed":
+        # Stage 1 reports one completion callback per target. Count this live
+        # signal immediately; the later batch-published callback is a durable
+        # boundary, not a second job.
+        stage["jobs"] = int(stage.get("jobs") or 0) + 1
+        stage["assessed"] = int(stage.get("assessed") or 0) + 1
+        live_metrics["updated_at"] = utc_now()
+        return
+
     if state == "stage1_batch_published":
         stage["jobs"] = int(stage.get("jobs") or 0) + int(details.get("selected_count") or 0)
         stage["assessed"] = int(stage.get("assessed") or 0) + int(details.get("evaluated_count") or 0)
