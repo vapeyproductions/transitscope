@@ -39,6 +39,11 @@ type LiveStatusResponse = {
   read_state?: string | null;
   checked_at?: string | null;
   worker?: WorkerStatus | null;
+  stage_summary?: Record<string, {
+    retained_candidates?: number | null;
+    status_counts?: Record<string, number>;
+    last_activity_at?: string | null;
+  }> | null;
 };
 
 type StageTelemetry = {
@@ -46,6 +51,8 @@ type StageTelemetry = {
   status: "healthy" | "warning" | "critical" | "unknown" | "paused";
   summary?: string;
   available?: boolean;
+  source?: "health" | "status";
+  status_counts?: Record<string, number>;
   retained_candidates?: number | null;
   priority_candidates?: number | null;
   jobs_in_latest_queue?: number | null;
@@ -168,6 +175,7 @@ function stageTelemetryTone(status: StageTelemetry["status"]): PanelTone {
 }
 
 function stageTelemetryLabel(stage: StageTelemetry): string {
+  if (stage.source === "status") return "Status projection";
   if (stage.status === "paused") return "Paused";
   if (stage.status === "critical") return "Blocked";
   if (stage.status === "warning") return "Needs attention";
@@ -197,6 +205,17 @@ function stageNextAction(stage: StageTelemetry, activeStage: string | null): str
     : "Reassess the highest-ranked Needs More Data, then call Stage 2 when a slot opens.";
 }
 
+function stageStatusSummary(stage: StageTelemetry): string | null {
+  const counts = stage.status_counts;
+  if (!counts) return null;
+  const preferredOrder = ["Prime Candidate", "Promising", "Needs More Data", "Needs More Information", "Inconclusive"];
+  const ordered = [
+    ...preferredOrder.filter((status) => counts[status] != null),
+    ...Object.keys(counts).filter((status) => !preferredOrder.includes(status)).sort(),
+  ];
+  return ordered.length ? ordered.map((status) => `${status} ${formatMetric(counts[status])}`).join(" · ") : null;
+}
+
 function StageTelemetryPanel({ stages, checkedAt, workerState, workerLastProgress }: { stages: StageTelemetry[]; checkedAt: string; workerState?: string | null; workerLastProgress?: string | null }) {
   const activeStage = workerState?.match(/stage[123]/i)?.[0].toLowerCase() ?? null;
   return <section className="system-health-pipeline system-stage-lanes" aria-labelledby="monitor-stage-lanes-title">
@@ -206,9 +225,11 @@ function StageTelemetryPanel({ stages, checkedAt, workerState, workerLastProgres
         const tone = stageTelemetryTone(stage.status);
         const lastActivity = stage.last_activity_at ?? stage.last_evaluated_at ?? (activeStage === stage.stage ? workerLastProgress : null);
         const available = stage.available !== false;
+        const statusSummary = stageStatusSummary(stage);
         return <article className={`system-stage-lane system-health-card-${tone}`} key={stage.stage}>
           <div className="system-stage-lane-heading"><div><strong>{stageName(stage.stage)}</strong><span>{available && stage.retained_candidates != null ? `${formatMetric(stage.retained_candidates)} candidates` : "Snapshot pending"}</span></div><span className={`monitor-status-pill monitor-status-${tone}`}><span className="status-dot" />{stageTelemetryLabel(stage)}</span></div>
           <div className="system-stage-lane-metrics"><span><strong>{formatMetric(stage.jobs_in_latest_queue)}</strong><small>jobs latest cycle</small></span><span><strong>{formatMetric(stage.evaluated_in_window)}</strong><small>assessed in window</small></span><span><strong>{formatMetric(stage.handoffs_in_window)}</strong><small>handoffs</small></span></div>
+          {statusSummary && <div className="system-stage-lane-statuses"><span>Ranked status mix</span><strong>{statusSummary}</strong></div>}
           <div className="system-stage-lane-activity"><span>Last stage activity</span><strong>{lastActivity ? formatDate(lastActivity) : "No completed assessment in this snapshot"}</strong></div>
           <div className="system-stage-lane-next"><span>Next action</span><strong>{stageNextAction(stage, activeStage)}</strong></div>
         </article>;
@@ -245,10 +266,37 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
   const loadStages = useCallback(async () => {
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 8_000);
+    const stageNames = ["stage1", "stage2", "stage3"] as const;
     try {
-      const nextSnapshot = await fetchJson<StageHealthResponse>("/api/monitoring/system-health", { signal: controller.signal });
-      setStageSnapshot(nextSnapshot);
-      setStageError(null);
+      const [healthResult, statusResult] = await Promise.all([
+        fetchJson<StageHealthResponse>("/api/monitoring/system-health", { signal: controller.signal }).catch(() => null),
+        fetchJson<LiveStatusResponse>("/api/status", { signal: controller.signal }).catch(() => null),
+      ]);
+      const healthStages = healthResult?.pipeline?.stages ?? [];
+      const healthByStage = new Map(healthStages.map((stage) => [stage.stage, stage]));
+      const stages = stageNames.map((stageName) => {
+        const healthStage = healthByStage.get(stageName);
+        const statusSummary = statusResult?.stage_summary?.[stageName];
+        const statusAvailable = statusSummary?.retained_candidates != null;
+        const source = healthStage?.available === false && statusAvailable ? "status" : healthStage ? "health" : statusAvailable ? "status" : "health";
+        const available = healthStage?.available === true || statusAvailable;
+        return {
+          ...(healthStage ?? { stage: stageName, status: "unknown" as const }),
+          source,
+          status: healthStage?.status === "unknown" && statusAvailable ? "healthy" as const : healthStage?.status ?? (statusAvailable ? "healthy" as const : "unknown" as const),
+          available,
+          retained_candidates: healthStage?.retained_candidates ?? statusSummary?.retained_candidates ?? null,
+          status_counts: healthStage?.status_counts ?? statusSummary?.status_counts,
+          last_activity_at: healthStage?.last_activity_at ?? healthStage?.last_evaluated_at ?? statusSummary?.last_activity_at ?? null,
+          summary: healthStage?.available === false && statusAvailable ? "Published status projection." : healthStage?.summary ?? (statusAvailable ? "Published status projection." : "No stage snapshot is available yet."),
+        } satisfies StageTelemetry;
+      });
+      if (healthResult || statusResult || stages.some((stage) => stage.available)) {
+        setStageSnapshot({ checked_at: healthResult?.checked_at ?? new Date().toISOString(), pipeline: { stages } });
+        setStageError(null);
+      } else {
+        setStageError("Stage telemetry is unavailable.");
+      }
     } catch (cause) {
       setStageError(cause instanceof Error && cause.name === "AbortError" ? "Stage telemetry timed out." : cause instanceof Error ? cause.message : "Stage telemetry is unavailable.");
     } finally {

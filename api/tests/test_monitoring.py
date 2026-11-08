@@ -165,6 +165,8 @@ class MonitoringStoreTests(unittest.TestCase):
         self.assertEqual(response["processed_target_count"], 2)
         self.assertEqual(response["total_target_count"], 100000)
         self.assertNotEqual(response.get("read_state"), "worker_progress_ahead")
+        self.assertEqual(response["stage_summary"]["stage1"]["retained_candidates"], 1)
+        self.assertEqual(response["stage_summary"]["stage1"]["status_counts"]["Promising"], 1)
 
 
 if __name__ == "__main__":

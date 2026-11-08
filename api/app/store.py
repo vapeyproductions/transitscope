@@ -247,6 +247,7 @@ class ReadOnlyStore:
             "active_candidate_count": 0,
             "last_ingest_at": None,
             "processed_history": [],
+            "stage_summary": {},
             "worker": worker,
         }
         cache_key = str(self.database.resolve())
@@ -284,6 +285,50 @@ class ReadOnlyStore:
                     "SELECT COUNT(*) FROM candidates WHERE active = true"
                 ).fetchone()[0]
             )
+            # Keep a small stage projection in the fast status response. The
+            # full ranking endpoint can be slow while a publication is locked,
+            # but these grouped counts and timestamps are cheap and give the
+            # monitoring lanes durable information to display on every poll.
+            stage_summary: dict[str, dict[str, Any]] = {}
+            try:
+                stage_rows = connection.execute(
+                    """
+                    SELECT current_stage, status, COUNT(*)
+                    FROM candidates
+                    WHERE active = true
+                    GROUP BY current_stage, status
+                    """
+                ).fetchall()
+                activity_rows = connection.execute(
+                    """
+                    SELECT current_stage, COUNT(*), MAX(last_evaluated_at)
+                    FROM candidates
+                    WHERE active = true
+                    GROUP BY current_stage
+                    """
+                ).fetchall()
+                for stage, count, last_activity_at in activity_rows:
+                    stage_summary[str(stage)] = {
+                        "retained_candidates": int(count or 0),
+                        "status_counts": {},
+                        "last_activity_at": isoformat(last_activity_at),
+                    }
+                for stage, status, count in stage_rows:
+                    stage_key = str(stage)
+                    entry = stage_summary.setdefault(
+                        stage_key,
+                        {
+                            "retained_candidates": 0,
+                            "status_counts": {},
+                            "last_activity_at": None,
+                        },
+                    )
+                    entry["status_counts"][str(status or "Unknown")] = int(count or 0)
+            except Exception:
+                # Status must remain available even for a legacy projection
+                # that does not yet expose all candidate columns.
+                stage_summary = {}
+            response["stage_summary"] = stage_summary
             ingest = connection.execute(
                 """
                 SELECT finished_at
