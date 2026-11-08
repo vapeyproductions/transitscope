@@ -628,9 +628,6 @@ def _monitoring_system_health(worker: dict) -> dict:
                 else f"Live cycle telemetry · {jobs:,} jobs in the latest queue; retained counts come from the published status projection."
             )
             details = [
-                f"Promising: {int(counts.get('Promising', 0) or 0):,}",
-                f"Needs More Data: {needs_more_data:,}",
-                f"Inconclusive: {int(counts.get('Inconclusive', 0) or 0):,}",
                 f"Last stage activity: {stage_activity_at or 'no completed assessment in this snapshot'}",
             ]
         else:
