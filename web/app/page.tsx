@@ -64,7 +64,7 @@ type RankingResponse = {
   rows: RankingRow[];
   removed?: ReplayRemoval[];
   served_from_cache?: boolean;
-  read_state?: "publication_busy";
+  read_state?: "publication_busy" | "worker_telemetry";
 };
 
 const CLIENT_RANKING_CACHE_PREFIX = "transitscope:ranking:";
@@ -118,7 +118,7 @@ type ReplayMeta = {
   available_sequences: number[];
   first_occurred_at: string | null;
   last_occurred_at: string | null;
-  read_state?: "publication_busy";
+  read_state?: "publication_busy" | "worker_telemetry";
 };
 
 type ReplayState = {

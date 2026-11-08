@@ -925,7 +925,6 @@ class ReadOnlyStore:
 
         if view not in RANKING_VIEWS:
             raise ValueError(f"unsupported ranking view: {view}")
-        connection = self.connect(timeout_seconds=PUBLISHED_READ_TIMEOUT_SECONDS)
         empty = {
             "view": view,
             "data_version": None,
@@ -937,6 +936,29 @@ class ReadOnlyStore:
             "first_occurred_at": None,
             "last_occurred_at": None,
         }
+        # Timeline metadata is only a navigation aid. When the worker is
+        # holding DuckDB for a publish, use its durable version telemetry as a
+        # lightweight upper bound instead of making the replay button wait on
+        # the database. Individual snapshots still resolve against the saved
+        # ranking history when the user moves the playhead.
+        try:
+            status_payload = json.loads((self.data_dir / "worker-status.json").read_text())
+            telemetry = status_payload.get("telemetry") if isinstance(status_payload, dict) else None
+            worker_version = int(telemetry.get("data_version") or 0) if isinstance(telemetry, dict) else 0
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            worker_version = 0
+        if worker_version > 0:
+            return {
+                **empty,
+                "data_version": worker_version,
+                "initial_sequence": 0,
+                "first_sequence": 1,
+                "last_sequence": worker_version,
+                "snapshot_count": worker_version,
+                "available_sequences": [],
+                "read_state": "worker_telemetry",
+            }
+        connection = self.connect(timeout_seconds=PUBLISHED_READ_TIMEOUT_SECONDS)
         if connection is None:
             if self.publication_busy:
                 return {**empty, "read_state": "publication_busy"}
@@ -1126,41 +1148,56 @@ class ReadOnlyStore:
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         projected_rows: list[dict[str, Any]] = []
+        window_candidate_ids = [str(candidate_id) for candidate_id in candidate_ids[offset : offset + limit]]
+        if not window_candidate_ids:
+            return projected_rows
+        placeholders = ", ".join("?" for _ in window_candidate_ids)
+        candidate_rows = connection.execute(
+            f"""
+            SELECT candidate_id, target_id, current_stage, status,
+                   overall_score, stage_score, rank_overall, rank_stage,
+                   activity, rank_delta, movement_kind, last_evaluated_at,
+                   signal_group_id, signal_resolution, alias_of_candidate_id,
+                   promotion_eligible
+            FROM candidates
+            WHERE candidate_id IN ({placeholders})
+            """,
+            window_candidate_ids,
+        ).fetchall()
+        candidates_by_id = {str(row[0]): row for row in candidate_rows}
+        event_rows = connection.execute(
+            f"""
+            SELECT candidate_id, stage, event_type, payload_json, occurred_at
+            FROM (
+                SELECT candidate_id, stage, event_type, payload_json, occurred_at,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY candidate_id
+                           ORDER BY sequence_number DESC, occurred_at DESC
+                       ) AS event_rank
+                FROM pipeline_events
+                WHERE candidate_id IN ({placeholders})
+                  AND sequence_number <= ?
+            ) AS ranked_events
+            WHERE event_rank = 1
+            """,
+            [*window_candidate_ids, sequence],
+        ).fetchall()
+        events_by_candidate = {str(row[0]): row for row in event_rows}
         signal_indices = self._signal_indices(
             connection,
-            [str(candidate_id) for candidate_id in candidate_ids],
+            window_candidate_ids,
         )
-        for index, raw_candidate_id in enumerate(candidate_ids[offset : offset + limit], start=offset + 1):
+        for index, raw_candidate_id in enumerate(window_candidate_ids, start=offset + 1):
             candidate_id = str(raw_candidate_id)
-            candidate = connection.execute(
-                """
-                SELECT candidate_id, target_id, current_stage, status,
-                       overall_score, stage_score, rank_overall, rank_stage,
-                       activity, rank_delta, movement_kind, last_evaluated_at,
-                       signal_group_id, signal_resolution, alias_of_candidate_id,
-                       promotion_eligible
-                FROM candidates
-                WHERE candidate_id = ?
-                """,
-                [candidate_id],
-            ).fetchone()
+            candidate = candidates_by_id.get(candidate_id)
             if not candidate:
                 continue
-            event = connection.execute(
-                """
-                SELECT stage, event_type, payload_json, occurred_at
-                FROM pipeline_events
-                WHERE candidate_id = ? AND sequence_number <= ?
-                ORDER BY sequence_number DESC, occurred_at DESC
-                LIMIT 1
-                """,
-                [candidate_id, sequence],
-            ).fetchone()
-            payload = json.loads(event[2]) if event else {}
+            event = events_by_candidate.get(candidate_id)
+            payload = json.loads(event[3]) if event else {}
             if not isinstance(payload, dict):
                 payload = {}
-            status = "Known Match" if event and event[1] == "known_match" else payload.get("classification", candidate[3])
-            stage = VIEW_STAGE.get(view) or (event[0] if event and event[0] else candidate[2])
+            status = "Known Match" if event and event[2] == "known_match" else payload.get("classification", candidate[3])
+            stage = VIEW_STAGE.get(view) or (event[1] if event and event[1] else candidate[2])
             event_features = payload.get("features") if isinstance(payload.get("features"), dict) else {}
             signal_index = event_features.get("signal_index")
             if not isinstance(signal_index, int) or isinstance(signal_index, bool):
@@ -1186,7 +1223,7 @@ class ReadOnlyStore:
                     "activity": payload.get("activity", candidate[8]),
                     "rank_delta": int(candidate[9] or 0),
                     "movement": candidate[10] or "unchanged",
-                    "last_evaluated_at": isoformat(event[3] if event else candidate[11]),
+                    "last_evaluated_at": isoformat(event[4] if event else candidate[11]),
                     "signal_group_id": candidate[12],
                     "signal_resolution": signal_resolution or "independent",
                     "alias_of_candidate_id": alias_of_candidate_id,
