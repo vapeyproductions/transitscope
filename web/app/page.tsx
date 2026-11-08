@@ -2179,7 +2179,7 @@ export default function HomePage() {
     try {
       let snapshot: RankingResponse | null = null;
       for (let attempt = 0; attempt < 6; attempt += 1) {
-        snapshot = await fetchJson<RankingResponse>(`/api/replay/${view}/snapshot?sequence=${cursor}&limit=100&page=${page}`);
+        snapshot = await fetchCandidateJson<RankingResponse>(`/api/replay/${view}/snapshot?sequence=${cursor}&limit=100&page=${page}`);
         if (snapshot.read_state !== "publication_busy" || attempt === 5) break;
         await new Promise<void>((resolve) => window.setTimeout(resolve, 900));
       }
@@ -2194,23 +2194,36 @@ export default function HomePage() {
 
   const startReplay = useCallback(async (view: RankingView) => {
     closeCandidate();
+    const fallbackSequence = ranking?.sequence_number ?? ranking?.data_version ?? 0;
+    const initialSnapshot: RankingResponse = {
+      view,
+      data_version: ranking?.data_version ?? null,
+      sequence_number: 0,
+      occurred_at: null,
+      processed_target_count: 0,
+      total_target_count: ranking?.total_target_count ?? 100000,
+      page: rankingPage,
+      page_size: 100,
+      display_cap: 500,
+      total_ranked_count: 0,
+      total_star_count: 0,
+      page_count: 0,
+      rows: [],
+      removed: [],
+    };
     updateReplay(view, {
       active: true,
       playing: false,
       cursor: 0,
-      maxSequence: ranking?.data_version ?? 0,
-      snapshot: null,
-      loading: true,
+      maxSequence: fallbackSequence,
+      snapshot: initialSnapshot,
+      loading: false,
       error: null,
     });
     try {
-      // Sequence zero is a valid saved replay state and can be returned
-      // without opening DuckDB. Render it first so metadata work can never
-      // leave the user staring at a generic loading state.
-      await loadReplaySnapshot(view, 0);
       let meta: ReplayMeta | null = null;
       for (let attempt = 0; attempt < 6; attempt += 1) {
-        meta = await fetchJson<ReplayMeta>(`/api/replay/${view}/meta`);
+        meta = await fetchCandidateJson<ReplayMeta>(`/api/replay/${view}/meta`);
         if (meta.read_state !== "publication_busy" || attempt === 5) break;
         await new Promise<void>((resolve) => window.setTimeout(resolve, 900));
       }
@@ -2219,9 +2232,13 @@ export default function HomePage() {
       }
       updateReplay(view, { meta, maxSequence: meta.last_sequence });
     } catch (cause) {
-      updateReplay(view, { loading: false, error: cause instanceof Error ? cause.message : "Replay metadata unavailable." });
+      // The saved opening state is still useful if the timeline metadata is
+      // temporarily unavailable. Keep the replay interactive using the
+      // current published sequence fallback rather than replacing it with an
+      // error or an empty live-filter result.
+      updateReplay(view, { error: cause instanceof Error ? cause.message : "Replay metadata unavailable." });
     }
-  }, [closeCandidate, loadReplaySnapshot, ranking?.data_version, updateReplay]);
+  }, [closeCandidate, ranking, rankingPage, updateReplay]);
 
   const exitReplay = useCallback((view: RankingView) => {
     updateReplay(view, { active: false, playing: false });
