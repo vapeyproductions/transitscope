@@ -1015,7 +1015,7 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .monitor-diagnosis > div { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
 .monitor-diagnosis > div > strong { font-size: 13px; }
 .monitor-diagnosis > p { color: var(--muted); font-size: 11px; line-height: 1.45; margin: 8px 0 0; }
-.monitor-top-alerts { align-items: stretch; display: grid; gap: 8px; grid-template-columns: minmax(230px, 0.8fr) minmax(0, 1.8fr); margin: 4px 22px 16px; }
+.monitor-top-alerts { align-items: stretch; display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); margin: 4px 22px 16px; }
 .monitor-top-alerts .monitor-diagnosis { margin: 0; }
 .monitor-top-alert-list { min-width: 0; }
 .monitor-top-alert-list .system-health-alert { min-height: 100%; }
