@@ -395,19 +395,6 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
   const publicCount = snapshot.processed_target_count ?? null;
   const totalCount = snapshot.total_target_count ?? null;
   const workerCount = worker.last_stage1_published_count ?? null;
-  const countDifference = publicCount != null && workerCount != null ? workerCount - publicCount : null;
-  const publicationState = view.publicationBusy && (countDifference == null || countDifference !== 0)
-    ? "May be behind worker"
-    : countDifference === 0
-      ? "Counts aligned"
-      : "Worker/public counts differ";
-  const targetUpdateDetail = countDifference == null
-    ? "Target publication difference is not available."
-    : countDifference > 0
-      ? `${formatMetric(countDifference)} target-level updates are ahead of the public projection.`
-      : countDifference < 0
-        ? `${formatMetric(Math.abs(countDifference))} target-level count difference is being reconciled.`
-        : "No target-level updates are waiting.";
   const progress = worker.progress;
   const currentStage = stageLabel(worker.state ?? progress?.state);
   // The diagnosis above already explains a publication lock. Keep the
@@ -496,12 +483,9 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
     </section>
 
     <section className="monitor-publication-note" aria-labelledby="monitor-publication-title">
-      <div className="monitor-publication-heading"><strong id="monitor-publication-title">Publication accounting</strong><span>{publicationState}</span></div>
+      <div className="monitor-publication-heading"><strong id="monitor-publication-title">Publication accounting</strong></div>
       <div className="monitor-publication-grid">
-        <div><span>Target entries</span><strong>Worker {formatMetric(workerCount)} · Public {formatMetric(publicCount)}</strong><small>{targetUpdateDetail}</small></div>
-        <div><span>Candidate records</span><strong>{formatMetric(snapshot.active_candidate_count)}</strong><small>Active signal records; one star can produce multiple candidates.</small></div>
-        <div><span>Ranked stars</span><strong>{formatMetric(snapshot.active_star_count)}</strong><small>Distinct stars represented by the active candidate records.</small></div>
-        <div><span>Ranking snapshot</span><strong>{publicationState}</strong><small>Data version {snapshot.data_version ?? "not recorded"} · {view.publicationBusy ? "ranking data may still be on the previous committed snapshot" : "ranking data is current for this projection"}.</small></div>
+        <div><span>Worker vs ranked stars</span><strong>Worker {formatMetric(workerCount)} · Ranked stars {formatMetric(snapshot.active_star_count)}</strong><small>Processed worker targets compared with distinct stars represented by the ranked candidates.</small></div>
       </div>
     </section>
 
