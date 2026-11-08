@@ -246,6 +246,7 @@ class ReadOnlyStore:
             "processed_target_count": 0,
             "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE))),
             "active_candidate_count": 0,
+            "active_star_count": 0,
             "last_ingest_at": None,
             "last_published_at": None,
             "processed_history": [],
@@ -286,6 +287,8 @@ class ReadOnlyStore:
                 fallback["sequence_number"] = telemetry.get("data_version")
             if telemetry.get("active_candidate_count") is not None:
                 fallback["active_candidate_count"] = int(telemetry.get("active_candidate_count") or 0)
+            if telemetry.get("active_star_count") is not None:
+                fallback["active_star_count"] = int(telemetry.get("active_star_count") or 0)
             fallback["last_ingest_at"] = worker.get("last_ingest_at") or fallback.get("last_ingest_at")
             fallback["worker"] = worker
             fallback["served_from_cache"] = True
@@ -322,6 +325,11 @@ class ReadOnlyStore:
             response["active_candidate_count"] = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM candidates WHERE active = true"
+                ).fetchone()[0]
+            )
+            response["active_star_count"] = int(
+                connection.execute(
+                    "SELECT COUNT(DISTINCT target_id) FROM candidates WHERE active = true"
                 ).fetchone()[0]
             )
             # Keep a small stage projection in the fast status response. The
@@ -439,6 +447,7 @@ class ReadOnlyStore:
             "processed_target_count": 0,
             "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE))),
             "active_candidate_count": 0,
+            "active_star_count": 0,
             "last_ingest_at": None,
             "last_published_at": None,
             "processed_history": [],
@@ -461,6 +470,8 @@ class ReadOnlyStore:
             response["sequence_number"] = telemetry.get("data_version")
         if telemetry.get("active_candidate_count") is not None:
             response["active_candidate_count"] = int(telemetry.get("active_candidate_count") or 0)
+        if telemetry.get("active_star_count") is not None:
+            response["active_star_count"] = int(telemetry.get("active_star_count") or 0)
         response["total_target_count"] = int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE)))
         response["last_ingest_at"] = worker.get("last_ingest_at") or response.get("last_ingest_at")
         response["last_published_at"] = (

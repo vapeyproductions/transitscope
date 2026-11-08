@@ -1251,19 +1251,35 @@ function IdentifiedPanel({ onOpenCandidate, refreshKey }: { onOpenCandidate: (ca
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-    void fetchJson<IdentifiedResponse>("/api/identified?limit=100")
-      .then((nextResponse) => {
-        if (!cancelled) setResponse(nextResponse);
-      })
-      .catch((cause) => {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : "Known-object records are unavailable.");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => { cancelled = true; };
+    let inFlight = false;
+    let hasLoaded = false;
+    const load = () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      if (!hasLoaded) setLoading(true);
+      setError(null);
+      void fetchJson<IdentifiedResponse>("/api/identified?limit=100")
+        .then((nextResponse) => {
+          if (!cancelled) setResponse(nextResponse);
+        })
+        .catch((cause) => {
+          if (!cancelled) setError(cause instanceof Error ? cause.message : "Known-object records are unavailable.");
+        })
+        .finally(() => {
+          inFlight = false;
+          hasLoaded = true;
+          if (!cancelled) setLoading(false);
+        });
+    };
+
+    load();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") load();
+    }, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [refreshKey]);
 
   const rows = response?.rows ?? [];

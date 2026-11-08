@@ -35,6 +35,7 @@ type LiveStatusResponse = {
   processed_target_count?: number | null;
   total_target_count?: number | null;
   active_candidate_count?: number | null;
+  active_star_count?: number | null;
   served_from_cache?: boolean;
   read_state?: string | null;
   checked_at?: string | null;
@@ -365,6 +366,18 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
   const totalCount = snapshot.total_target_count ?? null;
   const workerCount = worker.last_stage1_published_count ?? null;
   const countDifference = publicCount != null && workerCount != null ? workerCount - publicCount : null;
+  const publicationState = view.publicationBusy && (countDifference == null || countDifference !== 0)
+    ? "May be behind worker"
+    : countDifference === 0
+      ? "Counts aligned"
+      : "Worker/public counts differ";
+  const targetUpdateDetail = countDifference == null
+    ? "Target publication difference is not available."
+    : countDifference > 0
+      ? `${formatMetric(countDifference)} target-level updates are ahead of the public projection.`
+      : countDifference < 0
+        ? `${formatMetric(Math.abs(countDifference))} target-level count difference is being reconciled.`
+        : "No target-level updates are waiting.";
   const progress = worker.progress;
   const currentStage = stageLabel(worker.state ?? progress?.state);
 
@@ -413,7 +426,16 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
       </div>
     </section>
 
-    {view.publicationBusy && countDifference != null && <div className="monitor-publication-note"><span>Status projection: {formatMetric(publicCount)} · worker publish counter: {formatMetric(workerCount)} · {formatMetric(Math.abs(countDifference))} {countDifference >= 0 ? "results are waiting to be published" : "result difference is being reconciled"}.</span></div>}
+    <section className="monitor-publication-note" aria-labelledby="monitor-publication-title">
+      <div className="monitor-publication-heading"><strong id="monitor-publication-title">Publication accounting</strong><span>{publicationState}</span></div>
+      <div className="monitor-publication-grid">
+        <div><span>Target entries</span><strong>Worker {formatMetric(workerCount)} · Public {formatMetric(publicCount)}</strong><small>{targetUpdateDetail}</small></div>
+        <div><span>Candidate records</span><strong>{formatMetric(snapshot.active_candidate_count)}</strong><small>Active signal records; one star can produce multiple candidates.</small></div>
+        <div><span>Ranked stars</span><strong>{formatMetric(snapshot.active_star_count)}</strong><small>Distinct stars represented by the active candidate records.</small></div>
+        <div><span>Ranking snapshot</span><strong>{publicationState}</strong><small>Data version {snapshot.data_version ?? "not recorded"} · {view.publicationBusy ? "ranking data may still be on the previous committed snapshot" : "ranking data is current for this projection"}.</small></div>
+      </div>
+      <p>The target-entry difference is not a candidate backlog. Candidate records and ranked stars are separate counts, because one processed star may produce zero, one, or several candidate signals.</p>
+    </section>
 
     <footer className="monitor-footer"><span>Source: <strong>/api/status</strong> · worker heartbeat, progress telemetry, and published projection</span><span>{lastSuccessfulLoad ? `Snapshot received ${formatAge((view.now - lastSuccessfulLoad) / 1000)}` : "Snapshot received just now"}</span></footer>
   </section>;

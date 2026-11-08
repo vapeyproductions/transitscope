@@ -1031,8 +1031,16 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .monitor-job-grid > div { background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(146, 169, 205, 0.1); border-radius: 8px; display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 10px 11px; }
 .monitor-job-grid span, .monitor-job-grid small { color: var(--faint); font-size: 9px; }
 .monitor-job-grid strong { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.monitor-publication-note { background: rgba(118, 228, 237, 0.06); border: 1px solid rgba(118, 228, 237, 0.2); border-radius: 8px; color: var(--muted); display: flex; flex-wrap: wrap; font-size: 10px; gap: 5px 10px; margin: 0 22px 18px; padding: 10px 12px; }
-.monitor-publication-note strong { color: var(--cyan); }
+.monitor-publication-note { background: rgba(118, 228, 237, 0.06); border: 1px solid rgba(118, 228, 237, 0.2); border-radius: 8px; color: var(--muted); font-size: 10px; margin: 0 22px 18px; padding: 12px; }
+.monitor-publication-heading { align-items: baseline; display: flex; gap: 10px; justify-content: space-between; }
+.monitor-publication-heading strong { color: var(--cyan); }
+.monitor-publication-heading span { color: var(--faint); font-size: 9px; }
+.monitor-publication-grid { display: grid; gap: 8px; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 10px; }
+.monitor-publication-grid > div { background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(146, 169, 205, 0.12); border-radius: 6px; display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 8px; }
+.monitor-publication-grid span { color: var(--faint); font-size: 8px; text-transform: uppercase; letter-spacing: 0.06em; }
+.monitor-publication-grid strong { color: var(--text); font-size: 12px; line-height: 1.25; }
+.monitor-publication-grid small { color: var(--faint); font-size: 8px; line-height: 1.35; }
+.monitor-publication-note p { color: var(--faint); font-size: 9px; line-height: 1.4; margin: 10px 0 0; }
 .monitor-footer { border-top: 1px solid var(--border); color: var(--faint); display: flex; font-size: 9px; gap: 12px; justify-content: space-between; padding: 13px 22px; }
 .monitor-footer strong { color: var(--text); font-weight: 500; }
 .monitor-loading, .monitor-error { align-items: center; display: flex; gap: 10px; min-height: 180px; padding: 24px 28px; }
@@ -1046,12 +1054,12 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 @media (max-width: 800px) {
   .monitor-header { flex-direction: column; }
   .monitor-header-status { align-items: flex-start; }
-  .monitor-metrics, .monitor-job-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .monitor-metrics, .monitor-job-grid, .monitor-publication-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 480px) {
   .monitor-header, .monitor-meta { padding-left: 17px; padding-right: 17px; }
-  .monitor-metrics, .monitor-job-grid { grid-template-columns: 1fr; }
+  .monitor-metrics, .monitor-job-grid, .monitor-publication-grid { grid-template-columns: 1fr; }
   .monitor-diagnosis, .monitor-current-job, .monitor-publication-note { margin-left: 17px; margin-right: 17px; }
   .monitor-metrics { padding-left: 17px; padding-right: 17px; }
   .monitor-footer { align-items: flex-start; flex-direction: column; }

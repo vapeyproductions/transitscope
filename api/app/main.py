@@ -255,6 +255,7 @@ def _worker_compact_status(worker: dict) -> dict:
         "processed_target_count": processed_count,
         "total_target_count": configured_count,
         "active_candidate_count": int(telemetry.get("active_candidate_count") or 0),
+        "active_star_count": int(telemetry.get("active_star_count") or 0),
         "last_ingest_at": worker.get("last_ingest_at") or telemetry.get("last_ingest_at"),
         "processed_history": [],
         "read_state": "worker_snapshot",

@@ -921,6 +921,7 @@ def main() -> None:
                     "complete_projection": bool(catalog.get("catalog_complete_projection")) if isinstance(catalog, dict) else False,
                     "stages": catalog.get("stages", []) if isinstance(catalog, dict) else [],
                 }
+                active_candidate_rows = active_candidates(store)
                 write_status(
                     data_dir,
                     "idle",
@@ -931,7 +932,12 @@ def main() -> None:
                         "last_published_at": cycle_finished_at.isoformat(),
                         "telemetry": {
                             "processed_target_count": int(processed_target_count(store)),
-                            "active_candidate_count": len(active_candidates(store)),
+                            "active_candidate_count": len(active_candidate_rows),
+                            "active_star_count": len({
+                                str(candidate.get("target_id"))
+                                for candidate in active_candidate_rows
+                                if candidate.get("target_id") is not None
+                            }),
                             "data_version": int(store.latest_published_version() or 0),
                         },
                         "catalog_health": catalog_health,
