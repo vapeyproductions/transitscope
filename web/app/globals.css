@@ -53,13 +53,13 @@ button:focus-visible {
 .topbar, .stage-heading, .panel-header, .footer-note { align-items: center; display: flex; justify-content: space-between; }
 .topbar { border-bottom: 1px solid var(--border); gap: 20px; padding-bottom: 24px; }
 .brand-lockup { align-items: center; display: flex; gap: 14px; }
-.brand-mark { align-items: center; background: linear-gradient(135deg, var(--cyan), var(--blue)); border: 0; border-radius: 12px; box-shadow: 0 0 28px rgba(118, 228, 237, 0.22); color: #07101c; cursor: pointer; display: flex; font-size: 24px; height: 44px; justify-content: center; padding: 0; transition: 160ms ease; width: 44px; }
-.brand-mark:hover { box-shadow: 0 0 34px rgba(118, 228, 237, 0.38); transform: translateY(-1px); }
-.brand-title { align-items: center; display: flex; gap: 11px; }
+.brand-mark { align-items: center; background: linear-gradient(135deg, var(--cyan), var(--blue)); border-radius: 12px; box-shadow: 0 0 28px rgba(118, 228, 237, 0.22); color: #07101c; display: flex; flex: 0 0 44px; font-size: 24px; height: 44px; justify-content: center; width: 44px; }
+.brand-title { align-items: flex-start; display: flex; flex-direction: column; gap: 8px; }
 .brand-title h1 { margin: 0; }
-.about-trigger { align-items: center; background: transparent; border: 1px solid var(--border-bright); border-radius: 999px; color: var(--cyan); cursor: pointer; display: inline-flex; font-size: 18px; height: 29px; justify-content: center; padding: 0; transition: 160ms ease; width: 29px; }
-.about-trigger:hover { background: rgba(118, 228, 237, 0.1); border-color: rgba(118, 228, 237, 0.5); transform: translateX(2px); }
-.about-trigger:focus-visible { outline-offset: 4px; }
+.topbar-story-links { display: flex; flex-wrap: wrap; gap: 6px; }
+.topbar-story-link { background: rgba(118, 228, 237, 0.07); border: 1px solid rgba(118, 228, 237, 0.24); border-radius: 999px; color: var(--cyan); font-size: 10px; font-weight: 700; line-height: 1.2; padding: 6px 9px; text-decoration: none; transition: 160ms ease; }
+.topbar-story-link:hover { background: rgba(118, 228, 237, 0.14); border-color: rgba(118, 228, 237, 0.5); color: var(--text); }
+.topbar-story-link:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
 .eyebrow { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: 0.16em; margin: 0 0 7px; text-transform: uppercase; }
 .eyebrow.accent { color: var(--cyan); }
 h1, h2, h3, h4, p { margin-top: 0; }
