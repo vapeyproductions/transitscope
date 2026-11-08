@@ -764,11 +764,10 @@ def health() -> dict:
 @app.get("/api/status")
 def status() -> dict:
     current_worker = worker_status()
-    # Numeric progress and data_version must come from the same committed
-    # projection as /api/sky and /api/rankings. The worker sidecar is still
-    # returned for heartbeat and active-lane telemetry, but its in-flight
-    # count must not replace the last published count while a cycle is running.
-    response = ReadOnlyStore().status(current_worker)
+    # Keep this public heartbeat endpoint strictly non-blocking. Detailed
+    # DuckDB projections are available to the authenticated monitoring routes;
+    # a database publication lock must never make the public status panel hang.
+    response = ReadOnlyStore().fast_status(current_worker)
     response["checked_at"] = utc_now()
     return response
 

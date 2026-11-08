@@ -405,6 +405,55 @@ class ReadOnlyStore:
         finally:
             connection.close()
 
+    def fast_status(self, worker: dict[str, Any]) -> dict[str, Any]:
+        """Return a non-blocking public status projection.
+
+        The public dashboard polls this endpoint frequently. It must never
+        wait for DuckDB, because the worker can hold the publication lock for
+        minutes while committing a cycle. Use the most recent durable status
+        cache when available and merge the worker's monotonic progress fields.
+        Detailed stage and model projections remain on the authenticated ops
+        endpoints.
+        """
+
+        cache_key = str(self.database.resolve())
+        cached = self._cached_response(_STATUS_RESPONSE_CACHE, "status", cache_key)
+        response = dict(cached or {
+            "service": "api",
+            "environment": os.getenv("APP_ENV", "unknown"),
+            "data_version": None,
+            "sequence_number": None,
+            "processed_target_count": 0,
+            "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE))),
+            "active_candidate_count": 0,
+            "last_ingest_at": None,
+            "processed_history": [],
+            "stage_summary": {},
+        })
+        telemetry = worker.get("telemetry") if isinstance(worker.get("telemetry"), dict) else {}
+        worker_counts: list[int] = []
+        for value in (telemetry.get("processed_target_count"), worker.get("last_stage1_published_count")):
+            try:
+                worker_counts.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        if worker_counts:
+            response["processed_target_count"] = max(
+                int(response.get("processed_target_count") or 0),
+                max(worker_counts),
+            )
+        if telemetry.get("data_version") is not None:
+            response["data_version"] = telemetry.get("data_version")
+            response["sequence_number"] = telemetry.get("data_version")
+        if telemetry.get("active_candidate_count") is not None:
+            response["active_candidate_count"] = int(telemetry.get("active_candidate_count") or 0)
+        response["total_target_count"] = int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE)))
+        response["last_ingest_at"] = worker.get("last_ingest_at") or response.get("last_ingest_at")
+        response["worker"] = worker
+        response["served_from_cache"] = cached is not None
+        response["read_state"] = "publication_busy" if cached is not None else "worker_snapshot"
+        return response
+
     def rankings(
         self,
         view: str,
