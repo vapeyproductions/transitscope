@@ -251,9 +251,46 @@ class ReadOnlyStore:
             "worker": worker,
         }
         cache_key = str(self.database.resolve())
+        # During a long live cycle, the worker is already publishing progress
+        # through worker-status.json while DuckDB may be held by the writer.
+        # Do not make the heartbeat/status endpoint wait for that database.
+        # Return the last durable response immediately and merge the worker's
+        # monotonic Stage 1 publish counter into it.
+        active_states = {
+            "starting_cycle",
+            "processing_stage1",
+            "processing_stage2",
+            "processing_stage3",
+            "matching_catalog",
+            "populating_manifest",
+        }
+        cached = self._cached_response(_STATUS_RESPONSE_CACHE, "status", cache_key)
+        if str(worker.get("state") or "") in active_states:
+            fallback = dict(cached or response)
+            worker_counts: list[int] = []
+            telemetry = worker.get("telemetry") if isinstance(worker.get("telemetry"), dict) else {}
+            for value in (telemetry.get("processed_target_count"), worker.get("last_stage1_published_count")):
+                try:
+                    worker_counts.append(int(value))
+                except (TypeError, ValueError):
+                    continue
+            if worker_counts:
+                fallback["processed_target_count"] = max(
+                    int(fallback.get("processed_target_count") or 0),
+                    max(worker_counts),
+                )
+            if telemetry.get("data_version") is not None:
+                fallback["data_version"] = telemetry.get("data_version")
+                fallback["sequence_number"] = telemetry.get("data_version")
+            if telemetry.get("active_candidate_count") is not None:
+                fallback["active_candidate_count"] = int(telemetry.get("active_candidate_count") or 0)
+            fallback["last_ingest_at"] = worker.get("last_ingest_at") or fallback.get("last_ingest_at")
+            fallback["worker"] = worker
+            fallback["served_from_cache"] = True
+            fallback["read_state"] = "publication_busy"
+            return fallback
         connection = self.connect(timeout_seconds=PUBLISHED_READ_TIMEOUT_SECONDS)
         if connection is None:
-            cached = self._cached_response(_STATUS_RESPONSE_CACHE, "status", cache_key)
             if cached is not None:
                 cached = dict(cached)
                 # Keep the cached projection internally consistent. The

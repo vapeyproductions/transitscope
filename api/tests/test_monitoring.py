@@ -151,7 +151,7 @@ class MonitoringStoreTests(unittest.TestCase):
         try:
             response = self.store.status(
                 {
-                    "state": "processing_stage1",
+                    "state": "idle",
                     "last_stage1_published_count": 20,
                 }
             )
@@ -167,6 +167,18 @@ class MonitoringStoreTests(unittest.TestCase):
         self.assertNotEqual(response.get("read_state"), "worker_progress_ahead")
         self.assertEqual(response["stage_summary"]["stage1"]["retained_candidates"], 1)
         self.assertEqual(response["stage_summary"]["stage1"]["status_counts"]["Promising"], 1)
+
+    def test_status_does_not_wait_for_duckdb_during_active_cycle(self) -> None:
+        response = self.store.status(
+            {
+                "state": "processing_stage2",
+                "last_stage1_published_count": 20,
+            }
+        )
+
+        self.assertEqual(response["processed_target_count"], 20)
+        self.assertEqual(response["read_state"], "publication_busy")
+        self.assertTrue(response["served_from_cache"])
 
 
 if __name__ == "__main__":
