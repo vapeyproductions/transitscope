@@ -463,6 +463,11 @@ class ReadOnlyStore:
             response["active_candidate_count"] = int(telemetry.get("active_candidate_count") or 0)
         response["total_target_count"] = int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE)))
         response["last_ingest_at"] = worker.get("last_ingest_at") or response.get("last_ingest_at")
+        response["last_published_at"] = (
+            worker.get("last_published_at")
+            or response.get("last_published_at")
+            or response.get("last_ingest_at")
+        )
         response["worker"] = worker
         response["served_from_cache"] = cached is not None
         response["read_state"] = "publication_busy" if cached is not None else "worker_snapshot"

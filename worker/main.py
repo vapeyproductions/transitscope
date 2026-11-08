@@ -92,6 +92,7 @@ def write_status(
             "last_stage1_publish_at",
             "last_stage1_published_count",
             "last_stage1_batch_id",
+            "last_published_at",
         ):
             if key in previous:
                 payload[key] = previous[key]
@@ -927,6 +928,7 @@ def main() -> None:
                         "last_cycle": result,
                         "last_cycle_metrics": cycle_metrics,
                         "last_cycle_finished_at": cycle_finished_at.isoformat(),
+                        "last_published_at": cycle_finished_at.isoformat(),
                         "telemetry": {
                             "processed_target_count": int(processed_target_count(store)),
                             "active_candidate_count": len(active_candidates(store)),
