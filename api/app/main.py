@@ -533,7 +533,6 @@ def _monitoring_system_health(worker: dict) -> dict:
             provider_summary = "MAST run history is not included in this bounded worker check."
             provider_details = [
                 f"Last ingest timestamp from the compact status snapshot: {last_ingest_at or 'not recorded'}",
-                "This is not evidence of an empty or failed MAST run; the detailed projection owns provider history.",
             ]
         elif last_ingest_at:
             provider_status = "unknown"
