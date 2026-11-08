@@ -220,7 +220,7 @@ function stageStatusSummary(stage: StageTelemetry): string | null {
 function StageTelemetryPanel({ stages, checkedAt, workerState, workerLastProgress }: { stages: StageTelemetry[]; checkedAt: string; workerState?: string | null; workerLastProgress?: string | null }) {
   const activeStage = workerState?.match(/stage[123]/i)?.[0].toLowerCase() ?? null;
   return <section className="system-health-pipeline system-stage-lanes" aria-labelledby="monitor-stage-lanes-title">
-    <div className="monitor-section-heading"><div><p className="eyebrow">Pipeline lanes</p><h3 id="monitor-stage-lanes-title">Stage activity</h3></div><span>Updated {formatDate(checkedAt)}</span></div>
+    <div className="monitor-section-heading"><div><p className="eyebrow">Pipeline lanes</p><h3 id="monitor-stage-lanes-title">What each stage is doing</h3></div><span>Updated {formatDate(checkedAt)}</span></div>
     <div className="system-stage-lane-grid">
       {stages.map((stage) => {
         const tone = stageTelemetryTone(stage.status);
@@ -384,7 +384,7 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
   return <section className="system-health-panel operations-panel" aria-labelledby="system-health-title">
     <header className="monitor-header">
       <div>
-        <p className="eyebrow accent">Live Pipeline Status</p>
+        <p className="eyebrow accent">Live pipeline status</p>
         <h2 id="system-health-title">What is happening right now</h2>
         <p>Worker state, published data, and the current bottleneck in one view.</p>
       </div>
@@ -414,10 +414,10 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
       <Metric label="Cycle running" value={formatDuration(worker.cycle_elapsed_seconds)} detail={`Last progress ${formatAge(view.progressAge)}`} tone={view.slowProgress ? "warning" : "default"} />
     </div>
 
-    {stageSnapshot?.pipeline?.stages?.length ? <StageTelemetryPanel stages={stageSnapshot.pipeline.stages} checkedAt={stageSnapshot.checked_at} workerState={worker.state} workerLastProgress={worker.last_progress_at} /> : <section className="system-health-pipeline system-stage-lanes" aria-labelledby="monitor-stage-lanes-title"><div className="monitor-section-heading"><div><p className="eyebrow">Pipeline lanes</p><h3 id="monitor-stage-lanes-title">Stage activity</h3></div><span>{stageError ?? "Reading stage telemetry…"}</span></div><div className="monitor-stage-empty">Stage activity is loading independently. The worker status above remains live while this detail refreshes.</div></section>}
+    {stageSnapshot?.pipeline?.stages?.length ? <StageTelemetryPanel stages={stageSnapshot.pipeline.stages} checkedAt={stageSnapshot.checked_at} workerState={worker.state} workerLastProgress={worker.last_progress_at} /> : <section className="system-health-pipeline system-stage-lanes" aria-labelledby="monitor-stage-lanes-title"><div className="monitor-section-heading"><div><p className="eyebrow">Pipeline lanes</p><h3 id="monitor-stage-lanes-title">What each stage is doing</h3></div><span>{stageError ?? "Reading stage telemetry…"}</span></div><div className="monitor-stage-empty">Stage activity is loading independently. The worker status above remains live while this detail refreshes.</div></section>}
 
     <section className="monitor-current-job" aria-labelledby="monitor-current-job-title">
-      <div className="monitor-section-heading"><div><p className="eyebrow">Current work</p><h3 id="monitor-current-job-title">Worker activity</h3></div><span>{currentStage}</span></div>
+      <div className="monitor-section-heading"><div><p className="eyebrow">Current work</p><h3 id="monitor-current-job-title">What the worker is doing</h3></div><span>{currentStage}</span></div>
       <div className="monitor-job-grid">
         <div><span>Target</span><strong>{progress?.target_id ?? "No target reported"}</strong></div>
         <div><span>Job</span><strong>{reasonLabel(progress?.reason ?? worker.last_progress_state)}</strong></div>
@@ -432,8 +432,9 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
         <div><span>Target entries</span><strong>Worker {formatMetric(workerCount)} · Public {formatMetric(publicCount)}</strong><small>{targetUpdateDetail}</small></div>
         <div><span>Candidate records</span><strong>{formatMetric(snapshot.active_candidate_count)}</strong><small>Active signal records; one star can produce multiple candidates.</small></div>
         <div><span>Ranked stars</span><strong>{formatMetric(snapshot.active_star_count)}</strong><small>Distinct stars represented by the active candidate records.</small></div>
-        <div><span>Ranking snapshot</span><strong>{publicationState}</strong><small>Data version {snapshot.data_version ?? "not recorded"}.</small></div>
+        <div><span>Ranking snapshot</span><strong>{publicationState}</strong><small>Data version {snapshot.data_version ?? "not recorded"} · {view.publicationBusy ? "ranking data may still be on the previous committed snapshot" : "ranking data is current for this projection"}.</small></div>
       </div>
+      <p>The target-entry difference is not a candidate backlog. Candidate records and ranked stars are separate counts, because one processed star may produce zero, one, or several candidate signals.</p>
     </section>
 
     <footer className="monitor-footer"><span>Source: <strong>/api/status</strong> · worker heartbeat, progress telemetry, and published projection</span><span>{lastSuccessfulLoad ? `Snapshot received ${formatAge((view.now - lastSuccessfulLoad) / 1000)}` : "Snapshot received just now"}</span></footer>
