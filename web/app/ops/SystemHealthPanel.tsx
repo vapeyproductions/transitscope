@@ -516,7 +516,6 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
         <div><span>Ranked stars</span><strong>{formatMetric(snapshot.active_star_count)}</strong><small>Distinct stars represented by the active candidate records.</small></div>
         <div><span>Ranking snapshot</span><strong>{publicationState}</strong><small>Data version {snapshot.data_version ?? "not recorded"} · {view.publicationBusy ? "ranking data may still be on the previous committed snapshot" : "ranking data is current for this projection"}.</small></div>
       </div>
-      <p>The target-entry difference is not a candidate backlog. Candidate records and ranked stars are separate counts, because one processed star may produce zero, one, or several candidate signals.</p>
     </section>
 
     <footer className="monitor-footer"><span>Source: <strong>/api/status</strong> · worker heartbeat, progress telemetry, and published projection</span><span>{lastSuccessfulLoad ? `Snapshot received ${formatAge((view.now - lastSuccessfulLoad) / 1000)}` : "Snapshot received just now"}</span></footer>
