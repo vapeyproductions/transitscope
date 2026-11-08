@@ -322,13 +322,15 @@ class ReadOnlyStore:
             if telemetry.get("active_candidate_count") is not None:
                 fallback["active_candidate_count"] = int(telemetry.get("active_candidate_count") or 0)
             if telemetry.get("active_star_count") is not None:
-                telemetry_star_count = int(telemetry.get("active_star_count") or 0)
-                fallback["active_star_count"] = telemetry_star_count
-                if telemetry_star_count == 0 and fallback.get("active_candidate_count", 0) > 0:
-                    fallback["active_star_count"] = max(
-                        int(fallback.get("active_star_count") or 0),
-                        int(self._cached_overall_star_count() or 0),
-                    )
+                fallback["active_star_count"] = int(telemetry.get("active_star_count") or 0)
+            if (
+                fallback.get("active_candidate_count", 0) > 0
+                and int(fallback.get("active_star_count") or 0) == 0
+            ):
+                fallback["active_star_count"] = max(
+                    int(fallback.get("active_star_count") or 0),
+                    int(self._cached_overall_star_count() or 0),
+                )
             fallback["last_ingest_at"] = worker.get("last_ingest_at") or fallback.get("last_ingest_at")
             fallback["worker"] = worker
             fallback["served_from_cache"] = True
@@ -515,13 +517,15 @@ class ReadOnlyStore:
         if telemetry.get("active_candidate_count") is not None:
             response["active_candidate_count"] = int(telemetry.get("active_candidate_count") or 0)
         if telemetry.get("active_star_count") is not None:
-            telemetry_star_count = int(telemetry.get("active_star_count") or 0)
-            response["active_star_count"] = telemetry_star_count
-            if telemetry_star_count == 0 and response.get("active_candidate_count", 0) > 0:
-                response["active_star_count"] = max(
-                    int(response.get("active_star_count") or 0),
-                    int(self._cached_overall_star_count() or 0),
-                )
+            response["active_star_count"] = int(telemetry.get("active_star_count") or 0)
+        if (
+            response.get("active_candidate_count", 0) > 0
+            and int(response.get("active_star_count") or 0) == 0
+        ):
+            response["active_star_count"] = max(
+                int(response.get("active_star_count") or 0),
+                int(self._cached_overall_star_count() or 0),
+            )
         response["total_target_count"] = int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE)))
         response["last_ingest_at"] = worker.get("last_ingest_at") or response.get("last_ingest_at")
         response["last_published_at"] = (
