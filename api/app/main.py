@@ -503,7 +503,7 @@ def _monitoring_system_health(worker: dict) -> dict:
     if read_state == "worker_progress_ahead":
         publication_summary = "The worker has published progress newer than the read replica; the monotonic worker count is being shown."
     elif publication_status == "warning":
-        publication_summary = "Showing the last durable projection while a publication lock is active."
+        publication_summary = "Publication lock is active; awaiting the next durable snapshot."
     else:
         publication_summary = "The latest durable data projection was read successfully."
     checks.append(
