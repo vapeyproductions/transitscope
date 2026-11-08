@@ -916,7 +916,18 @@ def rankings(
 
 @app.get("/api/identified")
 def identified(limit: int = Query(100, ge=1, le=500)) -> dict:
-    return ReadOnlyStore().identified(limit)
+    store = ReadOnlyStore()
+    current_worker = worker_status()
+    if str(current_worker.get("state") or "") in {
+        "starting_cycle",
+        "processing_stage1",
+        "processing_stage2",
+        "processing_stage3",
+        "matching_catalog",
+        "populating_manifest",
+    }:
+        return store.identified_cached(limit)
+    return store.identified(limit)
 
 
 @app.get("/api/sky")

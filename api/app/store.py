@@ -671,14 +671,7 @@ class ReadOnlyStore:
         cache_key = str(limit)
         connection = self.connect(timeout_seconds=PUBLISHED_READ_TIMEOUT_SECONDS)
         if connection is None:
-            cached = self._cached_response(_IDENTIFIED_RESPONSE_CACHE, "identified", cache_key)
-            if cached is not None:
-                cached["served_from_cache"] = True
-                cached["read_state"] = "publication_busy"
-                return cached
-            empty["served_from_cache"] = False
-            empty["read_state"] = "publication_busy"
-            return empty
+            return self.identified_cached(limit)
         try:
             candidates = connection.execute(
                 """
@@ -807,6 +800,23 @@ class ReadOnlyStore:
             return response
         finally:
             connection.close()
+
+    def identified_cached(self, limit: int) -> dict[str, Any]:
+        """Return the last match projection without touching DuckDB."""
+
+        cache_key = str(limit)
+        cached = self._cached_response(_IDENTIFIED_RESPONSE_CACHE, "identified", cache_key)
+        if cached is not None:
+            cached["served_from_cache"] = True
+            cached["read_state"] = "publication_busy"
+            return cached
+        return {
+            "data_version": None,
+            "count": 0,
+            "rows": [],
+            "served_from_cache": False,
+            "read_state": "publication_busy",
+        }
 
     def replay_meta(self, view: str) -> dict[str, Any]:
         """Return the saved timeline bounds without touching providers or models."""
