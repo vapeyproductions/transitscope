@@ -247,6 +247,7 @@ class ReadOnlyStore:
             "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE))),
             "active_candidate_count": 0,
             "last_ingest_at": None,
+            "last_published_at": None,
             "processed_history": [],
             "stage_summary": {},
             "worker": worker,
@@ -377,6 +378,17 @@ class ReadOnlyStore:
             ).fetchone()
             if ingest and ingest[0]:
                 response["last_ingest_at"] = isoformat(ingest[0])
+            published = connection.execute(
+                """
+                SELECT published_at
+                FROM publish_versions
+                WHERE status = 'published'
+                ORDER BY version DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if published and published[0]:
+                response["last_published_at"] = isoformat(published[0])
             try:
                 history_rows = connection.execute(
                     """
@@ -428,6 +440,7 @@ class ReadOnlyStore:
             "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE))),
             "active_candidate_count": 0,
             "last_ingest_at": None,
+            "last_published_at": None,
             "processed_history": [],
             "stage_summary": {},
         })
