@@ -66,6 +66,7 @@ type StageTelemetry = {
 type StageHealthResponse = {
   checked_at: string;
   alerts?: SystemHealthAlert[];
+  checks?: SystemHealthAlert[];
   pipeline?: {
     stages?: StageTelemetry[];
   };
@@ -87,6 +88,16 @@ type PanelTone = "healthy" | "warning" | "critical" | "paused";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 const REFRESH_INTERVAL_MS = 15_000;
+const CONSOLIDATED_CHECK_IDS = new Set([
+  "worker-heartbeat",
+  "published-state",
+  "api-server",
+  "pipeline-control",
+  "stage1-pipeline",
+  "stage2-pipeline",
+  "stage3-pipeline",
+]);
+const TOP_CHECK_LABELS = new Set(["API server", "Pipeline control gate", "Stage 1 pipeline", "Stage 2 pipeline", "Stage 3 pipeline"]);
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -271,6 +282,7 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
   const [error, setError] = useState<string | null>(null);
   const [lastSuccessfulLoad, setLastSuccessfulLoad] = useState<number | null>(null);
   const [stageSnapshot, setStageSnapshot] = useState<StageHealthResponse | null>(null);
+  const [systemChecks, setSystemChecks] = useState<SystemHealthAlert[]>([]);
   const [stageError, setStageError] = useState<string | null>(null);
   const [expandedAlerts, setExpandedAlerts] = useState<Record<string, boolean>>({});
 
@@ -301,6 +313,7 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
         fetchJson<LiveStatusResponse>("/api/status", { signal: controller.signal }).catch(() => null),
       ]);
       if (healthResult?.alerts) setSystemAlerts(healthResult.alerts);
+      if (healthResult?.checks) setSystemChecks(healthResult.checks);
       const healthStages = healthResult?.pipeline?.stages ?? [];
       const healthByStage = new Map(healthStages.map((stage) => [stage.stage, stage]));
       const stages = stageNames.map((stageName) => {
@@ -411,7 +424,8 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
   // The diagnosis above already explains a publication lock. Keep the
   // published-state check in the detailed checks section, but do not repeat
   // it in the compact active-alert group.
-  const topAlerts = systemAlerts.filter((check) => check.id !== "published-state");
+  const topAlerts = systemAlerts.filter((check) => !CONSOLIDATED_CHECK_IDS.has(check.id));
+  const topChecks = systemChecks.filter((check) => TOP_CHECK_LABELS.has(check.label));
   const overallAlertStatus: SystemHealthAlertStatus = view.tone === "healthy"
     ? "healthy"
     : view.tone === "paused"
@@ -458,6 +472,7 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
             source: "worker heartbeat and public API",
           },
           ...topAlerts,
+          ...topChecks,
         ].map((check) => {
           const expanded = Boolean(expandedAlerts[check.id]);
           return <article className={`system-health-check-card system-health-card-${check.status}${expanded ? " expanded" : ""}`} key={check.id}>

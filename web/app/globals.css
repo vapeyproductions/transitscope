@@ -523,7 +523,7 @@ h4 { font-size: 17px; letter-spacing: -0.02em; margin-bottom: 8px; }
 .system-health-refresh-warning span:last-child { color: var(--muted); }
 .system-health-alerts, .system-health-checks, .system-health-pipeline { border-top: 1px solid var(--border); padding: 23px 22px 0; }
 .system-health-alerts .ops-section-heading, .system-health-checks .ops-section-heading, .system-health-pipeline .ops-section-heading { margin-bottom: 13px; }
-.system-health-alert-list { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.system-health-alert-list { display: grid; gap: 8px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .system-health-alert { align-items: flex-start; background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(239, 190, 93, 0.22); border-left: 3px solid var(--gold); border-radius: 8px; display: flex; gap: 10px; padding: 11px; }
 .system-health-alert-critical { border-color: rgba(255, 117, 117, 0.3); border-left-color: var(--red); }
 .system-health-alert-unknown { border-color: rgba(146, 169, 205, 0.22); border-left-color: var(--muted); }
