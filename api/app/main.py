@@ -273,8 +273,13 @@ def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
     """
 
     last_metrics = worker.get("last_cycle_metrics") if isinstance(worker.get("last_cycle_metrics"), dict) else {}
+    live_metrics = worker.get("live_cycle_metrics") if isinstance(worker.get("live_cycle_metrics"), dict) else {}
     saved_queue = last_metrics.get("queue") if isinstance(last_metrics.get("queue"), dict) else {}
     has_cycle_snapshot = bool(last_metrics) and isinstance(last_metrics.get("queue"), dict)
+    has_live_snapshot = bool(live_metrics) and any(
+        isinstance(live_metrics.get(stage), dict) for stage in ("stage1", "stage2", "stage3")
+    )
+    metrics_source = last_metrics if has_cycle_snapshot else live_metrics
     stages: dict[str, dict] = {}
     throughput: dict[str, dict] = {}
     current_queue: dict[str, dict] = {}
@@ -283,23 +288,25 @@ def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
     active_stage = active_stage_match.group(0).lower() if active_stage_match else None
     for stage in ("stage1", "stage2", "stage3"):
         has_stage_snapshot = has_cycle_snapshot and stage in saved_queue and isinstance(saved_queue.get(stage), dict)
+        has_live_stage = has_live_snapshot and isinstance(live_metrics.get(stage), dict)
+        has_observed_metrics = has_stage_snapshot or has_live_stage
         counts_raw = saved_queue.get(stage) if has_stage_snapshot else {}
         counts = {str(key): int(value or 0) for key, value in counts_raw.items() if isinstance(value, (int, float))}
-        stage_metrics = last_metrics.get(stage) if isinstance(last_metrics.get(stage), dict) else {}
+        stage_metrics = metrics_source.get(stage) if isinstance(metrics_source.get(stage), dict) else {}
         total_candidates = sum(counts.values())
         last_activity_at = (
             worker.get("last_cycle_finished_at")
             or last_metrics.get("finished_at")
             or last_metrics.get("occurred_at")
         ) if has_stage_snapshot else (
-            worker.get("last_progress_at") if active_stage == stage else None
+            worker.get("last_progress_at") if active_stage == stage else live_metrics.get("updated_at")
         )
         if last_activity_at is None and stage == "stage1":
             last_activity_at = worker.get("last_stage1_publish_at")
         stages[stage] = {
             # An absent snapshot is not an empty pipeline. Keep it explicit so
             # the health panel cannot turn a publication lock into false zeros.
-            "available": has_stage_snapshot,
+            "available": has_observed_metrics,
             "total_candidates": total_candidates if has_stage_snapshot else None,
             "priority_candidates": (
                 int(
@@ -314,20 +321,39 @@ def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
             "last_evaluated_at": last_activity_at,
             "last_activity_at": last_activity_at,
         }
-        throughput[stage] = {
-            key: int(stage_metrics.get(key) or 0)
-            for key in ("attempted", "evaluated", "promising", "needs_more_data", "inconclusive", "known_match", "errors", "handoffs")
-        } if has_stage_snapshot else {}
         if has_stage_snapshot:
+            jobs = int(stage_metrics.get("selected") or stage_metrics.get("attempted") or 0)
+            evaluated = int(stage_metrics.get("evaluated") or stage_metrics.get("attempted") or 0)
+            handoffs = int(stage_metrics.get("handoffs") or 0)
+            throughput[stage] = {
+                key: int(stage_metrics.get(key) or 0)
+                for key in ("attempted", "evaluated", "promising", "needs_more_data", "inconclusive", "known_match", "errors", "handoffs")
+            }
+            throughput[stage]["attempted"] = jobs
+            throughput[stage]["evaluated"] = evaluated
+            throughput[stage]["handoffs"] = handoffs
+        elif has_live_stage:
+            jobs = int(stage_metrics.get("jobs") or 0)
+            evaluated = int(stage_metrics.get("assessed") or 0)
+            handoffs = int(stage_metrics.get("handoffs") or 0)
+            throughput[stage] = {
+                "attempted": jobs,
+                "evaluated": evaluated,
+                "handoffs": handoffs,
+            }
+        else:
+            jobs = evaluated = handoffs = 0
+            throughput[stage] = {}
+        if has_observed_metrics:
             throughput[stage]["per_hour"] = throughput[stage]["evaluated"]
             throughput[stage]["per_minute"] = round(throughput[stage]["evaluated"] / 60, 2)
-        current_queue[stage] = {"jobs": int(stage_metrics.get("selected") or 0)} if has_stage_snapshot else {}
+        current_queue[stage] = {"jobs": jobs} if has_observed_metrics else {}
 
     finished_at = worker.get("last_heartbeat") or status.get("checked_at") or utc_now()
     latest_cycle = {
         "cycle_id": worker.get("cycle_id") or "last-completed-cycle",
         "finished_at": finished_at,
-        "stage2_reassessment": last_metrics.get("stage2_reassessment", {}),
+        "stage2_reassessment": metrics_source.get("stage2_reassessment", {}),
     }
     timings = last_metrics.get("timings") if isinstance(last_metrics.get("timings"), dict) else {}
     return {
@@ -344,7 +370,7 @@ def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
         "cycle_activity": {
             "throughput": throughput,
             "queue": {"current": current_queue},
-            "runs": [latest_cycle] if last_metrics else [],
+            "runs": [latest_cycle] if metrics_source else [],
         },
         "data_health": {"providers": []},
         "timings": timings,

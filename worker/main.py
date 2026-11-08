@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import signal
 import time
 import atexit
@@ -77,6 +78,7 @@ def write_status(
         for key in (
             "last_cycle",
             "last_cycle_metrics",
+            "live_cycle_metrics",
             "telemetry",
             "catalog_health",
             "last_progress_at",
@@ -273,6 +275,86 @@ def ranked_queue_samples(store: DuckDBStore, limit: int = 100) -> dict[str, list
                 for index, row in enumerate(rows)
             ]
     return samples
+
+
+def _new_live_cycle_metrics(cycle_id: str, started_at: str) -> dict[str, object]:
+    """Create the small status-side telemetry used while a cycle is running."""
+
+    return {
+        "cycle_id": cycle_id,
+        "started_at": started_at,
+        "updated_at": started_at,
+        "stage1": {"jobs": 0, "assessed": 0, "handoffs": 0},
+        "stage2": {"jobs": 0, "assessed": 0, "handoffs": 0},
+        "stage3": {"jobs": 0, "assessed": 0, "handoffs": 0},
+    }
+
+
+def _record_live_cycle_event(
+    live_metrics: dict[str, object],
+    state: str,
+    details: dict[str, object] | None,
+) -> None:
+    """Fold dispatch/completion callbacks into worker-status telemetry.
+
+    This is deliberately compact. The durable cycle payload remains the
+    detailed source for completed cycles; these counters only keep the health
+    endpoint truthful during a long-running cycle.
+    """
+
+    details = details or {}
+    stage_match = re.search(r"stage[123]", state, re.IGNORECASE)
+    if not stage_match:
+        return
+    stage_name = stage_match.group(0).lower()
+    stage = live_metrics.get(stage_name)
+    if not isinstance(stage, dict):
+        return
+
+    reason = str(details.get("reason") or "")
+    if state == "stage1_batch_published":
+        stage["jobs"] = int(stage.get("jobs") or 0) + int(details.get("selected_count") or 0)
+        stage["assessed"] = int(stage.get("assessed") or 0) + int(details.get("evaluated_count") or 0)
+        live_metrics["updated_at"] = utc_now()
+        return
+
+    candidate_ids = details.get("candidate_ids")
+    dispatched = 0
+    if isinstance(candidate_ids, list):
+        if reason in {
+            "manual_stage2_migration",
+            "stage2_top_window_reassessment_batch",
+            "ranked_stage3_reassessment_batch",
+        }:
+            dispatched = len(candidate_ids)
+    elif details.get("candidate_id") and reason in {
+        "stage2_waterfall_request",
+        "stage2_waterfall_gate_bootstrap",
+        "stage3_initial_intake",
+        "stage3_called_stage2",
+    }:
+        dispatched = 1
+
+    if dispatched:
+        stage["jobs"] = int(stage.get("jobs") or 0) + dispatched
+        if reason in {
+            "manual_stage2_migration",
+            "stage2_waterfall_request",
+            "stage2_waterfall_gate_bootstrap",
+            "stage3_initial_intake",
+            "stage3_called_stage2",
+        }:
+            stage["handoffs"] = int(stage.get("handoffs") or 0) + dispatched
+
+    completed = details.get("job_completed")
+    if completed:
+        try:
+            completed_count = max(0, int(completed))
+        except (TypeError, ValueError):
+            completed_count = 0
+        stage["assessed"] = int(stage.get("assessed") or 0) + completed_count
+
+    live_metrics["updated_at"] = utc_now()
 
 
 def result_summary(results: list[dict] | None) -> dict[str, object]:
@@ -714,6 +796,7 @@ def main() -> None:
             cycle_started_at = datetime.now(timezone.utc)
             cycle_started_monotonic = time.perf_counter()
             cycle_id = f"worker-cycle-{cycle_started_at.strftime('%Y%m%dT%H%M%S%fZ')}"
+            live_cycle_metrics = _new_live_cycle_metrics(cycle_id, cycle_started_at.isoformat())
             manual_migrations = claim_manual_migrations(data_dir)
             write_status(
                 data_dir,
@@ -723,6 +806,7 @@ def main() -> None:
                     "cycle_id": cycle_id,
                     "cycle_started_at": cycle_started_at.isoformat(),
                     "cycle_elapsed_seconds": 0.0,
+                    "live_cycle_metrics": live_cycle_metrics,
                     "progress": {
                         "state": "starting_cycle",
                         "reason": "Beginning the next live pipeline cycle.",
@@ -731,6 +815,7 @@ def main() -> None:
             )
 
             def cycle_status_callback(state: str, details: dict) -> None:
+                _record_live_cycle_event(live_cycle_metrics, state, details)
                 status_details = {
                     "pipeline_paused": False,
                     "cycle_id": cycle_id,
@@ -739,6 +824,7 @@ def main() -> None:
                         max(0.0, time.perf_counter() - cycle_started_monotonic),
                         2,
                     ),
+                    "live_cycle_metrics": live_cycle_metrics,
                     "progress": {
                         "state": state,
                         "updated_at": utc_now(),

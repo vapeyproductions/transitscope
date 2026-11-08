@@ -852,6 +852,16 @@ def _run_stage2_manual_batch(
                             "error": repr(exc),
                         },
                     )
+            if status_callback:
+                status_callback(
+                    "processing_stage2",
+                    {
+                        "reason": "stage2_job_completed",
+                        "candidate_id": candidate_id,
+                        "status": results_by_id[candidate_id].get("status"),
+                        "job_completed": 1,
+                    },
+                )
     return [results_by_id[candidate_id] for candidate_id in candidate_ids]
 
 
@@ -926,6 +936,16 @@ def _run_stage2_reassessment_batch(
                             "error": repr(exc),
                         },
                     )
+            if status_callback:
+                status_callback(
+                    "processing_stage2",
+                    {
+                        "reason": "stage2_job_completed",
+                        "candidate_id": candidate_id,
+                        "status": results_by_id[candidate_id].get("status"),
+                        "job_completed": 1,
+                    },
+                )
 
     return [results_by_id[candidate_id] for candidate_id in candidate_ids]
 
@@ -1128,6 +1148,16 @@ def _run_stage3_reassessment_batch(
                             "error": repr(exc),
                         },
                     )
+            if status_callback:
+                status_callback(
+                    "processing_stage3",
+                    {
+                        "reason": "stage3_job_completed",
+                        "candidate_id": candidate_id,
+                        "status": results_by_id[candidate_id].get("status"),
+                        "job_completed": 1,
+                    },
+                )
 
     # Preserve the rank order chosen at dispatch time for downstream waterfall
     # decisions and readable cycle output, regardless of completion timing.
@@ -1681,6 +1711,16 @@ def run_live_cycle(
                 "queue_reason": queue_reason,
             }
         )
+        if status_callback:
+            status_callback(
+                "processing_stage2",
+                {
+                    "reason": "stage2_job_completed",
+                    "candidate_id": candidate_id,
+                    "status": result.get("status"),
+                    "job_completed": 1,
+                },
+            )
         elapsed = add_timing("stage2_seconds", stage2_started)
         if result.get("status") == "Needs More Data":
             timings["stage2_needs_more_data_seconds"] += elapsed
@@ -2095,6 +2135,16 @@ def run_live_cycle(
                     "queue_reason": "stage2_gate_cohort_bootstrap",
                 }
             )
+            if status_callback:
+                status_callback(
+                    "processing_stage2",
+                    {
+                        "reason": "stage2_job_completed",
+                        "candidate_id": candidate_id,
+                        "status": result.get("status"),
+                        "job_completed": 1,
+                    },
+                )
             elapsed = add_timing("stage2_seconds", stage2_started)
             if result.get("status") == "Needs More Data":
                 timings["stage2_needs_more_data_seconds"] += elapsed
@@ -2394,6 +2444,16 @@ def run_live_cycle(
                     "queue_reason": "stage3_initial_intake_from_stage2",
                 }
             )
+            if status_callback:
+                status_callback(
+                    "processing_stage3",
+                    {
+                        "reason": "stage3_job_completed",
+                        "candidate_id": candidate_id,
+                        "status": result.get("status"),
+                        "job_completed": 1,
+                    },
+                )
             add_timing("stage3_seconds", stage3_started)
             stage3_results.append(result)
             check_catalog("stage3")
@@ -2564,6 +2624,16 @@ def run_live_cycle(
                     ),
                 }
             )
+            if status_callback:
+                status_callback(
+                    "processing_stage3",
+                    {
+                        "reason": "stage3_job_completed",
+                        "candidate_id": candidate_id,
+                        "status": result.get("status"),
+                        "job_completed": 1,
+                    },
+                )
             dispatch_elapsed = add_timing("stage3_seconds", stage3_started)
             timings["stage3_dispatch_seconds"] += dispatch_elapsed
             if result.get("status") == "Needs More Data":
