@@ -482,11 +482,9 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
       </div>
     </section>
 
-    <section className="monitor-publication-note" aria-labelledby="monitor-publication-title">
-      <div className="monitor-publication-heading"><strong id="monitor-publication-title">Publication accounting</strong></div>
-      <div className="monitor-publication-grid">
-        <div><span>Worker vs ranked stars</span><strong>Worker {formatMetric(workerCount)} · Ranked stars {formatMetric(snapshot.active_star_count)}</strong><small>Processed worker targets compared with distinct stars represented by the ranked candidates.</small></div>
-      </div>
+    <section className="monitor-publication-line" aria-label="Publication accounting">
+      <strong>Publication accounting</strong>
+      <span>Worker {formatMetric(workerCount)} · Ranked stars {formatMetric(snapshot.active_star_count)}</span>
     </section>
 
     <footer className="monitor-footer"><span>Source: <strong>/api/status</strong> · worker heartbeat, progress telemetry, and published projection</span><span>{lastSuccessfulLoad ? `Snapshot received ${formatAge((view.now - lastSuccessfulLoad) / 1000)}` : "Snapshot received just now"}</span></footer>
