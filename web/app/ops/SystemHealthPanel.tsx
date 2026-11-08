@@ -244,8 +244,8 @@ function stageStatusSummary(stage: StageTelemetry): string | null {
 
 function StageTelemetryPanel({ stages, checkedAt, workerState, workerLastProgress }: { stages: StageTelemetry[]; checkedAt: string; workerState?: string | null; workerLastProgress?: string | null }) {
   const activeStage = workerState?.match(/stage[123]/i)?.[0].toLowerCase() ?? null;
-  return <section className="system-health-pipeline system-stage-lanes" aria-labelledby="monitor-stage-lanes-title">
-    <div className="monitor-section-heading"><div><p className="eyebrow">Pipeline lanes</p><h3 id="monitor-stage-lanes-title">What each stage is doing</h3></div><span>Updated {formatDate(checkedAt)}</span></div>
+  return <section className="system-health-pipeline system-stage-lanes" aria-label="Pipeline lanes">
+    <div className="monitor-section-heading"><div><p className="eyebrow">Pipeline lanes</p></div><span>Updated {formatDate(checkedAt)}</span></div>
     <div className="system-stage-lane-grid">
       {stages.map((stage) => {
         const tone = stageTelemetryTone(stage.status);
@@ -483,7 +483,7 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
       </div>
     </div>
 
-    {stageSnapshot?.pipeline?.stages?.length ? <StageTelemetryPanel stages={stageSnapshot.pipeline.stages} checkedAt={stageSnapshot.checked_at} workerState={worker.state} workerLastProgress={worker.last_progress_at} /> : <section className="system-health-pipeline system-stage-lanes" aria-labelledby="monitor-stage-lanes-title"><div className="monitor-section-heading"><div><p className="eyebrow">Pipeline lanes</p><h3 id="monitor-stage-lanes-title">What each stage is doing</h3></div><span>{stageError ?? "Reading stage telemetry…"}</span></div><div className="monitor-stage-empty">Stage activity is loading independently. The worker status above remains live while this detail refreshes.</div></section>}
+    {stageSnapshot?.pipeline?.stages?.length ? <StageTelemetryPanel stages={stageSnapshot.pipeline.stages} checkedAt={stageSnapshot.checked_at} workerState={worker.state} workerLastProgress={worker.last_progress_at} /> : <section className="system-health-pipeline system-stage-lanes" aria-label="Pipeline lanes"><div className="monitor-section-heading"><div><p className="eyebrow">Pipeline lanes</p></div><span>{stageError ?? "Reading stage telemetry…"}</span></div><div className="monitor-stage-empty">Stage activity is loading independently. The worker status above remains live while this detail refreshes.</div></section>}
 
     <section className="monitor-current-job" aria-labelledby="monitor-current-job-title">
       <div className="monitor-section-heading"><div><p className="eyebrow">Current work</p><h3 id="monitor-current-job-title">What the worker is doing</h3></div><span>{currentStage}</span></div>
