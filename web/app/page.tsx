@@ -1865,10 +1865,7 @@ export function MonitoringSystemHealthPanel({ refreshKey }: { refreshKey: number
   }
 
   const stale = Date.now() - new Date(snapshot.checked_at).getTime() > snapshot.stale_after_seconds * 1000;
-  const alerts = snapshot.alerts;
-  const alertSection = <section className="system-health-alerts" aria-labelledby="system-health-alerts-title"><div className="ops-section-heading"><div><p className="eyebrow">Action queue</p><h3 id="system-health-alerts-title">Active alerts</h3></div><span className="section-note">{alerts.length ? `${alerts.length} check${alerts.length === 1 ? "" : "s"} need attention` : "No active alerts"}</span></div>{alerts.length ? <div className="system-health-alert-list">{alerts.map((check) => <article className={`system-health-alert system-health-alert-${check.status}`} key={check.id}><SystemHealthStatusPill status={check.status} /><div><strong>{check.label}</strong><p>{check.summary}</p><small>Source: {check.source}</small></div></article>)}</div> : <div className="system-health-clear"><span className="status-dot" />Every check returned healthy at the last poll.</div>}</section>;
   return <section className="system-health-panel operations-panel">
-    {alertSection}
     <header className="system-health-hero">
       <div aria-hidden="true" />
       <div className={`system-health-overall system-health-status-${snapshot.overall_status}`}><span className="status-dot" /><strong>{systemHealthStatusLabel(snapshot.overall_status)}</strong><small>{loading ? "Refreshing now" : `Polls every ${snapshot.refresh_interval_seconds}s`}</small></div>

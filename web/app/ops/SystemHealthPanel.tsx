@@ -65,9 +65,20 @@ type StageTelemetry = {
 
 type StageHealthResponse = {
   checked_at: string;
+  alerts?: SystemHealthAlert[];
   pipeline?: {
     stages?: StageTelemetry[];
   };
+};
+
+type SystemHealthAlertStatus = "healthy" | "warning" | "critical" | "unknown" | "paused";
+
+type SystemHealthAlert = {
+  id: string;
+  label: string;
+  summary: string;
+  source: string;
+  status: SystemHealthAlertStatus;
 };
 
 type PanelTone = "healthy" | "warning" | "critical" | "paused";
@@ -160,6 +171,18 @@ function StatusPill({ tone }: { tone: PanelTone }) {
   return <span className={`monitor-status-pill monitor-status-${tone}`}><span className="status-dot" />{statusLabel(tone)}</span>;
 }
 
+function alertStatusLabel(status: SystemHealthAlertStatus): string {
+  if (status === "healthy") return "Healthy";
+  if (status === "paused") return "Paused";
+  if (status === "critical") return "Critical";
+  if (status === "warning") return "Needs attention";
+  return "Unknown";
+}
+
+function AlertStatusPill({ status }: { status: SystemHealthAlertStatus }) {
+  return <span className={`system-health-status system-health-status-${status}`}><span className="status-dot" />{alertStatusLabel(status)}</span>;
+}
+
 function Metric({ label, value, detail, tone = "default" }: { label: string; value: string; detail: string; tone?: "default" | PanelTone }) {
   return <article className={`monitor-metric monitor-metric-${tone}`}>
     <span>{label}</span>
@@ -241,6 +264,7 @@ function StageTelemetryPanel({ stages, checkedAt, workerState, workerLastProgres
 
 export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }) {
   const [snapshot, setSnapshot] = useState<LiveStatusResponse | null>(null);
+  const [systemAlerts, setSystemAlerts] = useState<SystemHealthAlert[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastSuccessfulLoad, setLastSuccessfulLoad] = useState<number | null>(null);
@@ -273,6 +297,7 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
         fetchJson<StageHealthResponse>("/api/monitoring/system-health", { signal: controller.signal }).catch(() => null),
         fetchJson<LiveStatusResponse>("/api/status", { signal: controller.signal }).catch(() => null),
       ]);
+      if (healthResult?.alerts) setSystemAlerts(healthResult.alerts);
       const healthStages = healthResult?.pipeline?.stages ?? [];
       const healthByStage = new Map(healthStages.map((stage) => [stage.stage, stage]));
       const stages = stageNames.map((stageName) => {
@@ -400,9 +425,12 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
 
     {error && <div className="monitor-refresh-warning" role="status"><span className="status-dot" /><strong>Refresh failed.</strong><span>Showing the last successful snapshot until the next check succeeds.</span></div>}
 
-    <div className={`monitor-diagnosis monitor-diagnosis-${view.tone}`}>
-      <div><StatusPill tone={view.tone} /><strong>{view.diagnosis}</strong></div>
-      <p>{view.explanation}</p>
+    <div className="monitor-top-alerts">
+      <div className={`monitor-diagnosis monitor-diagnosis-${view.tone}`}>
+        <div><StatusPill tone={view.tone} /><strong>{view.diagnosis}</strong></div>
+        <p>{view.explanation}</p>
+      </div>
+      {systemAlerts.length > 0 && <div className="system-health-alert-list monitor-top-alert-list" aria-label="Active alerts">{systemAlerts.map((check) => <article className={`system-health-alert system-health-alert-${check.status}`} key={check.id}><AlertStatusPill status={check.status} /><div><strong>{check.label}</strong><p>{check.summary}</p><small>Source: {check.source}</small></div></article>)}</div>}
     </div>
 
     <div className="monitor-metrics" aria-label="Current pipeline metrics">
