@@ -624,12 +624,6 @@ const tabs: Array<{ id: RankingView; label: string }> = [
 ];
 
 const assessmentStages: AssessmentStage[] = ["stage1", "stage2", "stage3"];
-const statusFilterOptions: CandidateStatus[] = ["Promising", "Needs More Data", "Inconclusive", "Duplicate Signal"];
-
-function createRankingControls(): Record<RankingView, RankingControls> {
-  const controls: RankingControls = { stage: null, status: null, sort: "rank" };
-  return { overall: { ...controls }, stage1: { ...controls }, stage2: { ...controls }, stage3: { ...controls } };
-}
 
 function createReplayStates(): Record<RankingView, ReplayState> {
   const state: ReplayState = {
@@ -734,34 +728,8 @@ function displayStatus(status: string, stage?: string): string {
   return status === "Promising" && stage === "stage3" ? "Prime Candidate" : status;
 }
 
-function RankingColumnControl({
-  label,
-  active,
-  open,
-  options,
-  ariaLabel,
-  onToggle,
-  onSelect,
-  onClear,
-}: {
-  label: string;
-  active: boolean;
-  open: boolean;
-  options: Array<{ value: string; label: string }>;
-  ariaLabel: string;
-  onToggle: () => void;
-  onSelect: (value: string) => void;
-  onClear: () => void;
-}) {
-  return <div className="column-control" onClick={(event) => event.stopPropagation()}>
-    <button className={`column-control-trigger${active ? " active" : ""}`} type="button" aria-haspopup="menu" aria-expanded={open} aria-label={ariaLabel} onClick={onToggle}>
-      <span>{label}</span><span className="column-control-arrow" aria-hidden="true">⌄</span>
-    </button>
-    {active && <button className="column-control-clear" type="button" aria-label={`Clear ${label} selection`} onClick={onClear}>×</button>}
-    {open && <div className="column-control-menu" role="menu">
-      {options.map((option) => <button className="column-control-option" key={option.value} type="button" role="menuitem" onClick={() => onSelect(option.value)}>{option.label}</button>)}
-    </div>}
-  </div>;
+function RankingColumnControl({ label }: { label: string; active?: boolean; open?: boolean; options?: Array<{ value: string; label: string }>; ariaLabel?: string; onToggle?: () => void; onSelect?: (value: string) => void; onClear?: () => void }) {
+  return <span>{label}</span>;
 }
 
 function signalLetter(value: unknown): string | null {
@@ -2041,11 +2009,17 @@ export default function HomePage() {
   const [candidateLoadError, setCandidateLoadError] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   const [replayStates, setReplayStates] = useState<Record<RankingView, ReplayState>>(createReplayStates);
-  const [rankingControls, setRankingControls] = useState<Record<RankingView, RankingControls>>(createRankingControls);
-  const [openColumnControl, setOpenColumnControl] = useState<"status" | "assessed" | null>(null);
   const [rankingPage, setRankingPage] = useState(1);
   const [pipelineStatusOpen, setPipelineStatusOpen] = useState(false);
   const [clockMs, setClockMs] = useState(() => Date.now());
+  const openColumnControl: "status" | "assessed" | null = null;
+  const setOpenColumnControl = (_value: unknown) => {};
+  const activeControls: RankingControls = { stage: null, status: null, sort: "rank" };
+  const statusControlActive = false;
+  const statusControlLabel = "Status";
+  const statusControlOptions: Array<{ value: string; label: string }> = [];
+  const assessmentSortLabel = "Last assessed";
+  const updateRankingControls = (_patch: Partial<RankingControls>) => {};
   const dashboardRequestRef = useRef(0);
   const rankingCacheRef = useRef(new Map<string, RankingResponse>());
   const rankingCacheAtRef = useRef(new Map<string, number>());
@@ -2093,11 +2067,7 @@ export default function HomePage() {
   const loadDashboard = useCallback(async () => {
     const requestId = dashboardRequestRef.current + 1;
     dashboardRequestRef.current = requestId;
-    const controls = rankingControls[activeTab];
     const query = new URLSearchParams({ view: activeTab, limit: "100", page: String(rankingPage) });
-    if (activeTab === "overall" && controls.stage) query.set("stage_filter", controls.stage);
-    if (activeTab !== "overall" && controls.status) query.set("status_filter", controls.status);
-    if (controls.sort !== "rank") query.set("sort", controls.sort);
     const cacheKey = query.toString();
     let cachedRanking = rankingCacheRef.current.get(cacheKey);
     if (!cachedRanking) {
@@ -2130,7 +2100,7 @@ export default function HomePage() {
     } finally {
       if (requestId === dashboardRequestRef.current) setLoading(false);
     }
-  }, [activeTab, fetchPublishedRanking, rankingControls, rankingPage]);
+  }, [activeTab, fetchPublishedRanking, rankingPage]);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -2227,7 +2197,6 @@ export default function HomePage() {
     setIdentifiedOpen(false);
     setSkyOpen(true);
     setPipelineStatusOpen(false);
-    setOpenColumnControl(null);
     setHowItWorksOpen(false);
   }, [activeTab, closeCandidate, exitReplay]);
 
@@ -2327,12 +2296,6 @@ export default function HomePage() {
   }, [activeTab, closeCandidate, exitReplay, identifiedOpen, loadDashboard, skyOpen]);
 
   const activeReplay = replayStates[activeTab];
-  const activeControls = rankingControls[activeTab];
-  const updateRankingControls = (patch: Partial<RankingControls>) => {
-    setRankingControls((current) => ({ ...current, [activeTab]: { ...current[activeTab], ...patch } }));
-    setRankingPage(1);
-    setOpenColumnControl(null);
-  };
   useEffect(() => {
     if (!activeReplay.active || !activeReplay.playing) return;
     if (activeReplay.cursor >= activeReplay.maxSequence) {
@@ -2359,8 +2322,7 @@ export default function HomePage() {
   const processedCount = activeReplay.active ? displayRanking?.processed_target_count ?? 0 : status?.processed_target_count ?? ranking?.processed_target_count ?? 0;
   const targetCount = status?.total_target_count ?? ranking?.total_target_count ?? 100000;
   const totalStars = displayRanking?.total_star_count ?? new Set(rows.map((row) => row.target_id)).size;
-  const filterActive = activeTab === "overall" ? activeControls.stage !== null : activeControls.status !== null;
-  const panelTitle = (waitingForPublishedState || loading) && !liveRanking && !activeReplay.active ? "Loading published state" : totalCandidates ? `Total candidates ${totalCandidates.toLocaleString()} · Ranked stars ${totalStars.toLocaleString()}` : filterActive ? "No candidates match this filter" : "No candidates published yet";
+  const panelTitle = (waitingForPublishedState || loading) && !liveRanking && !activeReplay.active ? "Loading published state" : totalCandidates ? `Total candidates ${totalCandidates.toLocaleString()} · Ranked stars ${totalStars.toLocaleString()}` : "No candidates published yet";
   const remainingCount = Math.max(0, targetCount - processedCount);
   const activeCandidateCount = status?.active_candidate_count ?? rows.length;
   const footerState = status?.last_published_at ? `Last published: ${formatDate(status.last_published_at)}` : "Awaiting first publication";
@@ -2368,12 +2330,6 @@ export default function HomePage() {
   const nextUpdateLabel = workerIsActive ? "After current cycle" : countdownLabel(nextUpdateAt, clockMs);
   const pageCount = displayRanking?.page_count ?? 0;
   const displayCap = displayRanking?.display_cap ?? 500;
-  const statusControlActive = activeTab === "overall" ? activeControls.stage !== null : activeControls.status !== null;
-  const statusControlLabel = activeTab === "overall" ? (activeControls.stage ? stageName(activeControls.stage) : "Status") : (activeControls.status ? displayStatus(activeControls.status, activeTab) : "Status");
-  const statusControlOptions = activeTab === "overall"
-    ? assessmentStages.map((stage) => ({ value: stage, label: stageName(stage) }))
-    : statusFilterOptions.map((statusOption) => ({ value: statusOption, label: displayStatus(statusOption, activeTab) }));
-  const assessmentSortLabel = activeControls.sort === "last_assessed_desc" ? "Most recently assessed" : activeControls.sort === "last_assessed_asc" ? "Oldest assessed first" : "Last assessed";
   const selectRankingPage = (page: number) => {
     setRankingPage(page);
     if (activeReplay.active) void loadReplaySnapshot(activeTab, activeReplay.cursor, page);
@@ -2388,7 +2344,7 @@ export default function HomePage() {
   return <main className="observatory-shell">
     <div className="ambient-glow ambient-glow-one" aria-hidden="true" /><div className="ambient-glow ambient-glow-two" aria-hidden="true" />
     <header className="topbar"><div className="brand-lockup"><button className="brand-mark" type="button" aria-label="Learn how TransitScope works" aria-haspopup="dialog" aria-expanded={howItWorksOpen} onClick={() => setHowItWorksOpen(true)}>✦</button><div className="brand-title"><h1>Explore Potential Space Discoveries</h1><button className="about-trigger" type="button" aria-label="Learn how TransitScope works" aria-haspopup="dialog" aria-expanded={howItWorksOpen} onClick={() => setHowItWorksOpen(true)}><span aria-hidden="true">→</span></button></div></div><div className="topbar-actions"><span className="data-state"><span className={`status-dot ${status?.data_version ? "" : "muted"}`} /> {dataState}</span><button className="button button-quiet" type="button" onClick={() => void handleRefresh()} disabled={refreshing || loading}>↻ <span>{refreshing ? "Checking" : "Refresh"}</span></button><a className="button button-quiet tool-button" href="/ops" aria-label="Open public ML Ops dashboard" title="Public ML Ops dashboard">🔧</a></div></header>
-    <nav className="tab-row" aria-label="Assessment rankings">{tabs.map((tab) => <button className={`tab-button ${!identifiedOpen && !skyOpen && activeTab === tab.id ? "active" : ""}`} key={tab.id} onClick={() => { setIdentifiedOpen(false); setSkyOpen(false); setPipelineStatusOpen(false); setOpenColumnControl(null); setRankingPage(1); setActiveTab(tab.id); }} type="button">{tab.label}</button>)}<button className={`tab-button ${identifiedOpen ? "active" : ""}`} type="button" onClick={() => { closeCandidate(); exitReplay(activeTab); setSkyOpen(false); setPipelineStatusOpen(false); setOpenColumnControl(null); setIdentifiedOpen(true); }}>Identified</button><button className={`tab-button ${skyOpen ? "active" : ""}`} type="button" onClick={openSkyView}>Sky</button></nav>
+    <nav className="tab-row" aria-label="Assessment rankings">{tabs.map((tab) => <button className={`tab-button ${!identifiedOpen && !skyOpen && activeTab === tab.id ? "active" : ""}`} key={tab.id} onClick={() => { setIdentifiedOpen(false); setSkyOpen(false); setPipelineStatusOpen(false); setRankingPage(1); setActiveTab(tab.id); }} type="button">{tab.label}</button>)}<button className={`tab-button ${identifiedOpen ? "active" : ""}`} type="button" onClick={() => { closeCandidate(); exitReplay(activeTab); setSkyOpen(false); setPipelineStatusOpen(false); setIdentifiedOpen(true); }}>Identified</button><button className={`tab-button ${skyOpen ? "active" : ""}`} type="button" onClick={openSkyView}>Sky</button></nav>
     {skyOpen ? <SkyPanel onOpenCandidate={(candidateId) => void openCandidate(candidateId)} refreshKey={skyRefreshKey} /> : !identifiedOpen ? <>
     <section className="stage-heading"><div><div className="stage-kicker"><span className="stage-number">{copy.number}</span> {copy.kicker}</div><h3>{copy.title}</h3><p>{copy.description}</p></div>{activeReplay.active ? <div className="replay-dock-wrap"><div className="replay-dock" aria-label={`${copy.title} replay controls`} title={activeReplay.loading ? "Loading saved replay snapshot" : `Saved replay · ${activeReplay.snapshot?.occurred_at ? formatDate(activeReplay.snapshot.occurred_at) : "Beginning of assessment"}`}><button aria-label={activeReplay.playing ? "Pause replay" : "Play replay"} className="button button-quiet replay-play" type="button" onClick={() => updateReplay(activeTab, { playing: !activeReplay.playing })} disabled={activeReplay.maxSequence === 0}>{activeReplay.playing ? "Ⅱ" : "▶"}</button><label className="replay-speed"> <span>Speed</span><select aria-label="Replay speed" value={activeReplay.speed} onChange={(event) => updateReplay(activeTab, { speed: Number(event.target.value) })}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select></label><input aria-label="Replay position" className="replay-range" type="range" min={0} max={activeReplay.maxSequence} value={activeReplay.cursor} onChange={(event) => void loadReplaySnapshot(activeTab, Number(event.target.value))} /><button className="button button-replay-active replay-exit" type="button" onClick={() => exitReplay(activeTab)}>Exit replay</button></div>{activeReplay.error && <p className="replay-error">{activeReplay.error}</p>}</div> : <div className="stage-actions"><button className="button button-outline" type="button" onClick={() => void startReplay(activeTab)}>Replay</button>{activeTab === "overall" && <button className="button button-outline" type="button" onClick={() => setPipelineStatusOpen((open) => !open)} aria-expanded={pipelineStatusOpen}>{pipelineStatusOpen ? "Hide pipeline status" : "Pipeline status"}</button>}</div>}</section>
     {activeTab === "overall" && pipelineStatusOpen && !activeReplay.active && <section className="metrics-grid" aria-label="Processing summary"><article className="metric-card"><span className="metric-label">Target universe</span><strong>{remainingCount.toLocaleString()} / {targetCount.toLocaleString()}</strong><span className="metric-detail">stars left in target universe exploration</span></article><article className="metric-card"><span className="metric-label">Processed</span><strong>{processedCount.toLocaleString()}</strong><span className="metric-detail">targets with published evaluations</span></article><article className="metric-card"><span className="metric-label">Active candidates</span><strong>{activeCandidateCount.toLocaleString()}</strong><span className="metric-detail">currently visible in this assessment</span></article><article className="metric-card metric-card-status"><span className="metric-label">Pipeline status</span><strong><span className={`status-dot ${status?.data_version ? "" : "muted"}`} /> {pipelineState}</strong><span className="metric-detail">{footerState}</span><span className="metric-detail">Next update: {nextUpdateLabel} · {nextUpdateAt ? formatDate(nextUpdateAt) : workerIsActive ? "current cycle in progress" : "Calculating…"}</span></article></section>}
