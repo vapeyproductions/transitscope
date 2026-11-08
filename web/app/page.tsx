@@ -678,6 +678,16 @@ async function fetchCandidateJson<T>(path: string): Promise<T> {
   throw lastError instanceof Error ? lastError : new Error("Candidate evidence is temporarily unavailable.");
 }
 
+async function fetchReplayJson<T>(path: string): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 1800);
+  try {
+    return await fetchJson<T>(path, { signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 async function waitForCandidateJson<T>(path: string, isActive: () => boolean): Promise<T> {
   while (isActive()) {
     try {
@@ -2177,12 +2187,7 @@ export default function HomePage() {
   const loadReplaySnapshot = useCallback(async (view: RankingView, cursor: number, page = rankingPage) => {
     updateReplay(view, { cursor, loading: true, error: null });
     try {
-      let snapshot: RankingResponse | null = null;
-      for (let attempt = 0; attempt < 6; attempt += 1) {
-        snapshot = await fetchCandidateJson<RankingResponse>(`/api/replay/${view}/snapshot?sequence=${cursor}&limit=100&page=${page}`);
-        if (snapshot.read_state !== "publication_busy" || attempt === 5) break;
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 900));
-      }
+      const snapshot = await fetchReplayJson<RankingResponse>(`/api/replay/${view}/snapshot?sequence=${cursor}&limit=100&page=${page}`);
       if (!snapshot || snapshot.read_state === "publication_busy") {
         throw new Error("Saved replay is temporarily unavailable while the worker publishes a snapshot.");
       }
@@ -2221,12 +2226,7 @@ export default function HomePage() {
       error: null,
     });
     try {
-      let meta: ReplayMeta | null = null;
-      for (let attempt = 0; attempt < 6; attempt += 1) {
-        meta = await fetchCandidateJson<ReplayMeta>(`/api/replay/${view}/meta`);
-        if (meta.read_state !== "publication_busy" || attempt === 5) break;
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 900));
-      }
+      const meta = await fetchReplayJson<ReplayMeta>(`/api/replay/${view}/meta`);
       if (!meta || meta.read_state === "publication_busy") {
         throw new Error("Saved replay is temporarily unavailable while the worker publishes a snapshot.");
       }
@@ -2349,7 +2349,7 @@ export default function HomePage() {
 
   const activeReplay = replayStates[activeTab];
   useEffect(() => {
-    if (!activeReplay.active || !activeReplay.playing) return;
+    if (!activeReplay.active || !activeReplay.playing || activeReplay.loading) return;
     if (activeReplay.cursor >= activeReplay.maxSequence) {
       updateReplay(activeTab, { playing: false });
       return;

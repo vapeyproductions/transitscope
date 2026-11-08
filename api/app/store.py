@@ -230,6 +230,15 @@ class ReadOnlyStore:
                         fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
                         break
                     except BlockingIOError:
+                        # DuckDB supports concurrent read-only connections to
+                        # the last committed MVCC snapshot while a writer is
+                        # building its next transaction. Prefer that snapshot
+                        # over waiting behind the worker's coordination lock;
+                        # the API never writes through this connection.
+                        try:
+                            return duckdb.connect(str(self.database), read_only=True)
+                        except Exception:
+                            pass
                         if time.monotonic() >= deadline:
                             self.publication_busy = True
                             lock_file.close()
