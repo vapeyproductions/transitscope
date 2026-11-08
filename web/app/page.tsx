@@ -1866,6 +1866,8 @@ export function MonitoringSystemHealthPanel({ refreshKey }: { refreshKey: number
   }
 
   const stale = Date.now() - new Date(snapshot.checked_at).getTime() > snapshot.stale_after_seconds * 1000;
+  const consolidatedAlertLabels = new Set(["Worker heartbeat", "Published data state", "MAST / TESS ingest", "Known-object cross-reference", "Railway platform"]);
+  const visibleChecks = snapshot.checks.filter((check) => !consolidatedAlertLabels.has(check.label));
   return <section className="system-health-panel operations-panel">
     <header className="system-health-hero">
       <div aria-hidden="true" />
@@ -1874,7 +1876,7 @@ export function MonitoringSystemHealthPanel({ refreshKey }: { refreshKey: number
     <div className="system-health-meta"><span><strong>Last checked</strong> {formatDate(snapshot.checked_at)}</span><span><strong>Next check</strong> {formatDate(snapshot.next_check_at)}</span><span><strong>Data version</strong> {snapshot.pipeline.data_version ?? "—"}</span><span><strong>Read state</strong> {snapshot.read_state ?? "published"}{snapshot.served_from_cache ? " · cached projection" : ""}</span></div>
     {error && <div className="system-health-refresh-warning" role="status"><span className="status-dot" /><strong>Live refresh failed.</strong><span>{error} Showing the last successful check from {formatDate(snapshot.checked_at)} until the next check succeeds.</span></div>}
     {stale && !error && <div className="system-health-refresh-warning" role="status"><span className="status-dot" /><strong>Check is stale.</strong><span>The last response is older than the declared {snapshot.stale_after_seconds}-second freshness window.</span></div>}
-    <section className="system-health-checks" aria-labelledby="system-health-checks-title"><div className="ops-section-heading"><div><p className="eyebrow">Live checks</p><h3 id="system-health-checks-title">What is being checked right now</h3></div><span className="section-note">Click a card to expand details</span></div><div className="system-health-check-grid">{snapshot.checks.map((check) => {
+    <section className="system-health-checks" aria-labelledby="system-health-checks-title"><div className="ops-section-heading"><div><p className="eyebrow">Live checks</p><h3 id="system-health-checks-title">What is being checked right now</h3></div><span className="section-note">Click a card to expand details</span></div><div className="system-health-check-grid">{visibleChecks.map((check) => {
       const expanded = Boolean(expandedChecks[check.id]);
       return <article className={`system-health-check-card system-health-card-${check.status}${expanded ? " expanded" : ""}`} key={check.id}>
         <button className="system-health-check-toggle" type="button" aria-expanded={expanded} onClick={() => setExpandedChecks((current) => ({ ...current, [check.id]: !current[check.id] }))}>

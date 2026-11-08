@@ -77,8 +77,10 @@ type SystemHealthAlert = {
   id: string;
   label: string;
   summary: string;
+  details?: string[];
   source: string;
   status: SystemHealthAlertStatus;
+  latency_ms?: number | null;
 };
 
 type PanelTone = "healthy" | "warning" | "critical" | "paused";
@@ -270,6 +272,7 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
   const [lastSuccessfulLoad, setLastSuccessfulLoad] = useState<number | null>(null);
   const [stageSnapshot, setStageSnapshot] = useState<StageHealthResponse | null>(null);
   const [stageError, setStageError] = useState<string | null>(null);
+  const [expandedAlerts, setExpandedAlerts] = useState<Record<string, boolean>>({});
 
   const loadStatus = useCallback(async () => {
     const controller = new AbortController();
@@ -437,12 +440,35 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
     {error && <div className="monitor-refresh-warning" role="status"><span className="status-dot" /><strong>Refresh failed.</strong><span>Showing the last successful snapshot until the next check succeeds.</span></div>}
 
     <div className="monitor-top-alerts">
+      <div className="monitor-top-alert-heading"><strong>Active alerts</strong><span>Click a card to expand details</span></div>
       <div className="system-health-alert-list monitor-top-alert-list" aria-label="Active alerts">
-        <article className={`system-health-alert system-health-alert-${overallAlertStatus}`}>
-          <AlertStatusPill status={overallAlertStatus} />
-          <div><strong>Worker and public data</strong><p>{view.diagnosis}{view.explanation ? ` ${view.explanation}` : ""}</p><small>Source: worker heartbeat and public API</small></div>
-        </article>
-        {topAlerts.map((check) => <article className={`system-health-alert system-health-alert-${check.status}`} key={check.id}><AlertStatusPill status={check.status} /><div><strong>{check.label}</strong><p>{check.summary}</p><small>Source: {check.source}</small></div></article>)}
+        {[
+          {
+            id: "worker-public-data",
+            label: "Worker and public data",
+            status: overallAlertStatus,
+            summary: `${view.diagnosis}${view.explanation ? ` ${view.explanation}` : ""}`,
+            details: [
+              `Worker state: ${worker.state ? humanize(worker.state) : "Not reported"}`,
+              `Last heartbeat: ${formatDate(worker.last_heartbeat)}`,
+              `Last progress: ${formatDate(worker.last_progress_at)}`,
+              `Worker telemetry: ${formatMetric(workerCount)} · Public projection: ${formatMetric(publicCount)}`,
+              `Read state: ${snapshot.read_state ?? "published"}`,
+            ],
+            source: "worker heartbeat and public API",
+          },
+          ...topAlerts,
+        ].map((check) => {
+          const expanded = Boolean(expandedAlerts[check.id]);
+          return <article className={`system-health-check-card system-health-card-${check.status}${expanded ? " expanded" : ""}`} key={check.id}>
+            <button className="system-health-check-toggle" type="button" aria-expanded={expanded} onClick={() => setExpandedAlerts((current) => ({ ...current, [check.id]: !current[check.id] }))}>
+              <span className="system-health-card-heading"><strong>{check.label}</strong><AlertStatusPill status={check.status} /></span>
+              <span className="system-health-check-summary">{check.summary}</span>
+              <span className="system-health-check-expand">{expanded ? "Hide details" : "Expand details"}<span aria-hidden="true">{expanded ? " ↑" : " ↓"}</span></span>
+            </button>
+            {expanded && <div className="system-health-check-details">{check.details?.length ? <ul>{check.details.map((detail) => <li key={detail}>{detail}</li>)}</ul> : null}<footer><span>Source: {check.source}</span>{check.latency_ms != null && <span>{check.latency_ms.toFixed(0)} ms</span>}</footer></div>}
+          </article>;
+        })}
       </div>
     </div>
 
