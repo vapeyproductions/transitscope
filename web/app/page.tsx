@@ -2194,7 +2194,15 @@ export default function HomePage() {
 
   const startReplay = useCallback(async (view: RankingView) => {
     closeCandidate();
-    updateReplay(view, { active: true, playing: false, cursor: 0, snapshot: null, loading: true, error: null });
+    updateReplay(view, {
+      active: true,
+      playing: false,
+      cursor: 0,
+      maxSequence: ranking?.data_version ?? 0,
+      snapshot: null,
+      loading: true,
+      error: null,
+    });
     try {
       // Sequence zero is a valid saved replay state and can be returned
       // without opening DuckDB. Render it first so metadata work can never
@@ -2213,7 +2221,7 @@ export default function HomePage() {
     } catch (cause) {
       updateReplay(view, { loading: false, error: cause instanceof Error ? cause.message : "Replay metadata unavailable." });
     }
-  }, [closeCandidate, loadReplaySnapshot, updateReplay]);
+  }, [closeCandidate, loadReplaySnapshot, ranking?.data_version, updateReplay]);
 
   const exitReplay = useCallback((view: RankingView) => {
     updateReplay(view, { active: false, playing: false });
