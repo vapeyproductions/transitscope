@@ -269,7 +269,10 @@ class ReadOnlyStore:
         }
         cached = self._cached_response(_STATUS_RESPONSE_CACHE, "status", cache_key)
         if str(worker.get("state") or "") in active_states:
-            fallback = dict(cached or response)
+            # Disk caches can outlive the response schema that created them.
+            # Start with the current defaults so newly added monitor fields do
+            # not disappear as dashes when an older snapshot is served.
+            fallback = {**response, **(cached or {})}
             worker_counts: list[int] = []
             telemetry = worker.get("telemetry") if isinstance(worker.get("telemetry"), dict) else {}
             for value in (telemetry.get("processed_target_count"), worker.get("last_stage1_published_count")):
@@ -297,7 +300,7 @@ class ReadOnlyStore:
         connection = self.connect(timeout_seconds=PUBLISHED_READ_TIMEOUT_SECONDS)
         if connection is None:
             if cached is not None:
-                cached = dict(cached)
+                cached = {**response, **cached}
                 # Keep the cached projection internally consistent. The
                 # worker sidecar may be ahead of this committed snapshot, but
                 # mixing its count into an older data_version makes /api/status
@@ -439,7 +442,7 @@ class ReadOnlyStore:
 
         cache_key = str(self.database.resolve())
         cached = self._cached_response(_STATUS_RESPONSE_CACHE, "status", cache_key)
-        response = dict(cached or {
+        response = {
             "service": "api",
             "environment": os.getenv("APP_ENV", "unknown"),
             "data_version": None,
@@ -452,7 +455,11 @@ class ReadOnlyStore:
             "last_published_at": None,
             "processed_history": [],
             "stage_summary": {},
-        })
+            "worker": worker,
+            "served_from_cache": False,
+            "read_state": "worker_snapshot",
+        }
+        response.update(cached or {})
         telemetry = worker.get("telemetry") if isinstance(worker.get("telemetry"), dict) else {}
         worker_counts: list[int] = []
         for value in (telemetry.get("processed_target_count"), worker.get("last_stage1_published_count")):
