@@ -1866,9 +1866,9 @@ export function MonitoringSystemHealthPanel({ refreshKey }: { refreshKey: number
 
   const stale = Date.now() - new Date(snapshot.checked_at).getTime() > snapshot.stale_after_seconds * 1000;
   const alerts = snapshot.alerts;
-  return <section className="system-health-panel operations-panel" aria-labelledby="system-health-title">
+  return <section className="system-health-panel operations-panel">
     <header className="system-health-hero">
-      <div><p className="eyebrow accent">Operational truth layer</p><h2 id="system-health-title">System health and pipeline diagnostics</h2><p>Fresh checks of the same worker, control, publication, provider, queue, and platform signals used to diagnose incidents. This tab never starts or reruns pipeline work.</p></div>
+      <div aria-hidden="true" />
       <div className={`system-health-overall system-health-status-${snapshot.overall_status}`}><span className="status-dot" /><strong>{systemHealthStatusLabel(snapshot.overall_status)}</strong><small>{loading ? "Refreshing now" : `Polls every ${snapshot.refresh_interval_seconds}s`}</small></div>
     </header>
     <div className="system-health-meta"><span><strong>Last checked</strong> {formatDate(snapshot.checked_at)}</span><span><strong>Next check</strong> {formatDate(snapshot.next_check_at)}</span><span><strong>Data version</strong> {snapshot.pipeline.data_version ?? "—"}</span><span><strong>Read state</strong> {snapshot.read_state ?? "published"}{snapshot.served_from_cache ? " · cached projection" : ""}</span></div>
