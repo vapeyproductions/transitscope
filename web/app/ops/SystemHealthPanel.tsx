@@ -395,7 +395,7 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
     <div className="monitor-metrics" aria-label="Current pipeline metrics">
       <Metric label="Worker" value={worker.state ? humanize(worker.state) : "Not reported"} detail={`${worker.mode ?? "mode unknown"} · heartbeat ${formatAge(view.heartbeatAge)}`} tone={view.tone === "critical" ? "critical" : "default"} />
       <Metric label="Pipeline" value={view.paused ? "Paused" : currentStage} detail={worker.cycle_id ? `Cycle ${worker.cycle_id}` : "No cycle reported"} tone={view.paused ? "paused" : "default"} />
-      <Metric label="Publicly processed" value={publicCount == null || totalCount == null ? "—" : `${formatMetric(publicCount)} / ${formatMetric(totalCount)}`} detail="Committed and visible to the site" />
+      <Metric label="Processed targets" value={publicCount == null || totalCount == null ? "—" : `${formatMetric(publicCount)} / ${formatMetric(totalCount)}`} detail="Status projection · processed manifest targets" />
       <Metric label="Worker telemetry" value={formatMetric(workerCount)} detail="Last Stage 1 publish" tone={view.publicationBusy ? "warning" : "default"} />
       <Metric label="Active candidates" value={formatMetric(snapshot.active_candidate_count)} detail="Current candidate records" />
       <Metric label="Cycle running" value={formatDuration(worker.cycle_elapsed_seconds)} detail={`Last progress ${formatAge(view.progressAge)}`} tone={view.slowProgress ? "warning" : "default"} />
@@ -413,7 +413,7 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
       </div>
     </section>
 
-    {view.publicationBusy && countDifference != null && <div className="monitor-publication-note"><strong>Why the numbers differ</strong><span>Public API: {formatMetric(publicCount)} · worker telemetry: {formatMetric(workerCount)} · {formatMetric(Math.abs(countDifference))} {countDifference >= 0 ? "results are waiting to be published" : "result difference is being reconciled"}.</span></div>}
+    {view.publicationBusy && countDifference != null && <div className="monitor-publication-note"><strong>Why the numbers differ</strong><span>Status projection: {formatMetric(publicCount)} · worker publish counter: {formatMetric(workerCount)} · {formatMetric(Math.abs(countDifference))} {countDifference >= 0 ? "results are waiting to be published" : "result difference is being reconciled"}.</span></div>}
 
     <footer className="monitor-footer"><span>Source: <strong>/api/status</strong> · worker heartbeat, progress telemetry, and published projection</span><span>{lastSuccessfulLoad ? `Snapshot received ${formatAge((view.now - lastSuccessfulLoad) / 1000)}` : "Snapshot received just now"}</span></footer>
   </section>;

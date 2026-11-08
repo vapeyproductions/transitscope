@@ -37,6 +37,7 @@ _RANKING_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _STATUS_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _SKY_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _MONITORING_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
+_IDENTIFIED_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _CANDIDATE_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _HISTORY_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _CURVE_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
@@ -667,8 +668,16 @@ class ReadOnlyStore:
         """Return known catalog matches with their persisted pipeline performance."""
 
         empty = {"data_version": None, "count": 0, "rows": []}
-        connection = self.connect()
+        cache_key = str(limit)
+        connection = self.connect(timeout_seconds=PUBLISHED_READ_TIMEOUT_SECONDS)
         if connection is None:
+            cached = self._cached_response(_IDENTIFIED_RESPONSE_CACHE, "identified", cache_key)
+            if cached is not None:
+                cached["served_from_cache"] = True
+                cached["read_state"] = "publication_busy"
+                return cached
+            empty["served_from_cache"] = False
+            empty["read_state"] = "publication_busy"
             return empty
         try:
             candidates = connection.execute(
@@ -788,11 +797,14 @@ class ReadOnlyStore:
                     }
                 )
 
-            return {
+            response = {
                 "data_version": self.latest_version(connection),
                 "count": len(rows),
                 "rows": rows,
             }
+            response["served_from_cache"] = False
+            self._remember_response(_IDENTIFIED_RESPONSE_CACHE, "identified", cache_key, response)
+            return response
         finally:
             connection.close()
 
