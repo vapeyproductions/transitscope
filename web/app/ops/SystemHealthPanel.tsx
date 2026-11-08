@@ -409,6 +409,13 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
   // published-state check in the detailed checks section, but do not repeat
   // it in the compact active-alert group.
   const topAlerts = systemAlerts.filter((check) => check.id !== "published-state");
+  const overallAlertStatus: SystemHealthAlertStatus = view.tone === "healthy"
+    ? "healthy"
+    : view.tone === "paused"
+      ? "paused"
+      : view.tone === "critical"
+        ? "critical"
+        : "warning";
 
   return <section className="system-health-panel operations-panel" aria-labelledby="system-health-title">
     <header className="monitor-header">
@@ -430,11 +437,13 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
     {error && <div className="monitor-refresh-warning" role="status"><span className="status-dot" /><strong>Refresh failed.</strong><span>Showing the last successful snapshot until the next check succeeds.</span></div>}
 
     <div className="monitor-top-alerts">
-      <div className={`monitor-diagnosis monitor-diagnosis-${view.tone}`}>
-        <div><StatusPill tone={view.tone} /><strong>{view.diagnosis}</strong></div>
-        <p>{view.explanation}</p>
+      <div className="system-health-alert-list monitor-top-alert-list" aria-label="Active alerts">
+        <article className={`system-health-alert system-health-alert-${overallAlertStatus}`}>
+          <AlertStatusPill status={overallAlertStatus} />
+          <div><strong>Worker and public data</strong><p>{view.diagnosis}{view.explanation ? ` ${view.explanation}` : ""}</p><small>Source: worker heartbeat and public API</small></div>
+        </article>
+        {topAlerts.map((check) => <article className={`system-health-alert system-health-alert-${check.status}`} key={check.id}><AlertStatusPill status={check.status} /><div><strong>{check.label}</strong><p>{check.summary}</p><small>Source: {check.source}</small></div></article>)}
       </div>
-      {topAlerts.length > 0 && <div className="system-health-alert-list monitor-top-alert-list" aria-label="Active alerts">{topAlerts.map((check) => <article className={`system-health-alert system-health-alert-${check.status}`} key={check.id}><AlertStatusPill status={check.status} /><div><strong>{check.label}</strong><p>{check.summary}</p><small>Source: {check.source}</small></div></article>)}</div>}
     </div>
 
     <div className="monitor-metrics" aria-label="Current pipeline metrics">
