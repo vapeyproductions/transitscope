@@ -405,6 +405,10 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
         : "No target-level updates are waiting.";
   const progress = worker.progress;
   const currentStage = stageLabel(worker.state ?? progress?.state);
+  // The diagnosis above already explains a publication lock. Keep the
+  // published-state check in the detailed checks section, but do not repeat
+  // it in the compact active-alert group.
+  const topAlerts = systemAlerts.filter((check) => check.id !== "published-state");
 
   return <section className="system-health-panel operations-panel" aria-labelledby="system-health-title">
     <header className="monitor-header">
@@ -430,7 +434,7 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
         <div><StatusPill tone={view.tone} /><strong>{view.diagnosis}</strong></div>
         <p>{view.explanation}</p>
       </div>
-      {systemAlerts.length > 0 && <div className="system-health-alert-list monitor-top-alert-list" aria-label="Active alerts">{systemAlerts.map((check) => <article className={`system-health-alert system-health-alert-${check.status}`} key={check.id}><AlertStatusPill status={check.status} /><div><strong>{check.label}</strong><p>{check.summary}</p><small>Source: {check.source}</small></div></article>)}</div>}
+      {topAlerts.length > 0 && <div className="system-health-alert-list monitor-top-alert-list" aria-label="Active alerts">{topAlerts.map((check) => <article className={`system-health-alert system-health-alert-${check.status}`} key={check.id}><AlertStatusPill status={check.status} /><div><strong>{check.label}</strong><p>{check.summary}</p><small>Source: {check.source}</small></div></article>)}</div>}
     </div>
 
     <div className="monitor-metrics" aria-label="Current pipeline metrics">
