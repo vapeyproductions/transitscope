@@ -453,6 +453,15 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
 
     {error && <div className="monitor-refresh-warning" role="status"><span className="status-dot" /><strong>Refresh failed.</strong><span>Showing the last successful snapshot until the next check succeeds.</span></div>}
 
+    <div className="monitor-metrics" aria-label="Current pipeline metrics">
+      <Metric label="Worker" value={worker.state ? humanize(worker.state) : "Not reported"} detail={`${worker.mode ?? "mode unknown"} · heartbeat ${formatAge(view.heartbeatAge)}`} tone={view.tone === "critical" ? "critical" : "default"} />
+      <Metric label="Pipeline" value={view.paused ? "Paused" : currentStage} detail={worker.cycle_id ? `Cycle ${worker.cycle_id}` : "No cycle reported"} tone={view.paused ? "paused" : "default"} />
+      <Metric label="Processed targets" value={publicCount == null || totalCount == null ? "—" : `${formatMetric(publicCount)} / ${formatMetric(totalCount)}`} detail="Status projection · processed manifest targets" />
+      <Metric label="Worker telemetry" value={formatMetric(workerCount)} detail="Last Stage 1 publish" tone={view.publicationBusy ? "warning" : "default"} />
+      <Metric label="Active candidates" value={formatMetric(snapshot.active_candidate_count)} detail="Current candidate records" />
+      <Metric label="Cycle running" value={formatDuration(worker.cycle_elapsed_seconds)} detail={`Last progress ${formatAge(view.progressAge)}`} tone={view.slowProgress ? "warning" : "default"} />
+    </div>
+
     <div className="monitor-top-alerts">
       <div className="monitor-top-alert-heading"><strong>Active alerts</strong><span>Click a card to expand details</span></div>
       <div className="system-health-alert-list monitor-top-alert-list" aria-label="Active alerts">
@@ -485,15 +494,6 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
           </article>;
         })}
       </div>
-    </div>
-
-    <div className="monitor-metrics" aria-label="Current pipeline metrics">
-      <Metric label="Worker" value={worker.state ? humanize(worker.state) : "Not reported"} detail={`${worker.mode ?? "mode unknown"} · heartbeat ${formatAge(view.heartbeatAge)}`} tone={view.tone === "critical" ? "critical" : "default"} />
-      <Metric label="Pipeline" value={view.paused ? "Paused" : currentStage} detail={worker.cycle_id ? `Cycle ${worker.cycle_id}` : "No cycle reported"} tone={view.paused ? "paused" : "default"} />
-      <Metric label="Processed targets" value={publicCount == null || totalCount == null ? "—" : `${formatMetric(publicCount)} / ${formatMetric(totalCount)}`} detail="Status projection · processed manifest targets" />
-      <Metric label="Worker telemetry" value={formatMetric(workerCount)} detail="Last Stage 1 publish" tone={view.publicationBusy ? "warning" : "default"} />
-      <Metric label="Active candidates" value={formatMetric(snapshot.active_candidate_count)} detail="Current candidate records" />
-      <Metric label="Cycle running" value={formatDuration(worker.cycle_elapsed_seconds)} detail={`Last progress ${formatAge(view.progressAge)}`} tone={view.slowProgress ? "warning" : "default"} />
     </div>
 
     {stageSnapshot?.pipeline?.stages?.length ? <StageTelemetryPanel stages={stageSnapshot.pipeline.stages} checkedAt={stageSnapshot.checked_at} workerState={worker.state} workerLastProgress={worker.last_progress_at} /> : <section className="system-health-pipeline system-stage-lanes" aria-labelledby="monitor-stage-lanes-title"><div className="monitor-section-heading"><div><p className="eyebrow">Pipeline lanes</p><h3 id="monitor-stage-lanes-title">What each stage is doing</h3></div><span>{stageError ?? "Reading stage telemetry…"}</span></div><div className="monitor-stage-empty">Stage activity is loading independently. The worker status above remains live while this detail refreshes.</div></section>}
