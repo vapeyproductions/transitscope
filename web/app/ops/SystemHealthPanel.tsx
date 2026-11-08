@@ -472,8 +472,8 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
 
     {stageSnapshot?.pipeline?.stages?.length ? <StageTelemetryPanel stages={stageSnapshot.pipeline.stages} checkedAt={stageSnapshot.checked_at} workerState={worker.state} workerLastProgress={worker.last_progress_at} /> : <section className="system-health-pipeline system-stage-lanes" aria-label="Pipeline lanes"><div className="monitor-section-heading"><div><p className="eyebrow">Pipeline lanes</p></div><span>{stageError ?? "Reading stage telemetry…"}</span></div><div className="monitor-stage-empty">Stage activity is loading independently. The worker status above remains live while this detail refreshes.</div></section>}
 
-    <section className="monitor-current-job" aria-labelledby="monitor-current-job-title">
-      <div className="monitor-section-heading"><div><p className="eyebrow">Current work</p><h3 id="monitor-current-job-title">What the worker is doing</h3></div><span>{currentStage}</span></div>
+    <section className="monitor-current-job" aria-label="Current work">
+      <div className="monitor-section-heading"><div><p className="eyebrow">Current work</p></div><span>{currentStage}</span></div>
       <div className="monitor-job-grid">
         <div><span>Target</span><strong>{progress?.target_id ?? "No target reported"}</strong></div>
         <div><span>Job</span><strong>{reasonLabel(progress?.reason ?? worker.last_progress_state)}</strong></div>
