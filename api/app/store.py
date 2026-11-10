@@ -216,6 +216,26 @@ class ReadOnlyStore:
         )
         return self._cached_response(_RANKING_RESPONSE_CACHE, "rankings", cache_key)
 
+    def _publication_lock_held(self) -> bool:
+        """Check the worker coordination lock without waiting on it."""
+
+        if not self.database.exists():
+            return False
+        lock_path = self.database.with_suffix(self.database.suffix + ".lock")
+        try:
+            lock_file = lock_path.open("a+")
+        except OSError:
+            return False
+        try:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            return False
+        finally:
+            lock_file.close()
+
     def connect(self, *, timeout_seconds: float | None = None) -> Any | None:
         self.publication_busy = False
         if not self.database.exists():
@@ -637,6 +657,15 @@ class ReadOnlyStore:
             },
             sort_keys=True,
         )
+        cached = self._cached_response(_RANKING_RESPONSE_CACHE, "rankings", cache_key)
+        if cached is not None and self._publication_lock_held():
+            # Never make a public page wait behind a worker publication. The
+            # last complete ranking is more useful than a request timeout,
+            # and the response explicitly tells the UI it is cached.
+            cached = copy.deepcopy(cached)
+            cached["served_from_cache"] = True
+            cached["read_state"] = "publication_busy"
+            return cached
         connection = self.connect(timeout_seconds=PUBLISHED_READ_TIMEOUT_SECONDS)
         empty = {
             "view": view,
@@ -655,8 +684,8 @@ class ReadOnlyStore:
             "removed": [],
         }
         if connection is None:
-            cached = self._cached_response(_RANKING_RESPONSE_CACHE, "rankings", cache_key)
             if cached is not None:
+                cached = copy.deepcopy(cached)
                 cached["served_from_cache"] = True
                 cached["read_state"] = "publication_busy"
                 return cached
