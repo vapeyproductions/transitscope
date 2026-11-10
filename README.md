@@ -1,6 +1,10 @@
 # TransitScope
 
-TransitScope is a Dockerized astronomy observatory for assessing potential exoplanet candidates from public stellar observations.
+TransitScope is a live, evidence-first observatory for exploring potential exoplanet transit signals in public TESS observations.
+
+It turns stellar light curves into ranked candidate signals, evaluates them through increasingly demanding tests, and exposes worker, data, and model health through a public dashboard and ML operations monitor.
+
+> TransitScope identifies candidates for investigation. It does not claim scientific confirmation.
 
 ## Local development
 
@@ -11,13 +15,13 @@ docker compose up --build
 - Web dashboard: http://localhost:3000
 - API health: http://localhost:8000/api/health
 - API status: http://localhost:8000/api/status
-- ML operations view: open the `ML Ops` tab, or query http://localhost:8000/api/monitoring/overview
+- ML operations view: http://localhost:3000/ops
 
-The `data/` directory is a durable local volume for provider cache, normalized data, DuckDB state, and replay history. The current stack includes the official MAST/TESS probe, bounded/checkpointed Stage 1 processing, Stage 2 historical repeatability, Stage 3 chronological holdout prediction, NASA Exoplanet Archive matching, Overall/stage ranking snapshots, replay APIs, and the candidate investigation modal. The 100,000-row universe is represented as a durable queue; the local demo downloads a bounded real seed set so it can run official data without pretending that 100,000 FITS files are already local.
+The `data/` directory is a durable local volume for provider cache, normalized data, DuckDB state, and replay history. The current stack includes the official MAST/TESS probe, bounded/checkpointed Stage 1 processing, Stage 2 historical repeatability, Stage 3 chronological holdout prediction, NASA Exoplanet Archive matching, Overall/stage ranking snapshots, replay APIs, and the candidate investigation modal. The 100,000-row universe is represented as a durable queue; local development downloads a bounded real seed set rather than pretending that 100,000 FITS files are already local.
 
 The compose worker is intentionally paused by default with `RUN_LIVE_PIPELINE=false`. This is a safety gate: opening the site, refreshing the dashboard, or inspecting ML Ops never starts MAST downloads or model jobs. The live worker also honors `PIPELINE_PAUSED`; it defaults to `true` so a deployment cannot resume ingestion accidentally. Set `PIPELINE_PAUSED=false` only after the public deployment, durable state, provider limits, and monitoring have been reviewed.
 
-## ML operations and eventual deployment
+## ML operations and deployment
 
 The public [`ML Ops dashboard`](https://desirable-luck-production-ad18.up.railway.app/ops) is a read-only portfolio view for the system that runs the long-lived search. It reports the configured 500-target Stage 1 pool, progress through the 100,000-target manifest, occupied Stage 1/2/3 slots, status counts, model versions and aggregate metrics, MAST/catalog provider health, archive coverage watermarks, recent batches/events, selection buckets, 10-degree sky-cell outcome signals, queue motion, dispatch distribution, and cumulative throughput. Worker pause/resume and manual migration controls remain authenticated and are not exposed to public viewers. Sampling signals are descriptive until adaptive replacement sampling is explicitly enabled.
 
@@ -136,7 +140,7 @@ Remove `--dry-run` to publish a catalog mapping. The candidate becomes an inacti
 
 ## Project status
 
-The application assesses potential planets and does not claim scientific confirmation. The production path currently uses an explainable Stage 1 Box Least Squares evidence score, Stage 2 repeatability features, and a CPU-capable Stage 3 logistic model adapter with a transparent baseline. A neural-network experiment remains optional and is not claimed as part of this draft. See `docs/hackathon-build/` for the scope, product requirements, technical specification, build checklist, and item-by-item verification notes.
+The application assesses potential planets and does not claim scientific confirmation. The production path currently uses an explainable Stage 1 Box Least Squares evidence score, Stage 2 repeatability features, and a CPU-capable Stage 3 logistic model adapter with a transparent baseline. A neural-network experiment remains optional and is not claimed as part of the current pipeline. See [`docs/portfolio.md`](docs/portfolio.md) for the concise engineering narrative.
 
 ## Replay and candidate investigation
 
@@ -157,18 +161,6 @@ GET /api/rankings?view=stage1&limit=100&page=1
 ```
 
 The response reports the 500-row display cap, total ranked candidates, and available pages.
-
-## Demo walkthrough
-
-Use a 1–3 minute recording with this sequence:
-
-1. Show the Overall dashboard and explain that ranks are provisional evidence, not confirmation.
-2. Switch through Stage 1, Stage 2, and Stage 3; point out status-gated movement and the Stage 3 `Prime Candidate` label.
-3. Open one candidate and show its light curve, metrics, current activity, and pipeline history.
-4. Start the active tab's replay, pause it at a rank change, and show that the replay reads saved snapshots without rerunning models.
-5. Show an `Already Known` removal and the Identified tab when the final demo dataset contains a catalog match.
-
-If the live archive is quiet, use the persisted replay timeline or a documented local fixture. Do not imply that a candidate is scientifically confirmed.
 
 ## Verification
 
