@@ -33,6 +33,11 @@ HANDOFF_ROUTE_BY_STAGE = {
     "stage2": "stage3",  # Stage 2 released to Stage 3.
     "stage3": "stage3",  # Stage 3 received a replacement from Stage 2.
 }
+INTAKE_QUEUE_KINDS_BY_STAGE = {
+    "stage1": {"intake"},
+    "stage2": HANDOFF_QUEUE_KINDS,
+    "stage3": HANDOFF_QUEUE_KINDS,
+}
 
 
 class PublicationBusyError(RuntimeError):
@@ -62,6 +67,24 @@ def handoff_count_for_cycle(cycle: dict[str, Any], stage: str) -> int:
         and event.get("candidate_id")
     )
     return derived
+
+
+def intake_count_for_cycle(cycle: dict[str, Any], stage: str) -> int:
+    """Count candidates added to a stage's assessment queue in one cycle."""
+
+    stages = cycle.get("stages") if isinstance(cycle.get("stages"), dict) else cycle
+    summary = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
+    if cycle.get("intake_metric_version") == 1:
+        return int(summary.get("intake") or 0)
+    queue_events = cycle.get("queue_events") if isinstance(cycle.get("queue_events"), list) else []
+    return sum(
+        1
+        for event in queue_events
+        if isinstance(event, dict)
+        and event.get("stage") == stage
+        and event.get("kind") in INTAKE_QUEUE_KINDS_BY_STAGE.get(stage, {"intake"})
+        and event.get("candidate_id")
+    )
 
 _READ_CACHE_LOCK = threading.Lock()
 _RANKING_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}

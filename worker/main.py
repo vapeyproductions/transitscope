@@ -285,10 +285,11 @@ def _new_live_cycle_metrics(cycle_id: str, started_at: str) -> dict[str, object]
         "cycle_id": cycle_id,
         "started_at": started_at,
         "handoff_metric_version": 2,
+        "intake_metric_version": 1,
         "updated_at": started_at,
-        "stage1": {"jobs": 0, "assessed": 0, "handoffs": 0},
-        "stage2": {"jobs": 0, "assessed": 0, "handoffs": 0},
-        "stage3": {"jobs": 0, "assessed": 0, "handoffs": 0},
+        "stage1": {"jobs": 0, "assessed": 0, "handoffs": 0, "intake": 0},
+        "stage2": {"jobs": 0, "assessed": 0, "handoffs": 0, "intake": 0},
+        "stage3": {"jobs": 0, "assessed": 0, "handoffs": 0, "intake": 0},
     }
 
 
@@ -324,7 +325,9 @@ def _record_live_cycle_event(
         return
 
     if state == "stage1_batch_published":
-        stage["jobs"] = int(stage.get("jobs") or 0) + int(details.get("selected_count") or 0)
+        selected_count = int(details.get("selected_count") or 0)
+        stage["jobs"] = int(stage.get("jobs") or 0) + selected_count
+        stage["intake"] = int(stage.get("intake") or 0) + selected_count
         stage["assessed"] = int(stage.get("assessed") or 0) + int(details.get("evaluated_count") or 0)
         live_metrics["updated_at"] = utc_now()
         return
@@ -357,6 +360,7 @@ def _record_live_cycle_event(
             stage1 = live_metrics.get("stage1")
             if isinstance(stage1, dict):
                 stage1["handoffs"] = int(stage1.get("handoffs") or 0) + dispatched
+            stage["intake"] = int(stage.get("intake") or 0) + dispatched
         elif stage_name == "stage3" and reason in {
             "stage3_initial_intake",
             "stage3_called_stage2",
@@ -368,6 +372,7 @@ def _record_live_cycle_event(
                 routed = live_metrics.get(routed_stage)
                 if isinstance(routed, dict):
                     routed["handoffs"] = int(routed.get("handoffs") or 0) + dispatched
+            stage["intake"] = int(stage.get("intake") or 0) + dispatched
 
     completed = details.get("job_completed")
     if completed:
@@ -644,11 +649,23 @@ def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -
         if event.get("stage") == "stage3"
         and event.get("kind") in {"handoff", "manual_handoff", "gate_bootstrap"}
     )
+    stage1_intake = sum(
+        1
+        for event in queue_events
+        if event.get("stage") == "stage1"
+        and event.get("kind") == "intake"
+    )
     handoffs_by_stage = {
         "stage1": stage1_to_stage2,
         "stage2": stage2_to_stage3,
         "stage3": stage2_to_stage3,
     }
+    intake_by_stage = {
+        "stage1": stage1_intake,
+        "stage2": stage1_to_stage2,
+        "stage3": stage2_to_stage3,
+    }
+    stage1_summary["intake"] = intake_by_stage["stage1"]
     stage2_summary = result_summary(result.get("stage2"))
     stage2_reassessment = result.get("stage2_reassessment")
     if isinstance(stage2_reassessment, dict):
@@ -669,6 +686,7 @@ def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -
     )
     stage2_summary.update({
         "handoffs": handoffs_by_stage["stage2"],
+        "intake": intake_by_stage["stage2"],
         "timing_seconds": round(float(timings.get("stage2_seconds") or 0.0), 3),
         "needs_more_data_seconds": round(float(timings.get("stage2_needs_more_data_seconds") or 0.0), 3),
     })
@@ -676,6 +694,7 @@ def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -
     stage3_summary = result_summary(stage3_results)
     stage3_summary.update({
         "handoffs": handoffs_by_stage["stage3"],
+        "intake": intake_by_stage["stage3"],
         "timing_seconds": round(float(timings.get("stage3_seconds") or 0.0), 3),
         "needs_more_data_seconds": round(float(timings.get("stage3_needs_more_data_seconds") or 0.0), 3),
         "dispatch_seconds": round(float(timings.get("stage3_dispatch_seconds") or 0.0), 3),
@@ -685,6 +704,7 @@ def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -
     events.extend(result_cycle_events("stage3", stage3_results))
     return {
         "handoff_metric_version": 2,
+        "intake_metric_version": 1,
         "stage1": stage1_summary,
         "stage2": stage2_summary,
         "stage3": stage3_summary,

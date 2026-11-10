@@ -552,7 +552,7 @@ type SystemHealthStage = {
   priority_candidates: number;
   jobs_in_latest_queue: number;
   evaluated_in_window: number;
-  handoffs_in_window: number;
+  intake_in_latest_cycle: number;
   last_evaluated_at: string | null;
   last_activity_at?: string | null;
 };
@@ -669,12 +669,6 @@ function stageName(stage: string): string {
   if (stage === "stage2") return "Stage 2";
   if (stage === "stage3") return "Stage 3";
   return stage;
-}
-
-function handoffMetricLabel(stage: string): string {
-  if (stage === "stage1") return "released to Stage 2";
-  if (stage === "stage2") return "released to Stage 3";
-  return "replacements from Stage 2";
 }
 
 function displayStatus(status: string, stage?: string): string {
@@ -1768,10 +1762,10 @@ function SystemStageLanes({ snapshot }: { snapshot: SystemHealthResponse }) {
         const candidates = stage.retained_candidates == null ? "—" : stage.retained_candidates.toLocaleString();
         const jobs = stage.jobs_in_latest_queue == null ? "—" : stage.jobs_in_latest_queue.toLocaleString();
         const assessed = stage.evaluated_in_window == null ? "—" : stage.evaluated_in_window.toLocaleString();
-        const handoffs = stage.handoffs_in_window == null ? "—" : stage.handoffs_in_window.toLocaleString();
+        const intake = stage.intake_in_latest_cycle == null ? "—" : stage.intake_in_latest_cycle.toLocaleString();
         return <article className={`system-stage-lane system-health-card-${stage.status}`} key={stage.stage}>
           <div className="system-stage-lane-heading"><div><strong>{stageName(stage.stage)}</strong><span>{available ? `${candidates} candidates` : "Snapshot pending"}</span></div><SystemHealthStatusPill status={stage.status} /></div>
-          <div className="system-stage-lane-metrics"><span><strong>{jobs}</strong><small>jobs latest cycle</small></span><span><strong>{assessed}</strong><small>assessed in window</small></span><span><strong>{handoffs}</strong><small>{handoffMetricLabel(stage.stage)}</small></span></div>
+          <div className="system-stage-lane-metrics"><span><strong>{jobs}</strong><small>jobs latest cycle</small></span><span><strong>{assessed}</strong><small>assessed in window</small></span><span><strong>{intake}</strong><small>intake latest cycle</small></span></div>
           <div className="system-stage-lane-activity"><span>Last stage activity</span><strong>{activityAt ? formatDate(activityAt) : "No completed assessment in this snapshot"}</strong></div>
           <div className="system-stage-lane-next"><span>Next action</span><strong>{systemStageNextAction(stage, activeStage)}</strong></div>
         </article>;

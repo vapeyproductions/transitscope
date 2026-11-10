@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from .store import PublicationBusyError, ReadOnlyStore, handoff_count_for_cycle
+from .store import PublicationBusyError, ReadOnlyStore, intake_count_for_cycle
 
 DEFAULT_TARGET_UNIVERSE_SIZE = 100_000
 
@@ -325,25 +325,27 @@ def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
         if has_stage_snapshot:
             jobs = int(stage_metrics.get("selected") or stage_metrics.get("attempted") or 0)
             evaluated = int(stage_metrics.get("evaluated") or stage_metrics.get("attempted") or 0)
-            handoffs = handoff_count_for_cycle(last_metrics, stage)
+            intake = intake_count_for_cycle(last_metrics, stage)
             throughput[stage] = {
                 key: int(stage_metrics.get(key) or 0)
                 for key in ("attempted", "evaluated", "promising", "needs_more_data", "inconclusive", "known_match", "errors", "handoffs")
             }
             throughput[stage]["attempted"] = jobs
             throughput[stage]["evaluated"] = evaluated
-            throughput[stage]["handoffs"] = handoffs
+            throughput[stage]["handoffs"] = intake
+            throughput[stage]["intake"] = intake
         elif has_live_stage:
             jobs = int(stage_metrics.get("jobs") or 0)
             evaluated = int(stage_metrics.get("assessed") or 0)
-            handoffs = int(stage_metrics.get("handoffs") or 0)
+            intake = int(stage_metrics.get("intake") or stage_metrics.get("handoffs") or 0)
             throughput[stage] = {
                 "attempted": jobs,
                 "evaluated": evaluated,
-                "handoffs": handoffs,
+                "handoffs": intake,
+                "intake": intake,
             }
         else:
-            jobs = evaluated = handoffs = 0
+            jobs = evaluated = intake = 0
             throughput[stage] = {}
         if has_observed_metrics:
             throughput[stage]["per_hour"] = throughput[stage]["evaluated"]
@@ -681,7 +683,7 @@ def _monitoring_system_health(worker: dict) -> dict:
                 ),
                 "jobs_in_latest_queue": jobs,
                 "evaluated_in_window": int(stage_flow.get("evaluated", 0) or 0) if stage_available else None,
-                "handoffs_in_window": int(stage_flow.get("handoffs", 0) or 0) if stage_available else None,
+                "intake_in_latest_cycle": int(stage_flow.get("intake", stage_flow.get("handoffs", 0)) or 0) if stage_available else None,
                 "last_evaluated_at": stage_data.get("last_evaluated_at") if stage_available else None,
                 "last_activity_at": stage_activity_at,
             }

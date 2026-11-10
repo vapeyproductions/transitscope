@@ -62,7 +62,7 @@ type StageTelemetry = {
   priority_candidates?: number | null;
   jobs_in_latest_queue?: number | null;
   evaluated_in_window?: number | null;
-  handoffs_in_window?: number | null;
+  intake_in_latest_cycle?: number | null;
   last_evaluated_at?: string | null;
   last_activity_at?: string | null;
 };
@@ -172,12 +172,6 @@ function stageName(value: string): string {
   return match ? `Stage ${match[1]}` : humanize(value);
 }
 
-function handoffMetricLabel(stage: string): string {
-  if (stage === "stage1") return "released to Stage 2";
-  if (stage === "stage2") return "released to Stage 3";
-  return "replacements from Stage 2";
-}
-
 function reasonLabel(value: string | null | undefined): string {
   if (!value) return "No current job reason reported.";
   return value === "mast_history_completed" ? "MAST history completed" : humanize(value);
@@ -264,7 +258,7 @@ function StageTelemetryPanel({ stages, checkedAt, workerState, workerLastProgres
         const statusSummary = stageStatusSummary(stage);
         return <article className={`system-stage-lane system-health-card-${tone}`} key={stage.stage}>
           <div className="system-stage-lane-heading"><div><strong>{stageName(stage.stage)}</strong><span>{available && stage.retained_candidates != null ? `${formatMetric(stage.retained_candidates)} candidates` : "Snapshot pending"}</span></div><span className={`monitor-status-pill monitor-status-${tone}`}><span className="status-dot" />{stageTelemetryLabel(stage)}</span></div>
-          <div className="system-stage-lane-metrics"><span><strong>{formatMetric(stage.jobs_in_latest_queue)}</strong><small>jobs latest cycle</small></span><span><strong>{formatMetric(stage.evaluated_in_window)}</strong><small>assessed in window</small></span><span><strong>{formatMetric(stage.handoffs_in_window)}</strong><small>{handoffMetricLabel(stage.stage)}</small></span></div>
+          <div className="system-stage-lane-metrics"><span><strong>{formatMetric(stage.jobs_in_latest_queue)}</strong><small>jobs latest cycle</small></span><span><strong>{formatMetric(stage.evaluated_in_window)}</strong><small>assessed in window</small></span><span><strong>{formatMetric(stage.intake_in_latest_cycle)}</strong><small>intake latest cycle</small></span></div>
           {statusSummary && <div className="system-stage-lane-statuses"><span>Ranked status mix</span><strong>{statusSummary}</strong></div>}
           <div className="system-stage-lane-activity"><span>Last stage activity</span><strong>{lastActivity ? formatDate(lastActivity) : "No completed assessment in this snapshot"}</strong></div>
           <div className="system-stage-lane-next"><span>Next action</span><strong>{stageNextAction(stage, activeStage)}</strong></div>
