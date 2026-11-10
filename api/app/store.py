@@ -27,10 +27,29 @@ RANKING_STATUS_FILTERS = set(STATUS_PRIORITY) | {"Duplicate Signal"}
 RANKING_SORTS = {"rank", "last_assessed_desc", "last_assessed_asc"}
 DEFAULT_TARGET_UNIVERSE_SIZE = 100_000
 PUBLISHED_READ_TIMEOUT_SECONDS = 3.0
+HANDOFF_QUEUE_KINDS = {"handoff", "manual_handoff", "gate_bootstrap"}
 
 
 class PublicationBusyError(RuntimeError):
     """Raised when the worker is publishing and a read cannot get a snapshot."""
+
+
+def handoff_count_for_cycle(cycle: dict[str, Any], stage: str) -> int:
+    """Count persisted stage handoffs, including legacy queue-ledger cycles."""
+
+    stages = cycle.get("stages") if isinstance(cycle.get("stages"), dict) else cycle
+    summary = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
+    explicit = int(summary.get("handoffs") or 0)
+    queue_events = cycle.get("queue_events") if isinstance(cycle.get("queue_events"), list) else []
+    derived = sum(
+        1
+        for event in queue_events
+        if isinstance(event, dict)
+        and event.get("stage") == stage
+        and event.get("kind") in HANDOFF_QUEUE_KINDS
+        and event.get("candidate_id")
+    )
+    return max(explicit, derived)
 
 _READ_CACHE_LOCK = threading.Lock()
 _RANKING_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
@@ -161,6 +180,37 @@ class ReadOnlyStore:
         _cache_set(cache, key, payload)
         self._write_disk_cache(kind, key, payload)
 
+    def _cached_overall_star_count(self) -> int | None:
+        """Return the latest cached distinct-star count for the overall view.
+
+        The status endpoint deliberately avoids waiting on DuckDB while the
+        worker publishes a cycle. During that window, worker telemetry can
+        legitimately lag the last published ranking. Reusing the same cached
+        ranking projection as the public dashboard keeps the monitor from
+        reporting a false zero.
+        """
+
+        cache_key = json.dumps(
+            {
+                "database": str(self.database.resolve()),
+                "view": "overall",
+                "limit": 100,
+                "page": 1,
+                "stage_filter": None,
+                "status_filter": None,
+                "sort": "rank",
+            },
+            sort_keys=True,
+        )
+        cached = self._cached_response(_RANKING_RESPONSE_CACHE, "rankings", cache_key)
+        if not cached:
+            return None
+        try:
+            count = int(cached.get("total_star_count") or 0)
+        except (TypeError, ValueError):
+            return None
+        return count if count > 0 else None
+
     def connect(self, *, timeout_seconds: float | None = None) -> Any | None:
         self.publication_busy = False
         if not self.database.exists():
@@ -180,6 +230,17 @@ class ReadOnlyStore:
                         fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
                         break
                     except BlockingIOError:
+                        # DuckDB supports concurrent read-only connections to
+                        # the last committed MVCC snapshot while a writer is
+                        # building its next transaction. Prefer that snapshot
+                        # over waiting behind the worker's coordination lock;
+                        # the API never writes through this connection.
+                        try:
+                            direct_connection = duckdb.connect(str(self.database), read_only=True)
+                            lock_file.close()
+                            return direct_connection
+                        except Exception:
+                            pass
                         if time.monotonic() >= deadline:
                             self.publication_busy = True
                             lock_file.close()
@@ -292,6 +353,14 @@ class ReadOnlyStore:
                 fallback["active_candidate_count"] = int(telemetry.get("active_candidate_count") or 0)
             if telemetry.get("active_star_count") is not None:
                 fallback["active_star_count"] = int(telemetry.get("active_star_count") or 0)
+            if (
+                fallback.get("active_candidate_count", 0) > 0
+                and int(fallback.get("active_star_count") or 0) == 0
+            ):
+                fallback["active_star_count"] = max(
+                    int(fallback.get("active_star_count") or 0),
+                    int(self._cached_overall_star_count() or 0),
+                )
             fallback["last_ingest_at"] = worker.get("last_ingest_at") or fallback.get("last_ingest_at")
             fallback["worker"] = worker
             fallback["served_from_cache"] = True
@@ -479,6 +548,14 @@ class ReadOnlyStore:
             response["active_candidate_count"] = int(telemetry.get("active_candidate_count") or 0)
         if telemetry.get("active_star_count") is not None:
             response["active_star_count"] = int(telemetry.get("active_star_count") or 0)
+        if (
+            response.get("active_candidate_count", 0) > 0
+            and int(response.get("active_star_count") or 0) == 0
+        ):
+            response["active_star_count"] = max(
+                int(response.get("active_star_count") or 0),
+                int(self._cached_overall_star_count() or 0),
+            )
         response["total_target_count"] = int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE)))
         response["last_ingest_at"] = worker.get("last_ingest_at") or response.get("last_ingest_at")
         response["last_published_at"] = (
@@ -859,7 +936,6 @@ class ReadOnlyStore:
 
         if view not in RANKING_VIEWS:
             raise ValueError(f"unsupported ranking view: {view}")
-        connection = self.connect()
         empty = {
             "view": view,
             "data_version": None,
@@ -871,7 +947,32 @@ class ReadOnlyStore:
             "first_occurred_at": None,
             "last_occurred_at": None,
         }
+        # Timeline metadata is only a navigation aid. When the worker is
+        # holding DuckDB for a publish, use its durable version telemetry as a
+        # lightweight upper bound instead of making the replay button wait on
+        # the database. Individual snapshots still resolve against the saved
+        # ranking history when the user moves the playhead.
+        try:
+            status_payload = json.loads((self.data_dir / "worker-status.json").read_text())
+            telemetry = status_payload.get("telemetry") if isinstance(status_payload, dict) else None
+            worker_version = int(telemetry.get("data_version") or 0) if isinstance(telemetry, dict) else 0
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            worker_version = 0
+        if worker_version > 0:
+            return {
+                **empty,
+                "data_version": worker_version,
+                "initial_sequence": 0,
+                "first_sequence": 1,
+                "last_sequence": worker_version,
+                "snapshot_count": worker_version,
+                "available_sequences": [],
+                "read_state": "worker_telemetry",
+            }
+        connection = self.connect(timeout_seconds=PUBLISHED_READ_TIMEOUT_SECONDS)
         if connection is None:
+            if self.publication_busy:
+                return {**empty, "read_state": "publication_busy"}
             return empty
         try:
             rows = connection.execute(
@@ -904,7 +1005,6 @@ class ReadOnlyStore:
 
         if view not in RANKING_VIEWS:
             raise ValueError(f"unsupported ranking view: {view}")
-        connection = self.connect()
         empty = {
             "view": view,
             "data_version": None,
@@ -921,9 +1021,12 @@ class ReadOnlyStore:
             "rows": [],
             "removed": [],
         }
-        if connection is None or sequence <= 0:
-            if connection is not None:
-                connection.close()
+        if sequence <= 0:
+            return empty
+        connection = self.connect(timeout_seconds=PUBLISHED_READ_TIMEOUT_SECONDS)
+        if connection is None:
+            if self.publication_busy:
+                return {**empty, "read_state": "publication_busy"}
             return empty
         try:
             snapshot = connection.execute(
@@ -997,7 +1100,7 @@ class ReadOnlyStore:
 
         if view not in RANKING_VIEWS:
             raise ValueError(f"unsupported ranking view: {view}")
-        connection = self.connect()
+        connection = self.connect(timeout_seconds=PUBLISHED_READ_TIMEOUT_SECONDS)
         if connection is None or end_sequence < start_sequence:
             if connection is not None:
                 connection.close()
@@ -1056,41 +1159,56 @@ class ReadOnlyStore:
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         projected_rows: list[dict[str, Any]] = []
+        window_candidate_ids = [str(candidate_id) for candidate_id in candidate_ids[offset : offset + limit]]
+        if not window_candidate_ids:
+            return projected_rows
+        placeholders = ", ".join("?" for _ in window_candidate_ids)
+        candidate_rows = connection.execute(
+            f"""
+            SELECT candidate_id, target_id, current_stage, status,
+                   overall_score, stage_score, rank_overall, rank_stage,
+                   activity, rank_delta, movement_kind, last_evaluated_at,
+                   signal_group_id, signal_resolution, alias_of_candidate_id,
+                   promotion_eligible
+            FROM candidates
+            WHERE candidate_id IN ({placeholders})
+            """,
+            window_candidate_ids,
+        ).fetchall()
+        candidates_by_id = {str(row[0]): row for row in candidate_rows}
+        event_rows = connection.execute(
+            f"""
+            SELECT candidate_id, stage, event_type, payload_json, occurred_at
+            FROM (
+                SELECT candidate_id, stage, event_type, payload_json, occurred_at,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY candidate_id
+                           ORDER BY sequence_number DESC, occurred_at DESC
+                       ) AS event_rank
+                FROM pipeline_events
+                WHERE candidate_id IN ({placeholders})
+                  AND sequence_number <= ?
+            ) AS ranked_events
+            WHERE event_rank = 1
+            """,
+            [*window_candidate_ids, sequence],
+        ).fetchall()
+        events_by_candidate = {str(row[0]): row for row in event_rows}
         signal_indices = self._signal_indices(
             connection,
-            [str(candidate_id) for candidate_id in candidate_ids],
+            window_candidate_ids,
         )
-        for index, raw_candidate_id in enumerate(candidate_ids[offset : offset + limit], start=offset + 1):
+        for index, raw_candidate_id in enumerate(window_candidate_ids, start=offset + 1):
             candidate_id = str(raw_candidate_id)
-            candidate = connection.execute(
-                """
-                SELECT candidate_id, target_id, current_stage, status,
-                       overall_score, stage_score, rank_overall, rank_stage,
-                       activity, rank_delta, movement_kind, last_evaluated_at,
-                       signal_group_id, signal_resolution, alias_of_candidate_id,
-                       promotion_eligible
-                FROM candidates
-                WHERE candidate_id = ?
-                """,
-                [candidate_id],
-            ).fetchone()
+            candidate = candidates_by_id.get(candidate_id)
             if not candidate:
                 continue
-            event = connection.execute(
-                """
-                SELECT stage, event_type, payload_json, occurred_at
-                FROM pipeline_events
-                WHERE candidate_id = ? AND sequence_number <= ?
-                ORDER BY sequence_number DESC, occurred_at DESC
-                LIMIT 1
-                """,
-                [candidate_id, sequence],
-            ).fetchone()
-            payload = json.loads(event[2]) if event else {}
+            event = events_by_candidate.get(candidate_id)
+            payload = json.loads(event[3]) if event else {}
             if not isinstance(payload, dict):
                 payload = {}
-            status = "Known Match" if event and event[1] == "known_match" else payload.get("classification", candidate[3])
-            stage = VIEW_STAGE.get(view) or (event[0] if event and event[0] else candidate[2])
+            status = "Known Match" if event and event[2] == "known_match" else payload.get("classification", candidate[3])
+            stage = VIEW_STAGE.get(view) or (event[1] if event and event[1] else candidate[2])
             event_features = payload.get("features") if isinstance(payload.get("features"), dict) else {}
             signal_index = event_features.get("signal_index")
             if not isinstance(signal_index, int) or isinstance(signal_index, bool):
@@ -1116,7 +1234,7 @@ class ReadOnlyStore:
                     "activity": payload.get("activity", candidate[8]),
                     "rank_delta": int(candidate[9] or 0),
                     "movement": candidate[10] or "unchanged",
-                    "last_evaluated_at": isoformat(event[3] if event else candidate[11]),
+                    "last_evaluated_at": isoformat(event[4] if event else candidate[11]),
                     "signal_group_id": candidate[12],
                     "signal_resolution": signal_resolution or "independent",
                     "alias_of_candidate_id": alias_of_candidate_id,
@@ -2428,7 +2546,7 @@ class ReadOnlyStore:
                     needs_timing_values.append(float(summary["needs_more_data_seconds"]))
                 if isinstance(summary.get("dispatch_seconds"), (int, float)):
                     dispatch_timing_values.append(float(summary["dispatch_seconds"]))
-                handoffs += int(summary.get("handoffs") or 0)
+                handoffs += handoff_count_for_cycle(run, stage)
             throughput[stage] = {
                 "attempted": attempted,
                 "evaluated": evaluated,

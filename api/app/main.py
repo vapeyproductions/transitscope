@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from .store import PublicationBusyError, ReadOnlyStore
+from .store import PublicationBusyError, ReadOnlyStore, handoff_count_for_cycle
 
 DEFAULT_TARGET_UNIVERSE_SIZE = 100_000
 
@@ -325,7 +325,7 @@ def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
         if has_stage_snapshot:
             jobs = int(stage_metrics.get("selected") or stage_metrics.get("attempted") or 0)
             evaluated = int(stage_metrics.get("evaluated") or stage_metrics.get("attempted") or 0)
-            handoffs = int(stage_metrics.get("handoffs") or 0)
+            handoffs = handoff_count_for_cycle(last_metrics, stage)
             throughput[stage] = {
                 key: int(stage_metrics.get(key) or 0)
                 for key in ("attempted", "evaluated", "promising", "needs_more_data", "inconclusive", "known_match", "errors", "handoffs")
@@ -533,7 +533,6 @@ def _monitoring_system_health(worker: dict) -> dict:
             provider_summary = "MAST run history is not included in this bounded worker check."
             provider_details = [
                 f"Last ingest timestamp from the compact status snapshot: {last_ingest_at or 'not recorded'}",
-                "This is not evidence of an empty or failed MAST run; the detailed projection owns provider history.",
             ]
         elif last_ingest_at:
             provider_status = "unknown"
@@ -629,9 +628,6 @@ def _monitoring_system_health(worker: dict) -> dict:
                 else f"Live cycle telemetry · {jobs:,} jobs in the latest queue; retained counts come from the published status projection."
             )
             details = [
-                f"Promising: {int(counts.get('Promising', 0) or 0):,}",
-                f"Needs More Data: {needs_more_data:,}",
-                f"Inconclusive: {int(counts.get('Inconclusive', 0) or 0):,}",
                 f"Last stage activity: {stage_activity_at or 'no completed assessment in this snapshot'}",
             ]
         else:

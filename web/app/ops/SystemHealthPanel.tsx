@@ -66,6 +66,7 @@ type StageTelemetry = {
 type StageHealthResponse = {
   checked_at: string;
   alerts?: SystemHealthAlert[];
+  checks?: SystemHealthAlert[];
   pipeline?: {
     stages?: StageTelemetry[];
   };
@@ -77,14 +78,26 @@ type SystemHealthAlert = {
   id: string;
   label: string;
   summary: string;
+  details?: string[];
   source: string;
   status: SystemHealthAlertStatus;
+  latency_ms?: number | null;
 };
 
 type PanelTone = "healthy" | "warning" | "critical" | "paused";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 const REFRESH_INTERVAL_MS = 15_000;
+const CONSOLIDATED_CHECK_IDS = new Set([
+  "worker-heartbeat",
+  "published-state",
+  "api-server",
+  "pipeline-control",
+  "stage1-pipeline",
+  "stage2-pipeline",
+  "stage3-pipeline",
+]);
+const TOP_CHECK_LABELS = new Set(["API server", "Pipeline control gate", "Stage 1 pipeline", "Stage 2 pipeline", "Stage 3 pipeline"]);
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -160,17 +173,6 @@ function reasonLabel(value: string | null | undefined): string {
   return value === "mast_history_completed" ? "MAST history completed" : humanize(value);
 }
 
-function statusLabel(tone: PanelTone): string {
-  if (tone === "healthy") return "Running normally";
-  if (tone === "paused") return "Paused";
-  if (tone === "critical") return "Worker not responding";
-  return "Needs attention";
-}
-
-function StatusPill({ tone }: { tone: PanelTone }) {
-  return <span className={`monitor-status-pill monitor-status-${tone}`}><span className="status-dot" />{statusLabel(tone)}</span>;
-}
-
 function alertStatusLabel(status: SystemHealthAlertStatus): string {
   if (status === "healthy") return "Healthy";
   if (status === "paused") return "Paused";
@@ -242,8 +244,8 @@ function stageStatusSummary(stage: StageTelemetry): string | null {
 
 function StageTelemetryPanel({ stages, checkedAt, workerState, workerLastProgress }: { stages: StageTelemetry[]; checkedAt: string; workerState?: string | null; workerLastProgress?: string | null }) {
   const activeStage = workerState?.match(/stage[123]/i)?.[0].toLowerCase() ?? null;
-  return <section className="system-health-pipeline system-stage-lanes" aria-labelledby="monitor-stage-lanes-title">
-    <div className="monitor-section-heading"><div><p className="eyebrow">Pipeline lanes</p><h3 id="monitor-stage-lanes-title">What each stage is doing</h3></div><span>Updated {formatDate(checkedAt)}</span></div>
+  return <section className="system-health-pipeline system-stage-lanes" aria-label="Pipeline lanes">
+    <div className="monitor-section-heading"><div><p className="eyebrow">Pipeline lanes</p></div><span>Updated {formatDate(checkedAt)}</span></div>
     <div className="system-stage-lane-grid">
       {stages.map((stage) => {
         const tone = stageTelemetryTone(stage.status);
@@ -269,7 +271,9 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
   const [error, setError] = useState<string | null>(null);
   const [lastSuccessfulLoad, setLastSuccessfulLoad] = useState<number | null>(null);
   const [stageSnapshot, setStageSnapshot] = useState<StageHealthResponse | null>(null);
+  const [systemChecks, setSystemChecks] = useState<SystemHealthAlert[]>([]);
   const [stageError, setStageError] = useState<string | null>(null);
+  const [expandedAlerts, setExpandedAlerts] = useState<Record<string, boolean>>({});
 
   const loadStatus = useCallback(async () => {
     const controller = new AbortController();
@@ -298,6 +302,7 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
         fetchJson<LiveStatusResponse>("/api/status", { signal: controller.signal }).catch(() => null),
       ]);
       if (healthResult?.alerts) setSystemAlerts(healthResult.alerts);
+      if (healthResult?.checks) setSystemChecks(healthResult.checks);
       const healthStages = healthResult?.pipeline?.stages ?? [];
       const healthByStage = new Map(healthStages.map((stage) => [stage.stage, stage]));
       const stages = stageNames.map((stageName) => {
@@ -390,25 +395,13 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
   const publicCount = snapshot.processed_target_count ?? null;
   const totalCount = snapshot.total_target_count ?? null;
   const workerCount = worker.last_stage1_published_count ?? null;
-  const countDifference = publicCount != null && workerCount != null ? workerCount - publicCount : null;
-  const publicationState = view.publicationBusy && (countDifference == null || countDifference !== 0)
-    ? "May be behind worker"
-    : countDifference === 0
-      ? "Counts aligned"
-      : "Worker/public counts differ";
-  const targetUpdateDetail = countDifference == null
-    ? "Target publication difference is not available."
-    : countDifference > 0
-      ? `${formatMetric(countDifference)} target-level updates are ahead of the public projection.`
-      : countDifference < 0
-        ? `${formatMetric(Math.abs(countDifference))} target-level count difference is being reconciled.`
-        : "No target-level updates are waiting.";
   const progress = worker.progress;
   const currentStage = stageLabel(worker.state ?? progress?.state);
   // The diagnosis above already explains a publication lock. Keep the
   // published-state check in the detailed checks section, but do not repeat
   // it in the compact active-alert group.
-  const topAlerts = systemAlerts.filter((check) => check.id !== "published-state");
+  const topAlerts = systemAlerts.filter((check) => !CONSOLIDATED_CHECK_IDS.has(check.id));
+  const topChecks = systemChecks.filter((check) => TOP_CHECK_LABELS.has(check.label));
   const overallAlertStatus: SystemHealthAlertStatus = view.tone === "healthy"
     ? "healthy"
     : view.tone === "paused"
@@ -417,14 +410,12 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
         ? "critical"
         : "warning";
 
-  return <section className="system-health-panel operations-panel" aria-labelledby="system-health-title">
+  return <section className="system-health-panel operations-panel" aria-label="Live pipeline status">
     <header className="monitor-header">
       <div>
         <p className="eyebrow accent">Live pipeline status</p>
-        <h2 id="system-health-title">What is happening right now</h2>
-        <p>Worker state, published data, and the current bottleneck in one view.</p>
       </div>
-      <div className="monitor-header-status"><StatusPill tone={view.tone} /><small>{loading ? "Refreshing now…" : "Auto-refreshes every 15 seconds"}</small></div>
+      <div className="monitor-header-status"><small>{loading ? "Refreshing now…" : "Auto-refreshes every 15 seconds"}</small></div>
     </header>
 
     <div className="monitor-meta">
@@ -436,16 +427,6 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
 
     {error && <div className="monitor-refresh-warning" role="status"><span className="status-dot" /><strong>Refresh failed.</strong><span>Showing the last successful snapshot until the next check succeeds.</span></div>}
 
-    <div className="monitor-top-alerts">
-      <div className="system-health-alert-list monitor-top-alert-list" aria-label="Active alerts">
-        <article className={`system-health-alert system-health-alert-${overallAlertStatus}`}>
-          <AlertStatusPill status={overallAlertStatus} />
-          <div><strong>Worker and public data</strong><p>{view.diagnosis}{view.explanation ? ` ${view.explanation}` : ""}</p><small>Source: worker heartbeat and public API</small></div>
-        </article>
-        {topAlerts.map((check) => <article className={`system-health-alert system-health-alert-${check.status}`} key={check.id}><AlertStatusPill status={check.status} /><div><strong>{check.label}</strong><p>{check.summary}</p><small>Source: {check.source}</small></div></article>)}
-      </div>
-    </div>
-
     <div className="monitor-metrics" aria-label="Current pipeline metrics">
       <Metric label="Worker" value={worker.state ? humanize(worker.state) : "Not reported"} detail={`${worker.mode ?? "mode unknown"} · heartbeat ${formatAge(view.heartbeatAge)}`} tone={view.tone === "critical" ? "critical" : "default"} />
       <Metric label="Pipeline" value={view.paused ? "Paused" : currentStage} detail={worker.cycle_id ? `Cycle ${worker.cycle_id}` : "No cycle reported"} tone={view.paused ? "paused" : "default"} />
@@ -455,10 +436,44 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
       <Metric label="Cycle running" value={formatDuration(worker.cycle_elapsed_seconds)} detail={`Last progress ${formatAge(view.progressAge)}`} tone={view.slowProgress ? "warning" : "default"} />
     </div>
 
-    {stageSnapshot?.pipeline?.stages?.length ? <StageTelemetryPanel stages={stageSnapshot.pipeline.stages} checkedAt={stageSnapshot.checked_at} workerState={worker.state} workerLastProgress={worker.last_progress_at} /> : <section className="system-health-pipeline system-stage-lanes" aria-labelledby="monitor-stage-lanes-title"><div className="monitor-section-heading"><div><p className="eyebrow">Pipeline lanes</p><h3 id="monitor-stage-lanes-title">What each stage is doing</h3></div><span>{stageError ?? "Reading stage telemetry…"}</span></div><div className="monitor-stage-empty">Stage activity is loading independently. The worker status above remains live while this detail refreshes.</div></section>}
+    <div className="monitor-top-alerts">
+      <div className="monitor-top-alert-heading"><strong>Active alerts</strong><span>Click a card to expand details</span></div>
+      <div className="system-health-alert-list monitor-top-alert-list" aria-label="Active alerts">
+        {[
+          {
+            id: "worker-public-data",
+            label: "Worker and public data",
+            status: overallAlertStatus,
+            summary: `${view.diagnosis}${view.explanation ? ` ${view.explanation}` : ""}`,
+            details: [
+              `Worker state: ${worker.state ? humanize(worker.state) : "Not reported"}`,
+              `Last heartbeat: ${formatDate(worker.last_heartbeat)}`,
+              `Last progress: ${formatDate(worker.last_progress_at)}`,
+              `Worker telemetry: ${formatMetric(workerCount)} · Public projection: ${formatMetric(publicCount)}`,
+              `Read state: ${snapshot.read_state ?? "published"}`,
+            ],
+            source: "worker heartbeat and public API",
+          },
+          ...topAlerts,
+          ...topChecks,
+        ].map((check) => {
+          const expanded = Boolean(expandedAlerts[check.id]);
+          return <article className={`system-health-check-card system-health-card-${check.status}${expanded ? " expanded" : ""}`} key={check.id}>
+            <button className="system-health-check-toggle" type="button" aria-expanded={expanded} onClick={() => setExpandedAlerts((current) => ({ ...current, [check.id]: !current[check.id] }))}>
+              <span className="system-health-card-heading"><strong>{check.label}</strong><AlertStatusPill status={check.status} /></span>
+              <span className="system-health-check-summary">{check.summary}</span>
+              <span className="system-health-check-expand">{expanded ? "Hide details" : "Expand details"}<span aria-hidden="true">{expanded ? " ↑" : " ↓"}</span></span>
+            </button>
+            {expanded && <div className="system-health-check-details">{check.details?.length ? <ul>{check.details.map((detail) => <li key={detail}>{detail}</li>)}</ul> : null}<footer><span>Source: {check.source}</span>{check.latency_ms != null && <span>{check.latency_ms.toFixed(0)} ms</span>}</footer></div>}
+          </article>;
+        })}
+      </div>
+    </div>
 
-    <section className="monitor-current-job" aria-labelledby="monitor-current-job-title">
-      <div className="monitor-section-heading"><div><p className="eyebrow">Current work</p><h3 id="monitor-current-job-title">What the worker is doing</h3></div><span>{currentStage}</span></div>
+    {stageSnapshot?.pipeline?.stages?.length ? <StageTelemetryPanel stages={stageSnapshot.pipeline.stages} checkedAt={stageSnapshot.checked_at} workerState={worker.state} workerLastProgress={worker.last_progress_at} /> : <section className="system-health-pipeline system-stage-lanes" aria-label="Pipeline lanes"><div className="monitor-section-heading"><div><p className="eyebrow">Pipeline lanes</p></div><span>{stageError ?? "Reading stage telemetry…"}</span></div><div className="monitor-stage-empty">Stage activity is loading independently. The worker status above remains live while this detail refreshes.</div></section>}
+
+    <section className="monitor-current-job" aria-label="Current work">
+      <div className="monitor-section-heading"><div><p className="eyebrow">Current work</p></div><span>{currentStage}</span></div>
       <div className="monitor-job-grid">
         <div><span>Target</span><strong>{progress?.target_id ?? "No target reported"}</strong></div>
         <div><span>Job</span><strong>{reasonLabel(progress?.reason ?? worker.last_progress_state)}</strong></div>
@@ -467,15 +482,9 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
       </div>
     </section>
 
-    <section className="monitor-publication-note" aria-labelledby="monitor-publication-title">
-      <div className="monitor-publication-heading"><strong id="monitor-publication-title">Publication accounting</strong><span>{publicationState}</span></div>
-      <div className="monitor-publication-grid">
-        <div><span>Target entries</span><strong>Worker {formatMetric(workerCount)} · Public {formatMetric(publicCount)}</strong><small>{targetUpdateDetail}</small></div>
-        <div><span>Candidate records</span><strong>{formatMetric(snapshot.active_candidate_count)}</strong><small>Active signal records; one star can produce multiple candidates.</small></div>
-        <div><span>Ranked stars</span><strong>{formatMetric(snapshot.active_star_count)}</strong><small>Distinct stars represented by the active candidate records.</small></div>
-        <div><span>Ranking snapshot</span><strong>{publicationState}</strong><small>Data version {snapshot.data_version ?? "not recorded"} · {view.publicationBusy ? "ranking data may still be on the previous committed snapshot" : "ranking data is current for this projection"}.</small></div>
-      </div>
-      <p>The target-entry difference is not a candidate backlog. Candidate records and ranked stars are separate counts, because one processed star may produce zero, one, or several candidate signals.</p>
+    <section className="monitor-publication-line" aria-label="Publication accounting">
+      <strong>Publication accounting</strong>
+      <span>Worker {formatMetric(workerCount)} · Ranked stars {formatMetric(snapshot.active_star_count)}</span>
     </section>
 
     <footer className="monitor-footer"><span>Source: <strong>/api/status</strong> · worker heartbeat, progress telemetry, and published projection</span><span>{lastSuccessfulLoad ? `Snapshot received ${formatAge((view.now - lastSuccessfulLoad) / 1000)}` : "Snapshot received just now"}</span></footer>
