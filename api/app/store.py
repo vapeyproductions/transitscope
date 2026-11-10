@@ -28,6 +28,11 @@ RANKING_SORTS = {"rank", "last_assessed_desc", "last_assessed_asc"}
 DEFAULT_TARGET_UNIVERSE_SIZE = 100_000
 PUBLISHED_READ_TIMEOUT_SECONDS = 3.0
 HANDOFF_QUEUE_KINDS = {"handoff", "manual_handoff", "gate_bootstrap"}
+HANDOFF_ROUTE_BY_STAGE = {
+    "stage1": "stage2",  # Stage 1 released to Stage 2.
+    "stage2": "stage3",  # Stage 2 released to Stage 3.
+    "stage3": "stage3",  # Stage 3 received a replacement from Stage 2.
+}
 
 
 class PublicationBusyError(RuntimeError):
@@ -35,21 +40,28 @@ class PublicationBusyError(RuntimeError):
 
 
 def handoff_count_for_cycle(cycle: dict[str, Any], stage: str) -> int:
-    """Count persisted stage handoffs, including legacy queue-ledger cycles."""
+    """Count downstream stage movement using the lane's public definition.
+
+    New cycle payloads store the routed metric directly. Older payloads stored
+    queue arrivals under the receiving stage, so the fallback maps those
+    legacy events onto the same Stage 1/2/3 meanings.
+    """
 
     stages = cycle.get("stages") if isinstance(cycle.get("stages"), dict) else cycle
     summary = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
-    explicit = int(summary.get("handoffs") or 0)
+    if cycle.get("handoff_metric_version") == 2:
+        return int(summary.get("handoffs") or 0)
     queue_events = cycle.get("queue_events") if isinstance(cycle.get("queue_events"), list) else []
+    target_stage = HANDOFF_ROUTE_BY_STAGE.get(stage, stage)
     derived = sum(
         1
         for event in queue_events
         if isinstance(event, dict)
-        and event.get("stage") == stage
+        and event.get("stage") == target_stage
         and event.get("kind") in HANDOFF_QUEUE_KINDS
         and event.get("candidate_id")
     )
-    return max(explicit, derived)
+    return derived
 
 _READ_CACHE_LOCK = threading.Lock()
 _RANKING_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}

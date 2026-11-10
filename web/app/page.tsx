@@ -671,6 +671,12 @@ function stageName(stage: string): string {
   return stage;
 }
 
+function handoffMetricLabel(stage: string): string {
+  if (stage === "stage1") return "released to Stage 2";
+  if (stage === "stage2") return "released to Stage 3";
+  return "replacements from Stage 2";
+}
+
 function displayStatus(status: string, stage?: string): string {
   return status === "Promising" && stage === "stage3" ? "Prime Candidate" : status;
 }
@@ -1765,7 +1771,7 @@ function SystemStageLanes({ snapshot }: { snapshot: SystemHealthResponse }) {
         const handoffs = stage.handoffs_in_window == null ? "—" : stage.handoffs_in_window.toLocaleString();
         return <article className={`system-stage-lane system-health-card-${stage.status}`} key={stage.stage}>
           <div className="system-stage-lane-heading"><div><strong>{stageName(stage.stage)}</strong><span>{available ? `${candidates} candidates` : "Snapshot pending"}</span></div><SystemHealthStatusPill status={stage.status} /></div>
-          <div className="system-stage-lane-metrics"><span><strong>{jobs}</strong><small>jobs latest cycle</small></span><span><strong>{assessed}</strong><small>assessed in window</small></span><span><strong>{handoffs}</strong><small>handoffs</small></span></div>
+          <div className="system-stage-lane-metrics"><span><strong>{jobs}</strong><small>jobs latest cycle</small></span><span><strong>{assessed}</strong><small>assessed in window</small></span><span><strong>{handoffs}</strong><small>{handoffMetricLabel(stage.stage)}</small></span></div>
           <div className="system-stage-lane-activity"><span>Last stage activity</span><strong>{activityAt ? formatDate(activityAt) : "No completed assessment in this snapshot"}</strong></div>
           <div className="system-stage-lane-next"><span>Next action</span><strong>{systemStageNextAction(stage, activeStage)}</strong></div>
         </article>;

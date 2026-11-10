@@ -284,6 +284,7 @@ def _new_live_cycle_metrics(cycle_id: str, started_at: str) -> dict[str, object]
     return {
         "cycle_id": cycle_id,
         "started_at": started_at,
+        "handoff_metric_version": 2,
         "updated_at": started_at,
         "stage1": {"jobs": 0, "assessed": 0, "handoffs": 0},
         "stage2": {"jobs": 0, "assessed": 0, "handoffs": 0},
@@ -347,14 +348,26 @@ def _record_live_cycle_event(
 
     if dispatched:
         stage["jobs"] = int(stage.get("jobs") or 0) + dispatched
-        if reason in {
+        if stage_name == "stage2" and reason in {
             "manual_stage2_migration",
             "stage2_waterfall_request",
             "stage2_waterfall_gate_bootstrap",
+        }:
+            # The job is entering Stage 2, so it is a Stage 1 release.
+            stage1 = live_metrics.get("stage1")
+            if isinstance(stage1, dict):
+                stage1["handoffs"] = int(stage1.get("handoffs") or 0) + dispatched
+        elif stage_name == "stage3" and reason in {
             "stage3_initial_intake",
             "stage3_called_stage2",
         }:
-            stage["handoffs"] = int(stage.get("handoffs") or 0) + dispatched
+            # The same dispatch is both a Stage 2 release and a Stage 3
+            # replacement arrival, so both lanes expose the transition from
+            # their own perspective.
+            for routed_stage in ("stage2", "stage3"):
+                routed = live_metrics.get(routed_stage)
+                if isinstance(routed, dict):
+                    routed["handoffs"] = int(routed.get("handoffs") or 0) + dispatched
 
     completed = details.get("job_completed")
     if completed:
@@ -619,14 +632,22 @@ def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -
         # batch interval rather than a sum of per-candidate CPU time.
         stage1_summary["needs_more_data_seconds"] = stage1_summary["timing_seconds"]
     queue_events = queue_cycle_events(result, store)
+    stage1_to_stage2 = sum(
+        1
+        for event in queue_events
+        if event.get("stage") == "stage2"
+        and event.get("kind") in {"handoff", "manual_handoff", "gate_bootstrap"}
+    )
+    stage2_to_stage3 = sum(
+        1
+        for event in queue_events
+        if event.get("stage") == "stage3"
+        and event.get("kind") in {"handoff", "manual_handoff", "gate_bootstrap"}
+    )
     handoffs_by_stage = {
-        stage: sum(
-            1
-            for event in queue_events
-            if event.get("stage") == stage
-            and event.get("kind") in {"handoff", "manual_handoff", "gate_bootstrap"}
-        )
-        for stage in ("stage1", "stage2", "stage3")
+        "stage1": stage1_to_stage2,
+        "stage2": stage2_to_stage3,
+        "stage3": stage2_to_stage3,
     }
     stage2_summary = result_summary(result.get("stage2"))
     stage2_reassessment = result.get("stage2_reassessment")
@@ -663,6 +684,7 @@ def cycle_payload(result: dict, timings: dict[str, float], store: DuckDBStore) -
     events.extend(result_cycle_events("stage2", result.get("stage2")))
     events.extend(result_cycle_events("stage3", stage3_results))
     return {
+        "handoff_metric_version": 2,
         "stage1": stage1_summary,
         "stage2": stage2_summary,
         "stage3": stage3_summary,
