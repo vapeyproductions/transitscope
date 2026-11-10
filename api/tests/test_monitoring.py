@@ -182,7 +182,7 @@ class MonitoringStoreTests(unittest.TestCase):
         self.assertEqual(response["read_state"], "publication_busy")
         self.assertTrue(response["served_from_cache"])
 
-    def test_fast_status_uses_worker_snapshot_without_database_read(self) -> None:
+    def test_fast_status_keeps_worker_snapshot_separate_from_public_counts(self) -> None:
         store = ReadOnlyStore(Path(self.temp_dir.name) / "missing-data-dir")
         response = store.fast_status(
             {
@@ -191,7 +191,9 @@ class MonitoringStoreTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(response["processed_target_count"], 42)
+        self.assertIsNone(response["processed_target_count"])
+        self.assertEqual(response["worker_processed_target_count"], 42)
+        self.assertIsNone(response["publication_lag"]["processed_targets"])
         self.assertEqual(response["read_state"], "worker_snapshot")
         self.assertFalse(response["served_from_cache"])
 

@@ -431,7 +431,7 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
       <span><strong>Last checked</strong> {formatDate(snapshot.checked_at)}</span>
       <span><strong>Next check</strong> about 15 seconds</span>
       <span><strong>Snapshot</strong> {snapshot.data_version ?? "not recorded"}</span>
-      <span><strong>Browser data</strong> {snapshot.served_from_cache || snapshot.read_state === "publication_busy" ? "cached while publishing" : "current"}</span>
+      <span><strong>Browser data</strong> {snapshot.served_from_cache || ["publication_busy", "worker_progress_ahead", "worker_snapshot"].includes(snapshot.read_state ?? "") ? "cached while publishing" : "current"}</span>
     </div>
 
     {error && <div className="monitor-refresh-warning" role="status"><span className="status-dot" /><strong>Refresh failed.</strong><span>Showing the last successful snapshot until the next check succeeds.</span></div>}

@@ -506,15 +506,19 @@ class ReadOnlyStore:
     def fast_status(self, worker: dict[str, Any]) -> dict[str, Any]:
         """Return a bounded status projection with explicit publication lag.
 
-        The worker sidecar is newer than the public projection during normal
-        processing. Read the latest committed DuckDB snapshot when possible,
-        but never wait behind a publication lock. If that short read cannot
-        complete, serve the last durable response and label it as cached.
-        Worker telemetry is always kept in separate fields from public counts.
+        This endpoint is polled frequently and must never wait on DuckDB. The
+        public ranking/status caches represent the last durable snapshot that
+        the API served; worker telemetry is returned separately so a newer
+        worker count cannot masquerade as a published public count.
         """
 
         cache_key = str(self.database.resolve())
         cached_status = self._cached_response(_STATUS_RESPONSE_CACHE, "status", cache_key)
+        # Responses written before the publication-aware schema could have
+        # copied worker progress into the public count. Do not reuse those
+        # ambiguous snapshots as if they were durable public data.
+        if cached_status is not None and "worker_processed_target_count" not in cached_status:
+            cached_status = None
         cached_ranking = self._cached_overall_ranking()
         total_target_count = int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE)))
         response: dict[str, Any] = {
@@ -564,87 +568,6 @@ class ReadOnlyStore:
                 }
             )
 
-        public_snapshot_read = False
-        connection = self.connect(timeout_seconds=0.75)
-        if connection is not None:
-            try:
-                version = self.latest_version(connection)
-                processed_count = int(
-                    connection.execute(
-                        "SELECT COUNT(*) FROM target_manifest WHERE manifest_status = 'processed'"
-                    ).fetchone()[0]
-                )
-                candidate_count, star_count = connection.execute(
-                    """
-                    SELECT COUNT(*), COUNT(DISTINCT target_id)
-                    FROM candidates
-                    WHERE active = true
-                    """
-                ).fetchone()
-                published = connection.execute(
-                    """
-                    SELECT published_at
-                    FROM publish_versions
-                    WHERE status = 'published'
-                    ORDER BY version DESC
-                    LIMIT 1
-                    """
-                ).fetchone()
-                response.update(
-                    {
-                        "data_version": version,
-                        "sequence_number": version,
-                        "processed_target_count": processed_count,
-                        "active_candidate_count": int(candidate_count or 0),
-                        "active_star_count": int(star_count or 0),
-                        "last_published_at": isoformat(published[0]) if published and published[0] else response.get("last_published_at"),
-                    }
-                )
-                try:
-                    stage_rows = connection.execute(
-                        """
-                        SELECT current_stage, status, COUNT(*)
-                        FROM candidates
-                        WHERE active = true
-                        GROUP BY current_stage, status
-                        """
-                    ).fetchall()
-                    stage_summary: dict[str, dict[str, Any]] = {}
-                    for stage, status, count in stage_rows:
-                        entry = stage_summary.setdefault(
-                            str(stage),
-                            {"retained_candidates": 0, "status_counts": {}, "last_activity_at": None},
-                        )
-                        entry["retained_candidates"] += int(count or 0)
-                        entry["status_counts"][str(status or "Unknown")] = int(count or 0)
-                    activity_rows = connection.execute(
-                        """
-                        SELECT current_stage, MAX(last_evaluated_at)
-                        FROM candidates
-                        WHERE active = true
-                        GROUP BY current_stage
-                        """
-                    ).fetchall()
-                    for stage, last_activity_at in activity_rows:
-                        stage_summary.setdefault(
-                            str(stage),
-                            {"retained_candidates": 0, "status_counts": {}, "last_activity_at": None},
-                        )["last_activity_at"] = isoformat(last_activity_at)
-                    response["stage_summary"] = stage_summary
-                except Exception:
-                    # Counts remain useful even when a legacy projection lacks
-                    # one of the optional stage columns.
-                    pass
-                public_snapshot_read = True
-                response["served_from_cache"] = False
-                self._remember_response(_STATUS_RESPONSE_CACHE, "status", cache_key, response)
-            except Exception:
-                # Fall back to the last known durable response below. A
-                # malformed/legacy projection must not break the heartbeat.
-                public_snapshot_read = False
-            finally:
-                connection.close()
-
         telemetry = worker.get("telemetry") if isinstance(worker.get("telemetry"), dict) else {}
         worker_counts: list[int] = []
         for value in (telemetry.get("processed_target_count"), worker.get("last_stage1_published_count")):
@@ -678,7 +601,7 @@ class ReadOnlyStore:
         else:
             response["read_state"] = "published"
         response["worker"] = worker
-        response["served_from_cache"] = not public_snapshot_read
+        response["served_from_cache"] = cached_status is not None or ranking_is_newer
         return response
 
     def rankings(

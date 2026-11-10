@@ -357,6 +357,9 @@ def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
         "stage2_reassessment": metrics_source.get("stage2_reassessment", {}),
     }
     timings = last_metrics.get("timings") if isinstance(last_metrics.get("timings"), dict) else {}
+    processed_raw = status.get("processed_target_count")
+    processed_count = int(processed_raw) if processed_raw is not None else None
+    configured_count = int(status.get("total_target_count") or 0)
     return {
         "data_version": status.get("data_version"),
         "read_state": status.get("read_state", "published"),
@@ -367,9 +370,9 @@ def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
         "publication_lag": status.get("publication_lag") or {"processed_targets": None},
         "last_ingest_at": status.get("last_ingest_at"),
         "universe": {
-            "configured_count": int(status.get("total_target_count") or 0),
-            "processed_count": int(status.get("processed_target_count") or 0),
-            "remaining_count": max(0, int(status.get("total_target_count") or 0) - int(status.get("processed_target_count") or 0)),
+            "configured_count": configured_count,
+            "processed_count": processed_count,
+            "remaining_count": max(0, configured_count - processed_count) if processed_count is not None else None,
         },
         "stages": stages,
         "cycle_activity": {
