@@ -361,6 +361,10 @@ def _fast_monitoring_projection(status: dict, worker: dict) -> dict:
         "data_version": status.get("data_version"),
         "read_state": status.get("read_state", "published"),
         "served_from_cache": bool(status.get("served_from_cache")),
+        "worker_processed_target_count": status.get("worker_processed_target_count"),
+        "worker_active_candidate_count": status.get("worker_active_candidate_count"),
+        "worker_active_star_count": status.get("worker_active_star_count"),
+        "publication_lag": status.get("publication_lag") or {"processed_targets": None},
         "last_ingest_at": status.get("last_ingest_at"),
         "universe": {
             "configured_count": int(status.get("total_target_count") or 0),
@@ -443,7 +447,7 @@ def _monitoring_system_health(worker: dict) -> dict:
     # must remain responsive while the worker is opening, publishing, or
     # recovering the database. The full ops projection still owns the detailed
     # provider/catalog/history reads.
-    compact_status = _worker_compact_status(worker)
+    compact_status = ReadOnlyStore().fast_status(worker)
     monitoring = _fast_monitoring_projection(compact_status, worker)
 
     control = monitoring.get("control") if isinstance(monitoring.get("control"), dict) else _source_of_truth_control(worker)
@@ -499,11 +503,15 @@ def _monitoring_system_health(worker: dict) -> dict:
 
     read_state = str(monitoring.get("read_state") or "published")
     served_from_cache = bool(monitoring.get("served_from_cache"))
-    publication_status = "warning" if read_state in {"publication_busy", "worker_progress_ahead"} or served_from_cache else "healthy"
+    publication_status = "warning" if read_state in {"publication_busy", "worker_progress_ahead", "worker_snapshot"} or served_from_cache else "healthy"
+    publication_lag = monitoring.get("publication_lag") if isinstance(monitoring.get("publication_lag"), dict) else {}
+    lag_count = publication_lag.get("processed_targets")
     if read_state == "worker_progress_ahead":
-        publication_summary = "The worker has published progress newer than the read replica; the monotonic worker count is being shown."
+        publication_summary = "Worker progress is ahead of the latest public snapshot."
+    elif read_state == "worker_snapshot":
+        publication_summary = "No durable public snapshot is available; showing worker telemetry."
     elif publication_status == "warning":
-        publication_summary = "Publication lock is active; awaiting the next durable snapshot."
+        publication_summary = "The latest public snapshot is cached while publication is busy."
     else:
         publication_summary = "The latest durable data projection was read successfully."
     checks.append(
@@ -517,7 +525,9 @@ def _monitoring_system_health(worker: dict) -> dict:
             details=[
                 f"Data version: {monitoring.get('data_version') or 'not recorded'}",
                 f"Read state: {read_state}",
-                f"Processed targets: {monitoring.get('universe', {}).get('processed_count', 0):,}",
+                f"Published processed targets: {monitoring.get('universe', {}).get('processed_count') if monitoring.get('universe', {}).get('processed_count') is not None else 'not recorded'}",
+                f"Worker processed targets: {monitoring.get('worker_processed_target_count') if monitoring.get('worker_processed_target_count') is not None else 'not recorded'}",
+                f"Waiting to publish: {int(lag_count):,}" if isinstance(lag_count, (int, float)) else "Waiting to publish: not recorded",
             ],
         )
     )

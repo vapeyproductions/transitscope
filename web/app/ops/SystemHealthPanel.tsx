@@ -36,6 +36,10 @@ type LiveStatusResponse = {
   total_target_count?: number | null;
   active_candidate_count?: number | null;
   active_star_count?: number | null;
+  worker_processed_target_count?: number | null;
+  worker_active_candidate_count?: number | null;
+  worker_active_star_count?: number | null;
+  publication_lag?: { processed_targets?: number | null } | null;
   served_from_cache?: boolean;
   read_state?: string | null;
   checked_at?: string | null;
@@ -355,7 +359,10 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
     const publicationAge = derivedAge(worker.stage1_publish_age_seconds, worker.last_stage1_publish_at, now);
     const workerResponding = heartbeatAge == null || heartbeatAge <= 120;
     const paused = worker.pipeline_paused === true;
-    const publicationBusy = snapshot?.read_state === "publication_busy" || snapshot?.served_from_cache === true;
+    const publicationBusy = snapshot?.read_state === "publication_busy"
+      || snapshot?.read_state === "worker_progress_ahead"
+      || snapshot?.read_state === "worker_snapshot"
+      || snapshot?.served_from_cache === true;
     const slowProgress = progressAge != null && progressAge > 120;
     const critical = !workerResponding || /stopped|error|failed/i.test(worker.state ?? "");
     const tone: PanelTone = paused ? "paused" : critical ? "critical" : publicationBusy || slowProgress ? "warning" : "healthy";
@@ -394,7 +401,9 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
   const worker = view.worker;
   const publicCount = snapshot.processed_target_count ?? null;
   const totalCount = snapshot.total_target_count ?? null;
-  const workerCount = worker.last_stage1_published_count ?? null;
+  const workerCount = snapshot.worker_processed_target_count ?? worker.last_stage1_published_count ?? null;
+  const publicationLag = snapshot.publication_lag?.processed_targets
+    ?? (publicCount != null && workerCount != null ? Math.max(0, workerCount - publicCount) : null);
   const progress = worker.progress;
   const currentStage = stageLabel(worker.state ?? progress?.state);
   // The diagnosis above already explains a publication lock. Keep the
@@ -430,8 +439,8 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
     <div className="monitor-metrics" aria-label="Current pipeline metrics">
       <Metric label="Worker" value={worker.state ? humanize(worker.state) : "Not reported"} detail={`${worker.mode ?? "mode unknown"} · heartbeat ${formatAge(view.heartbeatAge)}`} tone={view.tone === "critical" ? "critical" : "default"} />
       <Metric label="Pipeline" value={view.paused ? "Paused" : currentStage} detail={worker.cycle_id ? `Cycle ${worker.cycle_id}` : "No cycle reported"} tone={view.paused ? "paused" : "default"} />
-      <Metric label="Processed targets" value={publicCount == null || totalCount == null ? "—" : `${formatMetric(publicCount)} / ${formatMetric(totalCount)}`} detail="Status projection · processed manifest targets" />
-      <Metric label="Worker telemetry" value={formatMetric(workerCount)} detail="Last Stage 1 publish" tone={view.publicationBusy ? "warning" : "default"} />
+      <Metric label="Published targets" value={publicCount == null || totalCount == null ? "—" : `${formatMetric(publicCount)} / ${formatMetric(totalCount)}`} detail="Latest durable public snapshot" />
+      <Metric label="Worker progress" value={formatMetric(workerCount)} detail={publicationLag ? `${formatMetric(publicationLag)} waiting to publish` : "Matches published snapshot"} tone={view.publicationBusy ? "warning" : "default"} />
       <Metric label="Active candidates" value={formatMetric(snapshot.active_candidate_count)} detail="Current candidate records" />
       <Metric label="Cycle running" value={formatDuration(worker.cycle_elapsed_seconds)} detail={`Last progress ${formatAge(view.progressAge)}`} tone={view.slowProgress ? "warning" : "default"} />
     </div>
@@ -449,7 +458,7 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
               `Worker state: ${worker.state ? humanize(worker.state) : "Not reported"}`,
               `Last heartbeat: ${formatDate(worker.last_heartbeat)}`,
               `Last progress: ${formatDate(worker.last_progress_at)}`,
-              `Worker telemetry: ${formatMetric(workerCount)} · Public projection: ${formatMetric(publicCount)}`,
+              `Worker processed: ${formatMetric(workerCount)} · Published processed: ${formatMetric(publicCount)} · Waiting to publish: ${formatMetric(publicationLag)}`,
               `Read state: ${snapshot.read_state ?? "published"}`,
             ],
             source: "worker heartbeat and public API",
@@ -484,7 +493,7 @@ export default function SystemHealthPanel({ refreshKey }: { refreshKey: number }
 
     <section className="monitor-publication-line" aria-label="Publication accounting">
       <strong>Publication accounting</strong>
-      <span>Worker {formatMetric(workerCount)} · Ranked stars {formatMetric(snapshot.active_star_count)}</span>
+      <span>Worker {formatMetric(workerCount)} · Published {formatMetric(publicCount)} · Ranked stars {formatMetric(snapshot.active_star_count)}{publicationLag ? ` · ${formatMetric(publicationLag)} waiting to publish` : ""}</span>
     </section>
 
     <footer className="monitor-footer"><span>Source: <strong>/api/status</strong> · worker heartbeat, progress telemetry, and published projection</span><span>{lastSuccessfulLoad ? `Snapshot received ${formatAge((view.now - lastSuccessfulLoad) / 1000)}` : "Snapshot received just now"}</span></footer>

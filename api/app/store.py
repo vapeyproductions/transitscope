@@ -190,6 +190,18 @@ class ReadOnlyStore:
         reporting a false zero.
         """
 
+        cached = self._cached_overall_ranking()
+        if not cached:
+            return None
+        try:
+            count = int(cached.get("total_star_count") or 0)
+        except (TypeError, ValueError):
+            return None
+        return count if count > 0 else None
+
+    def _cached_overall_ranking(self) -> dict[str, Any] | None:
+        """Return the last public overall ranking snapshot without DuckDB."""
+
         cache_key = json.dumps(
             {
                 "database": str(self.database.resolve()),
@@ -202,14 +214,7 @@ class ReadOnlyStore:
             },
             sort_keys=True,
         )
-        cached = self._cached_response(_RANKING_RESPONSE_CACHE, "rankings", cache_key)
-        if not cached:
-            return None
-        try:
-            count = int(cached.get("total_star_count") or 0)
-        except (TypeError, ValueError):
-            return None
-        return count if count > 0 else None
+        return self._cached_response(_RANKING_RESPONSE_CACHE, "rankings", cache_key)
 
     def connect(self, *, timeout_seconds: float | None = None) -> Any | None:
         self.publication_busy = False
@@ -499,36 +504,147 @@ class ReadOnlyStore:
             connection.close()
 
     def fast_status(self, worker: dict[str, Any]) -> dict[str, Any]:
-        """Return a non-blocking public status projection.
+        """Return a bounded status projection with explicit publication lag.
 
-        The public dashboard polls this endpoint frequently. It must never
-        wait for DuckDB, because the worker can hold the publication lock for
-        minutes while committing a cycle. Use the most recent durable status
-        cache when available and merge the worker's monotonic progress fields.
-        Detailed stage and model projections remain on the authenticated ops
-        endpoints.
+        The worker sidecar is newer than the public projection during normal
+        processing. Read the latest committed DuckDB snapshot when possible,
+        but never wait behind a publication lock. If that short read cannot
+        complete, serve the last durable response and label it as cached.
+        Worker telemetry is always kept in separate fields from public counts.
         """
 
         cache_key = str(self.database.resolve())
-        cached = self._cached_response(_STATUS_RESPONSE_CACHE, "status", cache_key)
-        response = {
+        cached_status = self._cached_response(_STATUS_RESPONSE_CACHE, "status", cache_key)
+        cached_ranking = self._cached_overall_ranking()
+        total_target_count = int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE)))
+        response: dict[str, Any] = {
             "service": "api",
             "environment": os.getenv("APP_ENV", "unknown"),
             "data_version": None,
             "sequence_number": None,
-            "processed_target_count": 0,
-            "total_target_count": int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE))),
-            "active_candidate_count": 0,
-            "active_star_count": 0,
+            "processed_target_count": None,
+            "total_target_count": total_target_count,
+            "active_candidate_count": None,
+            "active_star_count": None,
             "last_ingest_at": None,
             "last_published_at": None,
             "processed_history": [],
             "stage_summary": {},
             "worker": worker,
+            "worker_processed_target_count": None,
+            "worker_active_candidate_count": None,
+            "worker_active_star_count": None,
+            "publication_lag": {"processed_targets": None},
             "served_from_cache": False,
             "read_state": "worker_snapshot",
         }
-        response.update(cached or {})
+        response.update(cached_status or {})
+
+        # A ranking response can be newer than the status cache because the
+        # public ranking route may have refreshed it independently. Use it as
+        # a fallback source, never as a replacement for a newer DB snapshot.
+        status_version = cached_status.get("data_version") if cached_status else None
+        ranking_version = cached_ranking.get("data_version") if cached_ranking else None
+        try:
+            ranking_is_newer = cached_ranking is not None and (
+                status_version is None or int(ranking_version or 0) > int(status_version or 0)
+            )
+        except (TypeError, ValueError):
+            ranking_is_newer = cached_status is None and cached_ranking is not None
+        if ranking_is_newer:
+            response.update(
+                {
+                    "data_version": cached_ranking.get("data_version"),
+                    "sequence_number": cached_ranking.get("sequence_number"),
+                    "processed_target_count": cached_ranking.get("processed_target_count"),
+                    "total_target_count": cached_ranking.get("total_target_count") or total_target_count,
+                    "active_candidate_count": cached_ranking.get("total_ranked_count"),
+                    "active_star_count": cached_ranking.get("total_star_count"),
+                    "last_published_at": cached_ranking.get("occurred_at"),
+                }
+            )
+
+        public_snapshot_read = False
+        connection = self.connect(timeout_seconds=0.75)
+        if connection is not None:
+            try:
+                version = self.latest_version(connection)
+                processed_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM target_manifest WHERE manifest_status = 'processed'"
+                    ).fetchone()[0]
+                )
+                candidate_count, star_count = connection.execute(
+                    """
+                    SELECT COUNT(*), COUNT(DISTINCT target_id)
+                    FROM candidates
+                    WHERE active = true
+                    """
+                ).fetchone()
+                published = connection.execute(
+                    """
+                    SELECT published_at
+                    FROM publish_versions
+                    WHERE status = 'published'
+                    ORDER BY version DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                response.update(
+                    {
+                        "data_version": version,
+                        "sequence_number": version,
+                        "processed_target_count": processed_count,
+                        "active_candidate_count": int(candidate_count or 0),
+                        "active_star_count": int(star_count or 0),
+                        "last_published_at": isoformat(published[0]) if published and published[0] else response.get("last_published_at"),
+                    }
+                )
+                try:
+                    stage_rows = connection.execute(
+                        """
+                        SELECT current_stage, status, COUNT(*)
+                        FROM candidates
+                        WHERE active = true
+                        GROUP BY current_stage, status
+                        """
+                    ).fetchall()
+                    stage_summary: dict[str, dict[str, Any]] = {}
+                    for stage, status, count in stage_rows:
+                        entry = stage_summary.setdefault(
+                            str(stage),
+                            {"retained_candidates": 0, "status_counts": {}, "last_activity_at": None},
+                        )
+                        entry["retained_candidates"] += int(count or 0)
+                        entry["status_counts"][str(status or "Unknown")] = int(count or 0)
+                    activity_rows = connection.execute(
+                        """
+                        SELECT current_stage, MAX(last_evaluated_at)
+                        FROM candidates
+                        WHERE active = true
+                        GROUP BY current_stage
+                        """
+                    ).fetchall()
+                    for stage, last_activity_at in activity_rows:
+                        stage_summary.setdefault(
+                            str(stage),
+                            {"retained_candidates": 0, "status_counts": {}, "last_activity_at": None},
+                        )["last_activity_at"] = isoformat(last_activity_at)
+                    response["stage_summary"] = stage_summary
+                except Exception:
+                    # Counts remain useful even when a legacy projection lacks
+                    # one of the optional stage columns.
+                    pass
+                public_snapshot_read = True
+                response["served_from_cache"] = False
+                self._remember_response(_STATUS_RESPONSE_CACHE, "status", cache_key, response)
+            except Exception:
+                # Fall back to the last known durable response below. A
+                # malformed/legacy projection must not break the heartbeat.
+                public_snapshot_read = False
+            finally:
+                connection.close()
+
         telemetry = worker.get("telemetry") if isinstance(worker.get("telemetry"), dict) else {}
         worker_counts: list[int] = []
         for value in (telemetry.get("processed_target_count"), worker.get("last_stage1_published_count")):
@@ -536,36 +652,33 @@ class ReadOnlyStore:
                 worker_counts.append(int(value))
             except (TypeError, ValueError):
                 continue
-        if worker_counts:
-            response["processed_target_count"] = max(
-                int(response.get("processed_target_count") or 0),
-                max(worker_counts),
-            )
-        if telemetry.get("data_version") is not None:
-            response["data_version"] = telemetry.get("data_version")
-            response["sequence_number"] = telemetry.get("data_version")
-        if telemetry.get("active_candidate_count") is not None:
-            response["active_candidate_count"] = int(telemetry.get("active_candidate_count") or 0)
-        if telemetry.get("active_star_count") is not None:
-            response["active_star_count"] = int(telemetry.get("active_star_count") or 0)
-        if (
-            response.get("active_candidate_count", 0) > 0
-            and int(response.get("active_star_count") or 0) == 0
-        ):
-            response["active_star_count"] = max(
-                int(response.get("active_star_count") or 0),
-                int(self._cached_overall_star_count() or 0),
-            )
-        response["total_target_count"] = int(os.getenv("TARGET_UNIVERSE_SIZE", str(DEFAULT_TARGET_UNIVERSE_SIZE)))
-        response["last_ingest_at"] = worker.get("last_ingest_at") or response.get("last_ingest_at")
-        response["last_published_at"] = (
-            worker.get("last_published_at")
-            or response.get("last_published_at")
-            or response.get("last_ingest_at")
+        worker_processed_count = max(worker_counts) if worker_counts else None
+        response["worker_processed_target_count"] = worker_processed_count
+        response["worker_active_candidate_count"] = (
+            int(telemetry["active_candidate_count"])
+            if telemetry.get("active_candidate_count") is not None
+            else None
         )
+        response["worker_active_star_count"] = (
+            int(telemetry["active_star_count"])
+            if telemetry.get("active_star_count") is not None
+            else None
+        )
+        response["total_target_count"] = total_target_count
+        response["last_ingest_at"] = worker.get("last_ingest_at") or response.get("last_ingest_at")
+        public_processed_count = response.get("processed_target_count")
+        if worker_processed_count is not None and public_processed_count is not None:
+            response["publication_lag"] = {
+                "processed_targets": max(0, worker_processed_count - int(public_processed_count or 0)),
+            }
+        if public_processed_count is None:
+            response["read_state"] = "worker_snapshot"
+        elif worker_processed_count is not None and worker_processed_count > int(public_processed_count or 0):
+            response["read_state"] = "worker_progress_ahead"
+        else:
+            response["read_state"] = "published"
         response["worker"] = worker
-        response["served_from_cache"] = cached is not None
-        response["read_state"] = "publication_busy" if cached is not None else "worker_snapshot"
+        response["served_from_cache"] = not public_snapshot_read
         return response
 
     def rankings(
