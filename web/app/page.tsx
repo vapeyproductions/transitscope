@@ -2226,7 +2226,7 @@ export default function HomePage() {
   const pipelineState = workerNeedsAttention ? "Needs attention" : workerIsActive ? "Processing" : status?.data_version ? "Published" : workerState === "idle" ? "Standby" : "Starting";
   const copy = stageCopy(activeTab);
   const totalCandidates = displayRanking?.total_ranked_count ?? rows.length;
-  const processedCount = Math.max(status?.processed_target_count ?? 0, ranking?.processed_target_count ?? 0);
+  const processedCount = ranking?.processed_target_count ?? status?.processed_target_count ?? 0;
   const targetCount = status?.total_target_count ?? ranking?.total_target_count ?? 100000;
   const totalStars = displayRanking?.total_star_count ?? new Set(rows.map((row) => row.target_id)).size;
   const panelTitle = (waitingForPublishedState || loading) && !liveRanking ? "Loading published state" : totalCandidates ? `Total candidates ${totalCandidates.toLocaleString()} · Ranked stars ${totalStars.toLocaleString()}` : "No candidates published yet";

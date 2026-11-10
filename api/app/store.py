@@ -562,15 +562,16 @@ class ReadOnlyStore:
         # A ranking response can be newer than the status cache because the
         # public ranking route may have refreshed it independently. Use it as
         # a fallback source, never as a replacement for a newer DB snapshot.
-        status_version = cached_status.get("data_version") if cached_status else None
         ranking_version = cached_ranking.get("data_version") if cached_ranking else None
+        # The public page renders the ranking response alongside this status
+        # response. Prefer that exact ranking snapshot whenever it exists so
+        # the two surfaces cannot show different publication versions during
+        # a lock-bound refresh.
         try:
-            ranking_is_newer = cached_ranking is not None and (
-                status_version is None or int(ranking_version or 0) > int(status_version or 0)
-            )
+            ranking_is_available = cached_ranking is not None and ranking_version is not None
         except (TypeError, ValueError):
-            ranking_is_newer = cached_status is None and cached_ranking is not None
-        if ranking_is_newer:
+            ranking_is_available = cached_ranking is not None
+        if ranking_is_available:
             response.update(
                 {
                     "data_version": cached_ranking.get("data_version"),
