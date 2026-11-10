@@ -62,7 +62,6 @@ type RankingResponse = {
   total_star_count?: number;
   page_count?: number;
   rows: RankingRow[];
-  removed?: ReplayRemoval[];
   served_from_cache?: boolean;
   read_state?: "publication_busy";
 };
@@ -90,47 +89,6 @@ function persistRanking(cacheKey: string, ranking: RankingResponse): void {
     // A full or restricted browser cache must never affect live dashboard use.
   }
 }
-
-type ReplayRemoval = {
-  candidate_id: string;
-  target_id: string;
-  stage: string;
-  status: "Known Match";
-  known_match_id?: string | null;
-  signal_group_id?: string | null;
-  signal_resolution?: "independent" | "primary" | "pending_alias_review" | "released_for_independent_review" | string;
-  alias_of_candidate_id?: string | null;
-  promotion_eligible?: boolean;
-  rank: number | null;
-  activity: string;
-  removal_reason: string;
-  occurred_at: string | null;
-  signal_index?: number | null;
-};
-
-type ReplayMeta = {
-  view: RankingView;
-  data_version: number | null;
-  initial_sequence: number;
-  first_sequence: number | null;
-  last_sequence: number;
-  snapshot_count: number;
-  available_sequences: number[];
-  first_occurred_at: string | null;
-  last_occurred_at: string | null;
-};
-
-type ReplayState = {
-  active: boolean;
-  playing: boolean;
-  cursor: number;
-  maxSequence: number;
-  speed: number;
-  meta: ReplayMeta | null;
-  snapshot: RankingResponse | null;
-  loading: boolean;
-  error: string | null;
-};
 
 type CandidateDetail = {
   candidate_id: string;
@@ -625,21 +583,6 @@ const tabs: Array<{ id: RankingView; label: string }> = [
 
 const assessmentStages: AssessmentStage[] = ["stage1", "stage2", "stage3"];
 
-function createReplayStates(): Record<RankingView, ReplayState> {
-  const state: ReplayState = {
-    active: false,
-    playing: false,
-    cursor: 0,
-    maxSequence: 0,
-    speed: 1,
-    meta: null,
-    snapshot: null,
-    loading: false,
-    error: null,
-  };
-  return { overall: { ...state }, stage1: { ...state }, stage2: { ...state }, stage3: { ...state } };
-}
-
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -1085,7 +1028,6 @@ function AssessmentTrail({ candidate, events, loading, loadError }: { candidate:
   });
 
   return <div className="assessment-trail-content">
-    <div className="trail-intro"><div><p className="eyebrow">Persisted investigation record</p><h4>Assessment trail</h4><p>Follow when this signal entered each stage queue, what the stage tested, and which result determined its next move. These records come from published pipeline events; replay mode filters them to the selected point in time.</p></div><span className="trail-event-count">{loading ? "Loading…" : `${events.length} recorded event${events.length === 1 ? "" : "s"}`}</span></div>
     <div className="trail-stage-grid">
       {stageTrail.map(({ stage, queueEvent, latestEvaluation, status }) => <article className={`trail-stage-card ${latestEvaluation ? "complete" : "pending"}`} key={stage}>
         <div className="trail-stage-heading"><span className="stage-number">{stage === "stage1" ? "01" : stage === "stage2" ? "02" : "03"}</span><div><strong>{stageName(stage)}</strong><small>{queueEvent ? (stage === "stage1" ? "First processing" : "Queue entry") : "Not recorded"}</small></div></div>
@@ -1105,12 +1047,12 @@ function AssessmentTrail({ candidate, events, loading, loadError }: { candidate:
           <span className={`assessment-event-dot ${status ? statusClass(status) : "neutral"}`} aria-hidden="true" />
           <div className="assessment-event-body"><div className="assessment-event-header"><div><strong>{historyEventLabel(event.event_type)}</strong><span>{stageName(event.stage)} · {formatDate(event.occurred_at)}</span></div><small>Cycle {event.sequence_number}</small></div><p>{historyEventDescription(event)}</p>{details.length > 0 && <div className="assessment-event-facts">{details.map((detail) => <span key={detail}>{detail}</span>)}</div>}{event.model_run_id && <small className="assessment-event-run">Run {event.model_run_id}</small>}</div>
         </article>;
-      })}</div> : <div className="trail-empty"><strong>No pipeline events at this replay position.</strong><span>Advance the replay or return to live view to see the candidate's persisted assessment trail.</span></div>}
+      })}</div> : <div className="trail-empty"><strong>No pipeline events recorded yet.</strong><span>The candidate's persisted assessment trail will appear after the next published evaluation.</span></div>}
     </div>
   </div>;
 }
 
-function CandidateModal({ candidate, curve, history, replaySequence, detailLoaded, loadError, onClose }: { candidate: CandidateDetail; curve: LightCurveResponse | null; history: HistoryResponse | null; replaySequence: number | null; detailLoaded: boolean; loadError: string | null; onClose: () => void }) {
+function CandidateModal({ candidate, curve, history, detailLoaded, loadError, onClose }: { candidate: CandidateDetail; curve: LightCurveResponse | null; history: HistoryResponse | null; detailLoaded: boolean; loadError: string | null; onClose: () => void }) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const [transitOpen, setTransitOpen] = useState(false);
   const [modalTab, setModalTab] = useState<"curve" | "trail">("curve");
@@ -1182,7 +1124,7 @@ function CandidateModal({ candidate, curve, history, replaySequence, detailLoade
     setTransitProgress(null);
   }, [candidate.candidate_id]);
 
-  const visibleHistory = history?.events.filter((event) => replaySequence === null || event.sequence_number <= replaySequence) ?? [];
+  const visibleHistory = history?.events ?? [];
   const evidenceLoading = !detailLoaded && !loadError;
   const evaluationMissing = detailLoaded && candidate.evaluation === null && !loadError;
   const signal = signalLabel(candidate.candidate_id, features, candidate.signal_index);
@@ -1193,7 +1135,7 @@ function CandidateModal({ candidate, curve, history, replaySequence, detailLoade
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="candidate-modal" role="dialog" aria-modal="true" aria-labelledby="candidate-modal-title">
       <header className="modal-header"><div><p className="eyebrow accent">Candidate investigation · {stageName(candidate.stage)}</p><h3 id="candidate-modal-title">{candidate.target_id}{signal ? ` - ${signal}` : ""}</h3><p className="modal-subtitle">{candidate.target?.source_product_family ?? "MAST / TESS observation"}</p></div><button ref={closeRef} className="modal-close" type="button" onClick={onClose} aria-label="Close candidate details">×</button></header>
-      <div className="modal-summary"><span className="stage-status-stage">{stageName(candidate.stage)}</span>{" "}<span className={`status-pill status-${statusClass(displayStatus(candidate.status, candidate.stage))}`}>{displayStatus(candidate.status, candidate.stage)}</span>{signalResolutionLabel(candidate.signal_resolution) && <span className="evidence-chip">{signalResolutionLabel(candidate.signal_resolution)}</span>}{summaryNote && <span className="modal-summary-note">{summaryNote}</span>}{evidenceLoading && <span className="modal-data-status" role="status">Waiting for the latest published evidence…</span>}{evaluationMissing && <span className="modal-data-status" role="status">No published evaluation record is attached yet.</span>}{loadError && <span className="modal-data-status modal-data-status-error" role="alert">{loadError}</span>}{replaySequence !== null && <span className="replay-chip">Replay view</span>}</div>
+      <div className="modal-summary"><span className="stage-status-stage">{stageName(candidate.stage)}</span>{" "}<span className={`status-pill status-${statusClass(displayStatus(candidate.status, candidate.stage))}`}>{displayStatus(candidate.status, candidate.stage)}</span>{signalResolutionLabel(candidate.signal_resolution) && <span className="evidence-chip">{signalResolutionLabel(candidate.signal_resolution)}</span>}{summaryNote && <span className="modal-summary-note">{summaryNote}</span>}{evidenceLoading && <span className="modal-data-status" role="status">Waiting for the latest published evidence…</span>}{evaluationMissing && <span className="modal-data-status" role="status">No published evaluation record is attached yet.</span>}{loadError && <span className="modal-data-status modal-data-status-error" role="alert">{loadError}</span>}</div>
       <nav className="modal-tabs" aria-label="Candidate detail views" role="tablist"><button className={`modal-tab ${modalTab === "curve" ? "active" : ""}`} type="button" role="tab" aria-selected={modalTab === "curve"} onClick={() => setModalTab("curve")}>Light curve</button><button className={`modal-tab ${modalTab === "trail" ? "active" : ""}`} type="button" role="tab" aria-selected={modalTab === "trail"} onClick={() => setModalTab("trail")}>Assessment trail <span>{history === null ? loadError ? "—" : "…" : visibleHistory.length}</span></button></nav>
       {modalTab === "trail" ? <AssessmentTrail candidate={candidate} events={visibleHistory} loading={history === null} loadError={loadError} /> : <div className="modal-content-grid">
         <div className="modal-main-column">
@@ -1203,7 +1145,7 @@ function CandidateModal({ candidate, curve, history, replaySequence, detailLoade
         </div>
         <aside className="modal-side-column">
           <div className="detail-card"><p className="eyebrow">Current assessment</p><dl className="detail-list"><div><dt>Overall rank</dt><dd>#{candidate.rank_overall ?? "—"}</dd></div><div><dt>Stage rank</dt><dd>#{candidate.rank_stage ?? "—"}</dd></div><div><dt>Last evaluation</dt><dd>{formatDate(candidate.last_evaluated_at)}</dd></div><div><dt>Data sufficiency</dt><dd>{candidate.evaluation?.data_sufficiency ?? "—"}</dd></div><div><dt>Sector</dt><dd>{candidate.target?.sector ?? "—"}</dd></div></dl><div className="next-action"><span>Next evidence</span><p>{candidate.next_action}</p></div></div>
-          <div className="detail-card"><p className="eyebrow">Pipeline history</p><div className="timeline">{history === null ? <p className="muted-copy">{loadError ?? "Loading the persisted pipeline history…"}</p> : visibleHistory.length ? visibleHistory.map((event) => <div className="timeline-event" key={`${event.sequence_number}-${event.event_type}`}><span className="timeline-dot" /><div><strong>{event.event_type.replaceAll("_", " ")}</strong><span>{formatDate(event.occurred_at)}</span></div></div>) : <p className="muted-copy">No pipeline events recorded at this replay position.</p>}</div></div>
+          <div className="detail-card"><p className="eyebrow">Pipeline history</p><div className="timeline">{history === null ? <p className="muted-copy">{loadError ?? "Loading the persisted pipeline history…"}</p> : visibleHistory.length ? visibleHistory.map((event) => <div className="timeline-event" key={`${event.sequence_number}-${event.event_type}`}><span className="timeline-dot" /><div><strong>{event.event_type.replaceAll("_", " ")}</strong><span>{formatDate(event.occurred_at)}</span></div></div>) : <p className="muted-copy">No pipeline events recorded yet.</p>}</div></div>
         </aside>
       </div>}
       <footer className="modal-footer"><span>Coordinates: {candidate.target?.ra_deg?.toFixed(4) ?? "—"}°, {candidate.target?.dec_deg?.toFixed(4) ?? "—"}°</span><span>Evidence is provisional · not scientific confirmation</span></footer>
@@ -1874,8 +1816,6 @@ export function MonitoringSystemHealthPanel({ refreshKey }: { refreshKey: number
     {error && <div className="system-health-refresh-warning" role="status"><span className="status-dot" /><strong>Live refresh failed.</strong><span>{error} Showing the last successful check from {formatDate(snapshot.checked_at)} until the next check succeeds.</span></div>}
     {stale && !error && <div className="system-health-refresh-warning" role="status"><span className="status-dot" /><strong>Check is stale.</strong><span>The last response is older than the declared {snapshot.stale_after_seconds}-second freshness window.</span></div>}
     <section className="system-health-checks" aria-labelledby="system-health-checks-title"><div className="ops-section-heading"><div><p className="eyebrow">Live checks</p><h3 id="system-health-checks-title">What is being checked right now</h3></div><span className="section-note">Each card includes its authoritative source</span></div><div className="system-health-check-grid">{snapshot.checks.map((check) => <article className={`system-health-check-card system-health-card-${check.status}`} key={check.id}><div className="system-health-card-heading"><strong>{check.label}</strong><SystemHealthStatusPill status={check.status} /></div><p>{check.summary}</p>{check.details.length ? <ul>{check.details.map((detail) => <li key={detail}>{detail}</li>)}</ul> : null}<footer><span>{check.source}</span>{check.latency_ms != null && <span>{check.latency_ms.toFixed(0)} ms</span>}</footer></article>)}</div></section>
-    <SystemStageLanes snapshot={snapshot} />
-    <footer className="system-health-footer"><div><strong>Source of truth</strong><span>{snapshot.source_of_truth.join(" · ")}</span></div><span>Last cycle: {snapshot.pipeline.latest_cycle_id ?? "not recorded"}</span></footer>
   </section>;
 }
 
@@ -2006,7 +1946,6 @@ export default function HomePage() {
   const [candidateDetailLoaded, setCandidateDetailLoaded] = useState(false);
   const [candidateLoadError, setCandidateLoadError] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
-  const [replayStates, setReplayStates] = useState<Record<RankingView, ReplayState>>(createReplayStates);
   const [rankingPage, setRankingPage] = useState(1);
   const [pipelineStatusOpen, setPipelineStatusOpen] = useState(false);
   const [clockMs, setClockMs] = useState(() => Date.now());
@@ -2035,10 +1974,6 @@ export default function HomePage() {
     setHistory(null);
     setCandidateDetailLoaded(false);
     setCandidateLoadError(null);
-  }, []);
-
-  const updateReplay = useCallback((view: RankingView, patch: Partial<ReplayState>) => {
-    setReplayStates((current) => ({ ...current, [view]: { ...current[view], ...patch } }));
   }, []);
 
   const fetchRanking = useCallback((query: string) => {
@@ -2143,10 +2078,10 @@ export default function HomePage() {
   useEffect(() => { void loadStatus(); }, [loadStatus]);
 
   useEffect(() => {
-    if (activeTab === "overall" && ranking && !replayStates.overall.active) {
+    if (activeTab === "overall" && ranking) {
       void prefetchStageRankings();
     }
-  }, [activeTab, prefetchStageRankings, ranking, replayStates.overall.active]);
+  }, [activeTab, prefetchStageRankings, ranking]);
 
   useEffect(() => {
     const clock = window.setInterval(() => setClockMs(Date.now()), 1000);
@@ -2163,40 +2098,13 @@ export default function HomePage() {
     return () => window.clearInterval(timer);
   }, [loadDashboard, loadStatus]);
 
-  const loadReplaySnapshot = useCallback(async (view: RankingView, cursor: number, page = rankingPage) => {
-    updateReplay(view, { cursor, loading: true, error: null });
-    try {
-      const snapshot = await fetchJson<RankingResponse>(`/api/replay/${view}/snapshot?sequence=${cursor}&limit=100&page=${page}`);
-      updateReplay(view, { snapshot, loading: false });
-    } catch (cause) {
-      updateReplay(view, { loading: false, error: cause instanceof Error ? cause.message : "Replay snapshot unavailable." });
-    }
-  }, [rankingPage, updateReplay]);
-
-  const startReplay = useCallback(async (view: RankingView) => {
-    closeCandidate();
-    updateReplay(view, { active: true, playing: false, cursor: 0, snapshot: null, loading: true, error: null });
-    try {
-      const meta = await fetchJson<ReplayMeta>(`/api/replay/${view}/meta`);
-      updateReplay(view, { meta, maxSequence: meta.last_sequence });
-      await loadReplaySnapshot(view, 0);
-    } catch (cause) {
-      updateReplay(view, { loading: false, error: cause instanceof Error ? cause.message : "Replay metadata unavailable." });
-    }
-  }, [closeCandidate, loadReplaySnapshot, updateReplay]);
-
-  const exitReplay = useCallback((view: RankingView) => {
-    updateReplay(view, { active: false, playing: false });
-  }, [updateReplay]);
-
   const openSkyView = useCallback(() => {
     closeCandidate();
-    exitReplay(activeTab);
     setIdentifiedOpen(false);
     setSkyOpen(true);
     setPipelineStatusOpen(false);
     setHowItWorksOpen(false);
-  }, [activeTab, closeCandidate, exitReplay]);
+  }, [closeCandidate]);
 
   const openCandidate = useCallback(async (candidateId: string, seed?: RankingRow) => {
     selectedIdRef.current = candidateId;
@@ -2282,7 +2190,6 @@ export default function HomePage() {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     closeCandidate();
-    if (!identifiedOpen && !skyOpen) exitReplay(activeTab);
     try {
       await fetchJson("/api/refresh", { method: "POST" });
       if (identifiedOpen) setIdentifiedRefreshKey((current) => current + 1);
@@ -2291,25 +2198,11 @@ export default function HomePage() {
     } finally {
       setRefreshing(false);
     }
-  }, [activeTab, closeCandidate, exitReplay, identifiedOpen, loadDashboard, skyOpen]);
-
-  const activeReplay = replayStates[activeTab];
-  useEffect(() => {
-    if (!activeReplay.active || !activeReplay.playing) return;
-    if (activeReplay.cursor >= activeReplay.maxSequence) {
-      updateReplay(activeTab, { playing: false });
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      void loadReplaySnapshot(activeTab, activeReplay.cursor + 1, rankingPage);
-    }, Math.max(140, 900 / activeReplay.speed));
-    return () => window.clearTimeout(timer);
-  }, [activeReplay.active, activeReplay.cursor, activeReplay.maxSequence, activeReplay.playing, activeReplay.speed, activeTab, loadReplaySnapshot, rankingPage, updateReplay]);
+  }, [closeCandidate, identifiedOpen, loadDashboard, skyOpen]);
 
   const liveRanking = ranking?.view === activeTab ? ranking : null;
-  const displayRanking = activeReplay.active ? activeReplay.snapshot : liveRanking;
+  const displayRanking = liveRanking;
   const rows = displayRanking?.rows ?? [];
-  const removals = activeReplay.active ? displayRanking?.removed ?? [] : [];
   const workerNeedsAttention = ["stalled", "heartbeat_stale", "stage1_publish_stalled"].includes(status?.worker?.health ?? "");
   const workerState = status?.worker?.state ?? "";
   const workerIsActive = ["starting_cycle", "processing_stage1", "processing_stage2", "processing_stage3", "matching_catalog", "populating_manifest"].includes(workerState);
@@ -2317,10 +2210,10 @@ export default function HomePage() {
   const pipelineState = workerNeedsAttention ? "Needs attention" : workerIsActive ? "Processing" : status?.data_version ? "Published" : workerState === "idle" ? "Standby" : "Starting";
   const copy = stageCopy(activeTab);
   const totalCandidates = displayRanking?.total_ranked_count ?? rows.length;
-  const processedCount = activeReplay.active ? displayRanking?.processed_target_count ?? 0 : status?.processed_target_count ?? ranking?.processed_target_count ?? 0;
+  const processedCount = status?.processed_target_count ?? ranking?.processed_target_count ?? 0;
   const targetCount = status?.total_target_count ?? ranking?.total_target_count ?? 100000;
   const totalStars = displayRanking?.total_star_count ?? new Set(rows.map((row) => row.target_id)).size;
-  const panelTitle = (waitingForPublishedState || loading) && !liveRanking && !activeReplay.active ? "Loading published state" : totalCandidates ? `Total candidates ${totalCandidates.toLocaleString()} · Ranked stars ${totalStars.toLocaleString()}` : "No candidates published yet";
+  const panelTitle = (waitingForPublishedState || loading) && !liveRanking ? "Loading published state" : totalCandidates ? `Total candidates ${totalCandidates.toLocaleString()} · Ranked stars ${totalStars.toLocaleString()}` : "No candidates published yet";
   const remainingCount = Math.max(0, targetCount - processedCount);
   const activeCandidateCount = status?.active_candidate_count ?? rows.length;
   const footerState = status?.last_published_at ? `Last published: ${formatDate(status.last_published_at)}` : "Awaiting first publication";
@@ -2330,23 +2223,22 @@ export default function HomePage() {
   const displayCap = displayRanking?.display_cap ?? 500;
   const selectRankingPage = (page: number) => {
     setRankingPage(page);
-    if (activeReplay.active) void loadReplaySnapshot(activeTab, activeReplay.cursor, page);
   };
 
   const modal = useMemo(() => {
     if (!selectedId) return null;
     if (modalLoading || !candidate) return <div className="modal-backdrop" role="presentation"><section className="candidate-modal modal-loading" role="dialog" aria-modal="true" aria-label="Loading candidate details"><span className="status-dot" /><p>Loading candidate evidence…</p></section></div>;
-    return <CandidateModal candidate={candidate} curve={curve} history={history} replaySequence={activeReplay.active ? activeReplay.cursor : null} detailLoaded={candidateDetailLoaded} loadError={candidateLoadError} onClose={closeCandidate} />;
-  }, [activeReplay.active, activeReplay.cursor, candidate, candidateDetailLoaded, candidateLoadError, closeCandidate, curve, history, modalLoading, selectedId]);
+    return <CandidateModal candidate={candidate} curve={curve} history={history} detailLoaded={candidateDetailLoaded} loadError={candidateLoadError} onClose={closeCandidate} />;
+  }, [candidate, candidateDetailLoaded, candidateLoadError, closeCandidate, curve, history, modalLoading, selectedId]);
 
   return <main className="observatory-shell">
     <div className="ambient-glow ambient-glow-one" aria-hidden="true" /><div className="ambient-glow ambient-glow-two" aria-hidden="true" />
-    <header className="topbar"><div className="brand-lockup"><button className="brand-mark" type="button" aria-label="Learn how TransitScope works" aria-haspopup="dialog" aria-expanded={howItWorksOpen} onClick={() => setHowItWorksOpen(true)}>✦</button><div className="brand-title"><h1>Explore Potential Space Discoveries</h1><button className="about-trigger" type="button" aria-label="Learn how TransitScope works" aria-haspopup="dialog" aria-expanded={howItWorksOpen} onClick={() => setHowItWorksOpen(true)}><span aria-hidden="true">→</span></button></div></div><div className="topbar-actions"><span className="data-state"><span className={`status-dot ${status?.data_version ? "" : "muted"}`} /> {dataState}</span><button className="button button-quiet" type="button" onClick={() => void handleRefresh()} disabled={refreshing || loading}>↻ <span>{refreshing ? "Checking" : "Refresh"}</span></button><a className="button button-quiet tool-button" href="/ops" aria-label="Open public ML Ops dashboard" title="Public ML Ops dashboard">🔧</a></div></header>
-    <nav className="tab-row" aria-label="Assessment rankings">{tabs.map((tab) => <button className={`tab-button ${!identifiedOpen && !skyOpen && activeTab === tab.id ? "active" : ""}`} key={tab.id} onClick={() => { setIdentifiedOpen(false); setSkyOpen(false); setPipelineStatusOpen(false); setRankingPage(1); setActiveTab(tab.id); }} type="button">{tab.label}</button>)}<button className={`tab-button ${identifiedOpen ? "active" : ""}`} type="button" onClick={() => { closeCandidate(); exitReplay(activeTab); setSkyOpen(false); setPipelineStatusOpen(false); setIdentifiedOpen(true); }}>Identified</button><button className={`tab-button ${skyOpen ? "active" : ""}`} type="button" onClick={openSkyView}>Sky</button></nav>
+    <header className="topbar"><div className="brand-lockup"><button className="brand-mark" type="button" aria-label="Learn how TransitScope works" aria-haspopup="dialog" aria-expanded={howItWorksOpen} onClick={() => setHowItWorksOpen(true)}>✦</button><div className="brand-title"><h1>Explore Potential Space Discoveries</h1><button className="about-trigger" type="button" aria-label="Learn how TransitScope works" aria-haspopup="dialog" aria-expanded={howItWorksOpen} onClick={() => setHowItWorksOpen(true)}><span aria-hidden="true">→</span></button></div></div><div className="topbar-actions"><span className="data-state"><span className={`status-dot ${status?.data_version ? "" : "muted"}`} /> {dataState}</span><button className="button button-quiet" type="button" onClick={() => void handleRefresh()} disabled={refreshing || loading}>↻ <span>{refreshing ? "Checking" : "Refresh"}</span></button><a className="button button-quiet" href="/ops" aria-label="Open Live Monitor" title="Open Live Monitor">Live Monitor</a></div></header>
+    <nav className="tab-row" aria-label="Assessment rankings">{tabs.map((tab) => <button className={`tab-button ${!identifiedOpen && !skyOpen && activeTab === tab.id ? "active" : ""}`} key={tab.id} onClick={() => { setIdentifiedOpen(false); setSkyOpen(false); setPipelineStatusOpen(false); setRankingPage(1); setActiveTab(tab.id); }} type="button">{tab.label}</button>)}<button className={`tab-button ${identifiedOpen ? "active" : ""}`} type="button" onClick={() => { closeCandidate(); setSkyOpen(false); setPipelineStatusOpen(false); setIdentifiedOpen(true); }}>Identified</button><button className={`tab-button ${skyOpen ? "active" : ""}`} type="button" onClick={openSkyView}>Sky</button></nav>
     {skyOpen ? <SkyPanel onOpenCandidate={(candidateId) => void openCandidate(candidateId)} refreshKey={skyRefreshKey} /> : !identifiedOpen ? <>
-    <section className="stage-heading"><div><div className="stage-kicker"><span className="stage-number">{copy.number}</span> {copy.kicker}</div><h3>{copy.title}</h3><p>{copy.description}</p></div>{activeReplay.active ? <div className="replay-dock-wrap"><div className="replay-dock" aria-label={`${copy.title} replay controls`} title={activeReplay.loading ? "Loading saved replay snapshot" : `Saved replay · ${activeReplay.snapshot?.occurred_at ? formatDate(activeReplay.snapshot.occurred_at) : "Beginning of assessment"}`}><button aria-label={activeReplay.playing ? "Pause replay" : "Play replay"} className="button button-quiet replay-play" type="button" onClick={() => updateReplay(activeTab, { playing: !activeReplay.playing })} disabled={activeReplay.maxSequence === 0}>{activeReplay.playing ? "Ⅱ" : "▶"}</button><label className="replay-speed"> <span>Speed</span><select aria-label="Replay speed" value={activeReplay.speed} onChange={(event) => updateReplay(activeTab, { speed: Number(event.target.value) })}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select></label><input aria-label="Replay position" className="replay-range" type="range" min={0} max={activeReplay.maxSequence} value={activeReplay.cursor} onChange={(event) => void loadReplaySnapshot(activeTab, Number(event.target.value))} /><button className="button button-replay-active replay-exit" type="button" onClick={() => exitReplay(activeTab)}>Exit replay</button></div>{activeReplay.error && <p className="replay-error">{activeReplay.error}</p>}</div> : <div className="stage-actions"><button className="button button-outline" type="button" onClick={() => void startReplay(activeTab)}>Replay</button>{activeTab === "overall" && <button className="button button-outline" type="button" onClick={() => setPipelineStatusOpen((open) => !open)} aria-expanded={pipelineStatusOpen}>{pipelineStatusOpen ? "Hide pipeline status" : "Pipeline status"}</button>}</div>}</section>
-    {activeTab === "overall" && pipelineStatusOpen && !activeReplay.active && <section className="metrics-grid" aria-label="Processing summary"><article className="metric-card"><span className="metric-label">Target universe</span><strong>{remainingCount.toLocaleString()} / {targetCount.toLocaleString()}</strong><span className="metric-detail">stars left in target universe exploration</span></article><article className="metric-card"><span className="metric-label">Processed</span><strong>{processedCount.toLocaleString()}</strong><span className="metric-detail">targets with published evaluations</span></article><article className="metric-card"><span className="metric-label">Active candidates</span><strong>{activeCandidateCount.toLocaleString()}</strong><span className="metric-detail">currently visible in this assessment</span></article><article className="metric-card metric-card-status"><span className="metric-label">Pipeline status</span><strong><span className={`status-dot ${status?.data_version ? "" : "muted"}`} /> {pipelineState}</strong><span className="metric-detail">{footerState}</span><span className="metric-detail">Next update: {nextUpdateLabel} · {nextUpdateAt ? formatDate(nextUpdateAt) : workerIsActive ? "current cycle in progress" : "Calculating…"}</span></article></section>}
-          <section className="ranking-panel" aria-labelledby="ranking-title"><div className="panel-header"><div><p className="eyebrow">Top candidates · {activeReplay.active ? "saved replay" : "live ranking"}</p><h3 id="ranking-title">{panelTitle}</h3></div><span className="panel-meta">Top {displayCap.toLocaleString()} displayed</span></div>{error ? <div className="error-state" role="alert"><span className="status-dot muted" /><h4>Published state unavailable</h4><p>{error}</p><button className="button button-outline" type="button" onClick={() => void loadDashboard()}>Try again</button></div> : activeReplay.loading && !activeReplay.snapshot ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Reading saved replay state.</h4></div> : (waitingForPublishedState || loading) && !liveRanking && !activeReplay.active ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Reading the latest published state.</h4><p>The API is checking the worker’s durable publication boundary. No model is run during a dashboard load.</p></div> : displayRanking ? <div className="table-wrap"><div className="ranking-table ranking-table-header"><span>Rank</span><span>Candidate</span><RankingColumnControl label={statusControlLabel} active={statusControlActive} open={openColumnControl === "status"} ariaLabel={activeTab === "overall" ? "Filter overall ranking by stage" : "Filter ranking by status"} options={statusControlOptions} onToggle={() => setOpenColumnControl((current) => current === "status" ? null : "status")} onSelect={(value) => activeTab === "overall" ? updateRankingControls({ stage: value as AssessmentStage }) : updateRankingControls({ status: value as CandidateStatus })} onClear={() => activeTab === "overall" ? updateRankingControls({ stage: null }) : updateRankingControls({ status: null })} /><span>Current activity</span><span>Movement</span><RankingColumnControl label={assessmentSortLabel} active={activeControls.sort !== "rank"} open={openColumnControl === "assessed"} ariaLabel="Sort ranking by assessment time" options={[{ value: "last_assessed_desc", label: "Most recently assessed" }, { value: "last_assessed_asc", label: "Oldest assessed first" }]} onToggle={() => setOpenColumnControl((current) => current === "assessed" ? null : "assessed")} onSelect={(value) => updateRankingControls({ sort: value as AssessmentSort })} onClear={() => updateRankingControls({ sort: "rank" })} /></div><div className="ranking-rows">{removals.map((removal) => <div className="ranking-table ranking-table-row replay-removal-row" key={`removed-${displayRanking?.sequence_number ?? 0}-${removal.candidate_id}`} role="status" aria-label={`${candidateDisplayLabel(removal.target_id, removal.candidate_id, undefined, removal.signal_index)} removed as already known`}><span className="rank-value">{removal.rank ?? "—"}</span><span className="candidate-cell"><strong>{candidateDisplayLabel(removal.target_id, removal.candidate_id, undefined, removal.signal_index)}</strong></span><span><span className="stage-status-stage">{stageName(removal.stage)}</span>{" "}<span className="status-pill status-known-match">Already Known</span><small className="score-label">{removal.known_match_id ?? "Catalog match"}</small></span><span className="activity-cell"><span className="activity-pulse removal-pulse" />{removal.activity}</span><span className="movement movement-removed">→ Removed</span><span className="last-update">{formatDate(removal.occurred_at)}</span></div>)}{rows.map((row) => { const resolutionLabel = signalResolutionLabel(row.signal_resolution); const rowStatus = displayStatus(row.status, row.stage); return <button className="ranking-table ranking-table-row" key={row.candidate_id} type="button" onClick={() => void openCandidate(row.candidate_id, row)} aria-label={`Open details for ${candidateDisplayLabel(row.target_id, row.candidate_id, undefined, row.signal_index)}`}><span className="rank-value">{row.rank}</span><span className="candidate-cell"><strong>{candidateDisplayLabel(row.target_id, row.candidate_id, undefined, row.signal_index)}</strong>{resolutionLabel && <small className="signal-resolution-note">{resolutionLabel}</small>}</span><span><span className="stage-status-stage">{stageName(row.stage)}</span>{" "}<span className={`status-pill status-${statusClass(rowStatus)}`}>{rowStatus}</span></span><span className="activity-cell"><span className="activity-pulse" />{row.activity}</span><span className={`movement movement-${row.movement}`}>{movementLabel(row)}</span><span className="last-update">{formatDate(row.last_evaluated_at)}</span></button>; })}{!rows.length && !removals.length && <div className="filtered-empty-state" role="status"><span className="status-dot muted" aria-hidden="true" /><strong>No candidates match this selection.</strong><span>Try another status or clear the filter to return to the full ranking.</span></div>}</div>{pageCount > 1 && <nav className="ranking-pages" aria-label="Ranking pages"><span>Showing page {displayRanking?.page ?? rankingPage} of {pageCount}</span><div>{Array.from({ length: pageCount }, (_, index) => index + 1).map((page) => <button className={`page-button ${(displayRanking?.page ?? rankingPage) === page ? "active" : ""}`} key={page} type="button" onClick={() => selectRankingPage(page)}>{page}</button>)}</div></nav>}</div> : <div className="empty-state" role="status"><div className="empty-orbit" aria-hidden="true"><span /></div><h4>{activeReplay.active && activeReplay.cursor === 0 ? "The replay begins before the first candidate." : "The observatory is waiting for its first observation."}</h4><p>{activeReplay.active ? "Move the replay forward to watch candidates enter, change rank, advance, or leave the active pool." : "The ranking will populate when a MAST/TESS evaluation is published. Empty is a real state here—not a hidden placeholder result."}</p><div className="empty-state-meta"><span className="status-dot muted" /> No current activity</div></div>}</section>
+    <section className="stage-heading"><div><div className="stage-kicker"><span className="stage-number">{copy.number}</span> {copy.kicker}</div><h3>{copy.title}</h3><p>{copy.description}</p></div><div className="stage-actions">{activeTab === "overall" && <button className="button button-outline" type="button" onClick={() => setPipelineStatusOpen((open) => !open)} aria-expanded={pipelineStatusOpen}>{pipelineStatusOpen ? "Hide pipeline status" : "Pipeline status"}</button>}</div></section>
+    {activeTab === "overall" && pipelineStatusOpen && <section className="metrics-grid" aria-label="Processing summary"><article className="metric-card"><span className="metric-label">Target universe</span><strong>{remainingCount.toLocaleString()} / {targetCount.toLocaleString()}</strong><span className="metric-detail">stars left in target universe exploration</span></article><article className="metric-card"><span className="metric-label">Processed</span><strong>{processedCount.toLocaleString()}</strong><span className="metric-detail">targets with published evaluations</span></article><article className="metric-card"><span className="metric-label">Active candidates</span><strong>{activeCandidateCount.toLocaleString()}</strong><span className="metric-detail">currently visible in this assessment</span></article><article className="metric-card metric-card-status"><span className="metric-label">Pipeline status</span><strong><span className={`status-dot ${status?.data_version ? "" : "muted"}`} /> {pipelineState}</strong><span className="metric-detail">{footerState}</span><span className="metric-detail">Next update: {nextUpdateLabel} · {nextUpdateAt ? formatDate(nextUpdateAt) : workerIsActive ? "current cycle in progress" : "Calculating…"}</span></article></section>}
+          <section className="ranking-panel" aria-labelledby="ranking-title"><div className="panel-header"><div><p className="eyebrow">Top candidates · live ranking</p><h3 id="ranking-title">{panelTitle}</h3></div><span className="panel-meta">Top {displayCap.toLocaleString()} displayed</span></div>{error ? <div className="error-state" role="alert"><span className="status-dot muted" /><h4>Published state unavailable</h4><p>{error}</p><button className="button button-outline" type="button" onClick={() => void loadDashboard()}>Try again</button></div> : (waitingForPublishedState || loading) && !liveRanking ? <div className="empty-state" role="status"><div className="loading-ring" aria-hidden="true" /><h4>Reading the latest published state.</h4><p>The API is checking the worker’s durable publication boundary. No model is run during a dashboard load.</p></div> : displayRanking ? <div className="table-wrap"><div className="ranking-table ranking-table-header"><span>Rank</span><span>Candidate</span><RankingColumnControl label={statusControlLabel} active={statusControlActive} open={openColumnControl === "status"} ariaLabel={activeTab === "overall" ? "Filter overall ranking by stage" : "Filter ranking by status"} options={statusControlOptions} onToggle={() => setOpenColumnControl((current) => current === "status" ? null : "status")} onSelect={(value) => activeTab === "overall" ? updateRankingControls({ stage: value as AssessmentStage }) : updateRankingControls({ status: value as CandidateStatus })} onClear={() => activeTab === "overall" ? updateRankingControls({ stage: null }) : updateRankingControls({ status: null })} /><span>Current activity</span><span>Movement</span><RankingColumnControl label={assessmentSortLabel} active={activeControls.sort !== "rank"} open={openColumnControl === "assessed"} ariaLabel="Sort ranking by assessment time" options={[{ value: "last_assessed_desc", label: "Most recently assessed" }, { value: "last_assessed_asc", label: "Oldest assessed first" }]} onToggle={() => setOpenColumnControl((current) => current === "assessed" ? null : "assessed")} onSelect={(value) => updateRankingControls({ sort: value as AssessmentSort })} onClear={() => updateRankingControls({ sort: "rank" })} /></div><div className="ranking-rows">{rows.map((row) => { const resolutionLabel = signalResolutionLabel(row.signal_resolution); const rowStatus = displayStatus(row.status, row.stage); return <button className="ranking-table ranking-table-row" key={row.candidate_id} type="button" onClick={() => void openCandidate(row.candidate_id, row)} aria-label={`Open details for ${candidateDisplayLabel(row.target_id, row.candidate_id, undefined, row.signal_index)}`}><span className="rank-value">{row.rank}</span><span className="candidate-cell"><strong>{candidateDisplayLabel(row.target_id, row.candidate_id, undefined, row.signal_index)}</strong>{resolutionLabel && <small className="signal-resolution-note">{resolutionLabel}</small>}</span><span><span className="stage-status-stage">{stageName(row.stage)}</span>{" "}<span className={`status-pill status-${statusClass(rowStatus)}`}>{rowStatus}</span></span><span className="activity-cell"><span className="activity-pulse" />{row.activity}</span><span className={`movement movement-${row.movement}`}>{movementLabel(row)}</span><span className="last-update">{formatDate(row.last_evaluated_at)}</span></button>; })}{!rows.length && <div className="filtered-empty-state" role="status"><span className="status-dot muted" aria-hidden="true" /><strong>No candidates match this selection.</strong><span>Try another status or clear the filter to return to the full ranking.</span></div>}</div>{pageCount > 1 && <nav className="ranking-pages" aria-label="Ranking pages"><span>Showing page {displayRanking?.page ?? rankingPage} of {pageCount}</span><div>{Array.from({ length: pageCount }, (_, index) => index + 1).map((page) => <button className={`page-button ${(displayRanking?.page ?? rankingPage) === page ? "active" : ""}`} key={page} type="button" onClick={() => selectRankingPage(page)}>{page}</button>)}</div></nav>}</div> : <div className="empty-state" role="status"><div className="empty-orbit" aria-hidden="true"><span /></div><h4>The observatory is waiting for its first observation.</h4><p>The ranking will populate when a MAST/TESS evaluation is published. Empty is a real state here—not a hidden placeholder result.</p><div className="empty-state-meta"><span className="status-dot muted" /> No current activity</div></div>}</section>
     </> : <IdentifiedPanel onOpenCandidate={(candidateId) => void openCandidate(candidateId)} refreshKey={identifiedRefreshKey} />}
     <footer className="footer-note"><span className="footer-pulse" aria-hidden="true" /><span>Data source: MAST / TESS · {footerState} · Evidence is provisional</span></footer>
     {modal}

@@ -813,25 +813,23 @@ def status() -> dict:
 
 
 @app.get("/api/monitoring/overview")
-def monitoring_overview(request: Request) -> dict:
-    """Return the authenticated ML operations/control-plane projection.
+def monitoring_overview() -> dict:
+    """Return the public read-only ML operations projection.
 
     This endpoint never starts a job. It reports the worker's explicit pause
     gate, durable pipeline counts, model evidence, provider health, and the
     sampling signals that will guide future replacement-target selection.
     """
 
-    _require_ops_token(request)
     response = ReadOnlyStore().monitoring(worker_status())
     response["manual_migrations"] = _manual_migration_requests()
     return response
 
 
 @app.get("/api/monitoring/system-health")
-def monitoring_system_health(request: Request) -> dict:
-    """Return the independently computed operator source-of-truth checks."""
+def monitoring_system_health() -> dict:
+    """Return the public read-only source-of-truth checks."""
 
-    _require_ops_token(request)
     return _monitoring_system_health(worker_status())
 
 
